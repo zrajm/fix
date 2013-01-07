@@ -405,19 +405,19 @@ sub tmpfilename {
     sub get {
         my ($file, $prop) = @_;
         # FIXME: Only reload file if it has changed
-        $data{$file} = load_data("$cfg{dir}/$file");
+        $data{$file} = load_file("$cfg{dir}/$file");
         my $value = $data{$file}{$prop} // [];
         return wantarray ? @$value : join(" ", @$value);
     }
     sub set {
         my ($file, $prop, @value) = @_;
         $data{$file}{$prop} = @value ? \@value : [];
-        save_data("$cfg{dir}/$file", $data{$file});
+        save_file("$cfg{dir}/$file", $data{$file});
     }
     sub exist {
         my ($file, $prop) = @_;
         get($file, $prop);          # force an update
-        #$data{$file} //= load_data("$cfg{dir}/$file");
+        #$data{$file} //= load_file("$cfg{dir}/$file");
         return !!@{ $data{$file}{$prop} // [] };
     }
     sub add {
@@ -430,6 +430,9 @@ sub tmpfilename {
 
 {
     package Store;
+    use File::Path qw(mkpath rmtree);
+    use Data::Dumper;
+    $Data::Dumper::Terse = 1;
 
     # $self = {
     #     conf => { dir => "SOCUOHSEUCH" },
@@ -452,42 +455,115 @@ sub tmpfilename {
             conf => {},
         }, $class)->conf($conf);
     }
+
+    sub uniq {
+        my %seen = ();
+        return grep { !$seen{$_}++ } @_;
+    }
+
     sub conf {
         my ($self, $conf) = @_;
-        @{ $self->{conf} }[ keys %$conf ] = values %$conf;
+        @{ $self->{conf} }{ keys %$conf } = values %$conf;
         return $self;
     }
     # Usage: @x = $obj->get("file", "prop" );
+    #     or %x = %{ $obj->get("file") };
     sub get {
-        my ($self, $file, $prop) = @_;
-        my $data = $self->{data}{$file};
-        $data = load_data("$cfg{dir}/$file");
-        my $values = $data{$prop} // [];
-        return wantarray ? @$values : join(" ", @$values);
+        my ($self, $name, $prop) = @_;
+        my $data = $self->{data}{$name} = $self->load($name);
+        if ($prop) {
+            my @value = @{ $data->{$prop} // [] };
+            return wantarray ? @value : join(" ", @value);
+        }
+        return $data;
     }
     # Usage: $obj->set("file", { prop => value });
     sub set {
-        my ($self, $file, $props) = @_;
-        my $data = $self->{data}{$file};
-        @$data[ keys %$props ] = map {
-            $_ eq "ARRAY" ? $_ : [ $_ ];
+        my ($self, $name, $props) = @_;
+        my $data = $self->{data}{$name} = $self->load($name);
+        @$data{ keys %$props } = map {
+            ($_ eq "ARRAY") ? $_ : [ $_ ];
         } values %$props;
-        save_data("$cfg{dir}/$file", $data);
-        return $self;
+        return $self->save($name);
     }
     sub exist {
         my ($self, $file, $prop) = @_;
-        my $data = $self->{data}{$file};
-        $data = load_data("$cfg{dir}/$file");
-        return !!( ()=$self->get($file, $prop) );
-
-        # $value = $self->get($file, $prop);
-        # return !!@$value;
-
+        return !!@{ $self->get($file)->{$prop} };
+        # my @value = $self->get($file, $prop);
+        # return !!@value;
+        #return !!( ()=$self->get($file, $prop) );
     }
     sub add {
+        my ($self, $file, $props) = @_;
+        my $data = $self->get($file);          # cause reload
+        $self->set($file => {
+            map {
+                my $add = $props->{$_};
+                $data->{$_} => [ uniq(
+                    @{ $data->{$_} // [] },
+                    (ref($add) eq "ARRAY" ? @$add : $add),
+                ) ];
+            } keys %$props
+        });
+        return $self;
     }
-}
+    sub load {
+        my ($self, $name) = @_;
+        my $file = "$self->{conf}{dir}/$name";
+        # say "name $name";
+        # say "file $file";
+        return $self->{data}{$name} = {} if not -e $file;
+        open(my $in, '<', $file)
+            or die "Failed to open file '$file' for reading: $!\n";
+        my $data = {};
+        while (<$in>) {
+            my ($prop, $value) = split(/:\s+/, $_, 2);
+            chomp($value);
+            # FIXME: decode $value (to allow newline)
+            push(@{ $data->{$prop} }, $value);
+        }
+        close($in)
+            or die "Failed to close file '$file' after reading: $!\n";
+        return $self->{data}{$name} = $data;
+    }
+    sub save {
+        my ($self, $name) = @_;
+        my $file    = "$self->{conf}{dir}/$name";
+        my $tmpfile = "$file---writing";
+        mkpath(main::dirname($tmpfile));
+        open(my $out, '>', $tmpfile)
+            or die "Failed to open tempfile '$tmpfile' for writing: $!\n";
+        my $data = $self->{data}{$name};
+        foreach my $prop (sort keys %$data) {
+            foreach my $value (@{ $data->{$prop} }) {
+                # FIXME: encode $value (to allow newline)
+                say $out "$prop: $value";
+            }
+        }
+        close($out)
+            or die "Failed to close file '$tmpfile' after writing: $!\n";
+        rename($tmpfile, $file)
+            or die "Failed to rename tempfile '$tmpfile' -> '$file' after writing: $!\n";
+        return $self;
+    }
+
+
+
+};
+
+my $keep = new Store({ dir => "HERE/run" });
+my $temp = new Store({ dir => "HERE/tmp" });
+
+print Dumper $keep;
+$keep->set("file2", "prereq");
+#$keep->get("file", "prereq");
+
+say "=" x 80;
+print Dumper $keep;
+# say "=" x 80;
+# say $keep->get("file", "prereq");
+# print Dumper $keep;
+# say "=" x 80;
 
 
 # Return target creator. This loads the 'creator' value from the metadata, or
@@ -519,23 +595,23 @@ sub has_new_checksum {
         ? $new_checksum : "";
 }
 
-sub load_meta {
+sub load_file {
     my ($file) = @_;
     return {} if not -e $file;
     open(my $in, '<', $file)
         or die "failed to open file '$file' for reading: $!\n";
     my $data = {};
     foreach (<$in>) {
-        my ($name, $value) = m#^ (.*?) :\s+ (.*) $#x;
+        my ($prop, $value) = m#^ (.*?) :\s+ (.*) $#x;
         # FIXME: decode $value (to allow newline)
-        push(@{ $data->{$name} }, $value);
+        push(@{ $data->{$prop} }, $value);
     }
     close($in)
         or die "failed to close file '$file' after reading: $!\n";
     return $data;
 }
 
-sub save_meta {
+sub save_file {
     my ($file, $data) = @_;
     my $tmpfile = tmpfilename($file);
     mkpath([ dirname($tmpfile) ]);
@@ -978,6 +1054,9 @@ if (is_mother) {                               # in mother process
 }
 
 @ARGV = ("all") if not @ARGV;
+
+__END__
+
 
 ###############################################################################
 ##                                                                           ##

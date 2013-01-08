@@ -7,17 +7,18 @@ use utf8;
 use open ':locale';
 
 use Cwd qw/cwd realpath/;
-use File::Path qw(mkpath rmtree);
-# If used, use 'mkpath' and 'rmtree'
-use Digest::MD5 qw(md5_hex);
+use File::Path qw(mkpath rmtree); # use 'mkpath' and 'rmtree'
 use Encode qw(encode_utf8);
 use Data::Dumper;
-$Data::Dumper::Terse = 1;
+$Data::Dumper::Indent   = 1;
+$Data::Dumper::Sortkeys = 1;
+$Data::Dumper::Terse    = 1;
 
 # TODO
 # ====
+#   * add()/set() should only save on actual change -- this should avoid
+#     rebuilding on cyclic dependencies
 #   * Implement fix_on_create
-#   * Rewrite get()/set()
 #   * Abort/warn on missing buildscript
 #   * Read protect files in '.fix', just like git (i.e. 'chmod -w')
 #   * Instead of adding fix's whole path, should:
@@ -40,15 +41,17 @@ $Data::Dumper::Terse = 1;
 #     Currently, git compares the file type (regular files vs symbolic links)
 #     and executable bits (only for regular files) from `st_mode` member,
 #     `st_mtime` and `st_ctime` timestamps, `st_uid`, `st_gid`, `st_ino`, and
-#     `st_size` members. With a `USE_STDEV` compile-time option, `st_dev` is
-#     also compared, but this is not enabled by default because this member is
-#     not stable on network filesystems. With `USE_NSEC` compile-time option,
-#     `st_mtim.tv_nsec` and `st_ctim.tv_nsec` members are also compared, but
-#     this is not enabled by default because in-core timestamps can have finer
-#     granularity than on-disk timestamps, resulting in meaningless changes
-#     when an inode is evicted from the inode cache. See commit 8ce13b0 of
-#     git://git.kernel.org/pub/scm/linux/kernel/git/tglx/history.git ([PATCH]
-#     Sync in core time granuality with filesystems, 2005-01-04).
+#     `st_size` members.
+#
+#     lstat return values used:
+#          1 ino      inode number
+#          2 mode     file mode  (type and permissions)
+#          4 uid      numeric user ID of file's owner
+#          5 gid      numeric group ID of file's owner
+#          7 size     total size of file, in bytes
+#          9 mtime    last modify time in seconds since the epoch
+#         10 ctime    inode change time in seconds since the epoch (*)
+#
 #   * Parallel builds
 #         my $subref = \&{"$opt{command}"};
 #         foreach my $arg (@ARGV ? @ARGV : "all") {
@@ -61,8 +64,6 @@ $Data::Dumper::Terse = 1;
 #         }
 #         # FIXME: handle badness in children, exist status in $? after each wait()
 #         1 while (wait() != -1);
-
-
 #
 # Path Names
 # ==========
@@ -81,16 +82,13 @@ $Data::Dumper::Terse = 1;
 # Stored Values
 # =============
 #
-# Permanent
-# ---------
+# Permanent ($keep)
+# -----------------
 # checksum       ----- [md5] hex string
-# creator        ----- [type] AUTO (fix built file) | USER (user wrote file)
+# generated      ----- [type] yes (fix built file) | no (user wrote file)
 # exit_status    ----- [result] numeric value
 #                      Exit status of buildscript which built this target.
 # noexist        ----- file did not exist on last invocation
-#
-# Resetted between invocations
-# ----------------------------
 # prereqs        ----- uniquified list of files passed to 'fix'
 #                      Target depends on these files, and will be rebuilt
 #                      whenever one (or more) of them changes.
@@ -98,6 +96,9 @@ $Data::Dumper::Terse = 1;
 #                      Target depends on the non-existance of these files, and
 #                      will be rebuilt whenever one (or more) of them are
 #                      created.
+#
+# Resetted between invocations ($temp)
+# ------------------------------------
 # modified       ----- YES (content was changed) | NO (content is same as before)
 #                      'modified' is set to 'NO' if file wasn't modified, or if
 #                      file was rebuild but the result was identical to the
@@ -117,9 +118,6 @@ $Data::Dumper::Terse = 1;
 ##  Settings                                                                 ##
 ##                                                                           ##
 ###############################################################################
-
-sub FALSE  { "" }
-sub TRUE   {  1 }
 
 use vars qw($NAME $VERSION $YEAR);
 $VERSION = "0.2a";
@@ -145,6 +143,9 @@ my %opt = (
 ###############################################################################
 
 # constants
+sub FALSE  { "" }
+sub TRUE   {  1 }
+
 sub PLAIN  { 0 } # loglevel for msg()
 sub BOLD   { 1 }
 
@@ -159,9 +160,6 @@ sub TARGET { "target" }
 sub YES    { "yes" }
 sub NO     { "no" }
 sub EMPTY  { () }
-
-sub USER   { "user" }
-sub AUTO   { "auto" }
 
 sub is_mother() {
     # return true if I'm mother, false if I'm a child
@@ -382,89 +380,38 @@ sub tmpfilename {
 #     }
 # }
 
-# Load values from '.fix' dir. Keep all values in memory, so as to not have to
-# reload them again.
-#
-# FIXME: On get() check if file is updated, and reload if so (a child may have
-# modified this since last use).
-#
-# FIXME: 'modified', 'prereqs', 'prereqsnoexist' should be saved in 'run'
-# subdir, all other values in 'tmp' subdir.
-#
-# FIXME: List values should always be uniquified.
-#
-# FIXME: Make this proper object oriented?
-#
-{
-    my %data = ();
-    my %cfg = ();
-    sub cfg {
-        my %x = @_;
-        $cfg{$_} = $x{$_} foreach keys %x;
-    }
-    sub get {
-        my ($file, $prop) = @_;
-        # FIXME: Only reload file if it has changed
-        $data{$file} = load_file("$cfg{dir}/$file");
-        my $value = $data{$file}{$prop} // [];
-        return wantarray ? @$value : join(" ", @$value);
-    }
-    sub set {
-        my ($file, $prop, @value) = @_;
-        $data{$file}{$prop} = @value ? \@value : [];
-        save_file("$cfg{dir}/$file", $data{$file});
-    }
-    sub exist {
-        my ($file, $prop) = @_;
-        get($file, $prop);          # force an update
-        #$data{$file} //= load_file("$cfg{dir}/$file");
-        return !!@{ $data{$file}{$prop} // [] };
-    }
-    sub add {
-        my ($file, $prop, @value) = @_;
-        my %value = map { $_ => 1 } get($file, $prop);
-        $value{$_} = 1 foreach @value;
-        set($file, $prop, keys %value);
-    }
-}
-
+# FIXME: Uniqification could be better?
+# FIXME: Only save if anything actually changed
 {
     package Store;
     use File::Path qw(mkpath rmtree);
+    use Digest::SHA qw(sha1_hex);
+    use Encode qw(encode_utf8);
     use Data::Dumper;
+    use Carp;
     $Data::Dumper::Terse = 1;
-
     # $self = {
-    #     conf => { dir => "SOCUOHSEUCH" },
+    #     conf => { dir   => "SOCUOHSEUCH" },  # storage dir name
+    #     stat => { FILE1 => statdata, .... }, # stat cache
     #     data => {
-    #         file1 => {
-    #             _    => lstat_of_file,
-    #             PROP => VALUE,
-    #             PROP => VALUE,
+    #         FILE1 => {
+    #             PROP => [ VALUE ],
+    #             ...
     #         },
-    #         file1 => {
-    #             _    => lstat_of_file,
-    #             PROP => VALUE,
-    #             PROP => VALUE,
-    #         }
+    #         ...
     #     }
+    sub FALSE  { "" }
+    sub TRUE   {  1 }
     sub new {
         my ($class, $conf) = @_;
         return bless({
             data => {},
-            conf => {},
-        }, $class)->conf($conf);
+            conf => $conf,
+        }, $class);
     }
-
     sub uniq {
         my %seen = ();
         return grep { !$seen{$_}++ } @_;
-    }
-
-    sub conf {
-        my ($self, $conf) = @_;
-        @{ $self->{conf} }{ keys %$conf } = values %$conf;
-        return $self;
     }
     # Usage: @x = $obj->get("file", "prop" );
     #     or %x = %{ $obj->get("file") };
@@ -478,30 +425,33 @@ sub tmpfilename {
         return $data;
     }
     # Usage: $obj->set("file", { prop => value });
+    # FIXME: only save if changes were made
     sub set {
         my ($self, $name, $props) = @_;
+        croak "set(): 2nd arg must be hashref" if ref $props ne "HASH";
         my $data = $self->{data}{$name} = $self->load($name);
         @$data{ keys %$props } = map {
-            ($_ eq "ARRAY") ? $_ : [ $_ ];
+            (ref($_) eq "ARRAY") ? $_ : [ $_ ];
         } values %$props;
         return $self->save($name);
     }
     sub exist {
         my ($self, $file, $prop) = @_;
-        return !!@{ $self->get($file)->{$prop} };
-        # my @value = $self->get($file, $prop);
-        # return !!@value;
-        #return !!( ()=$self->get($file, $prop) );
+        return !!(() = $self->get($file, $prop));
     }
+    # Usage: $obj->set("file", { prop => value });
+    # Works as set(), except that content is added, not replaced.
+    # FIXME: only save if changes were made
     sub add {
-        my ($self, $file, $props) = @_;
-        my $data = $self->get($file);          # cause reload
-        $self->set($file => {
+        my ($self, $name, $props) = @_;
+        croak "add(): 2nd arg must be hashref" if ref $props ne "HASH";
+        my $data = $self->get($name);          # cause reload
+        $self->set($name => {
             map {
-                my $add = $props->{$_};
-                $data->{$_} => [ uniq(
+                my $values = $props->{$_};
+                $_ => [ uniq(
                     @{ $data->{$_} // [] },
-                    (ref($add) eq "ARRAY" ? @$add : $add),
+                    (ref($values) eq "ARRAY" ? @$values : $values),
                 ) ];
             } keys %$props
         });
@@ -510,21 +460,25 @@ sub tmpfilename {
     sub load {
         my ($self, $name) = @_;
         my $file = "$self->{conf}{dir}/$name";
-        # say "name $name";
-        # say "file $file";
         return $self->{data}{$name} = {} if not -e $file;
-        open(my $in, '<', $file)
-            or die "Failed to open file '$file' for reading: $!\n";
-        my $data = {};
-        while (<$in>) {
-            my ($prop, $value) = split(/:\s+/, $_, 2);
-            chomp($value);
-            # FIXME: decode $value (to allow newline)
-            push(@{ $data->{$prop} }, $value);
+        # reload metadata from file, if file has changed
+        my $stat = join("-", (lstat($file))[1, 2, 4, 5, 7, 9, 10]);
+        if ($stat ne ($self->{stat}{$name} // "")) {
+            open(my $in, '<', $file)
+                or die "Failed to open file '$file' for reading: $!\n";
+            my $data = {};
+            while (<$in>) {
+                my ($prop, $value) = split(/:\s+/, $_, 2);
+                chomp($value);
+                # FIXME: decode $value (to allow newline)
+                push(@{ $data->{$prop} }, $value);
+            }
+            close($in)
+                or die "Failed to close file '$file' after reading: $!\n";
+            $self->{stat}{$name} = $stat;
+            $self->{data}{$name} = $data;
         }
-        close($in)
-            or die "Failed to close file '$file' after reading: $!\n";
-        return $self->{data}{$name} = $data;
+        return $self->{data}{$name};
     }
     sub save {
         my ($self, $name) = @_;
@@ -532,7 +486,7 @@ sub tmpfilename {
         my $tmpfile = "$file---writing";
         mkpath(main::dirname($tmpfile));
         open(my $out, '>', $tmpfile)
-            or die "Failed to open tempfile '$tmpfile' for writing: $!\n";
+            or die "Failed to open file '$tmpfile' for writing: $!\n";
         my $data = $self->{data}{$name};
         foreach my $prop (sort keys %$data) {
             foreach my $value (@{ $data->{$prop} }) {
@@ -543,57 +497,45 @@ sub tmpfilename {
         close($out)
             or die "Failed to close file '$tmpfile' after writing: $!\n";
         rename($tmpfile, $file)
-            or die "Failed to rename tempfile '$tmpfile' -> '$file' after writing: $!\n";
+            or die "Failed to rename file '$tmpfile' -> '$file' after writing: $!\n";
         return $self;
     }
-
-
-
+    # Return TRUE if target is a generated file (i.e. was built by fix), or
+    # FALSE if target was a file created by the user.
+    #
+    # Uses the 'generated' value from metadata, or if no such value exist,
+    # check whether or not file exist (if it does, it is assumed to be
+    # non-generated = createb by user). 'generated' is set to 'yes' or 'no',
+    # while the function internally returns perl TRUE / FALSE.
+    sub is_target_generated {
+        my ($self, $target) = @_;
+        my $generated = $self->get($target, "generated");
+        if ($generated eq "") {
+            $generated = -e $target ? "no" : "yes";
+            $self->set($target, { "generated" => $generated });
+        }
+        return ($generated eq "yes" ? TRUE : FALSE);
+    }
+    # Usage: updated_checksum($TARGET[, $FILE]);
+    #
+    # Returns checksum of file (= true), if it differs from what is stored,
+    # otherwise returns false.
+    #
+    # If $FILE is provided, then the checksum for $TARGET is used, but the file
+    # loaded and checksummed will be $FILE. Use this when you're doing the
+    # checksums on a tempfile that hasn't been renamed into place yet.
+    sub updated_checksum {
+        my ($self, $target, $file) = @_;
+        my $old_checksum = $self->get($target, "checksum");
+        my $new_checksum = checksum_file($file // $target);
+        return $old_checksum ne $new_checksum ? $new_checksum : "";
+    }
+    sub checksum_file {
+        my ($file) = @_;
+        my $str = main::read_file($file);
+        sha1_hex(encode_utf8($str));
+    }
 };
-
-my $keep = new Store({ dir => "HERE/run" });
-my $temp = new Store({ dir => "HERE/tmp" });
-
-print Dumper $keep;
-$keep->set("file2", "prereq");
-#$keep->get("file", "prereq");
-
-say "=" x 80;
-print Dumper $keep;
-# say "=" x 80;
-# say $keep->get("file", "prereq");
-# print Dumper $keep;
-# say "=" x 80;
-
-
-# Return target creator. This loads the 'creator' value from the metadata, or
-# (if that is unset) checks whether target file exists or not. If it does not
-# exist, it is assumed to be gererated by 'fix' (i.e. AUTO), otherwise the file
-# is assumed to be a file created by the user (i.e. USER).
-sub get_target_creator {
-    my ($target) = @_;
-    my $creator = get($target, "creator");
-    return $creator if $creator;
-    $creator = -e $target ? USER : AUTO;
-    set($target, "creator", $creator);
-    return $creator;
-}
-
-# Usage: has_new_checksum($TARGET[, $FILE]);
-#
-# Returns checksum of file (= true), if it differs from what is stored,
-# otherwise returns false.
-#
-# If $FILE is provided, then the checksum for $TARGET is used, but the file
-# loaded and checksummed will be $FILE. Use this when you're doing the
-# checksums on a tempfile that hasn't been renamed into place yet.
-sub has_new_checksum {
-    my ($target, $file) = @_;
-    my $old_checksum = get($target, "checksum");
-    my $new_checksum = checksum_file($file // $target);
-    return $old_checksum ne $new_checksum
-        ? $new_checksum : "";
-}
 
 sub load_file {
     my ($file) = @_;
@@ -627,12 +569,6 @@ sub save_file {
         or die "Failed to close file '$tmpfile' after writing: $!\n";
     rename($tmpfile, $file)
         or die "Failed to rename '$tmpfile' after writing: $!\n";
-}
-
-sub checksum_file {
-    my ($file) = @_;
-    my $str = read_file($file);
-    md5_hex(encode_utf8($str));
 }
 
 sub run_buildscript {
@@ -703,6 +639,7 @@ sub run_buildscript {
     };
     debug "$target: Script command : " . join " ", @build_command;
 
+    # FIXME: THESE ARE PROBABLY ALREADY DONE -- VERFIFY AND REMOVE
     # FIXME: set $ENV{FIX_PARENT} here somewhere
     # FIXME: set $ENV{FIX_LEVEL} here somewhere
     # FIXME: re-set $ENV{FIX_BASEDIR} here somewhere
@@ -754,6 +691,137 @@ sub move_file {
     return TRUE;
 }
 
+# Process a target file that was created by user. These are not modified, but
+# we register if they've changed, store dependencies and checksums for them.
+sub process_usermade_target {
+    my ($opt, $target) = @_;
+    my ($temp, $keep) = @opt{ qw/store_session store_permanent/ };
+    my $parent = $opt{parent};
+    debug "$target: Is a file created by user";
+    if (my $checksum = $keep->updated_checksum($target)) {
+        $keep->set($target, {
+            "noexist"  => [],
+            "checksum" => $checksum });
+        $temp->set($target, { "modified" => YES });
+        $keep->add($parent, { "prereqs"  => $target }) unless is_mother;
+        # TODO: original doesn't die here -- should we?
+        die "$target: User-created file has changed\n";
+    } else {
+        $temp->set($target, { "modified" => NO });
+        $keep->add($parent, { "prereqs"  => $target }) unless is_mother;
+        info "$target: User-created file is unchanged\n";
+    }
+}
+
+# Process a target file that was generated by fix itself.
+sub process_generated_target {
+    my ($opt, $target) = @_;
+    my ($temp, $keep) = @opt{ qw/store_session store_permanent/ };
+    my $parent = $opt{parent};
+    debug "$target: Is a built file";
+
+    # Part 4: Build prereqs
+    # If there are no prerequisites then file must be new, since all generated
+    # files has at least one prerequisite (its buildscript).
+    my $modified = NO;
+    if (my @prereq = $keep->get($target, "prereqs")) {
+        # FIXME: fix_on_update() now supports loopy thingy -- remove loop here
+        foreach my $prereq (@prereq) {
+            debug "$target: Prereq: $prereq";
+            next if $temp->get($prereq, "modified");  # skip if already built
+            if (fix_on_update($opt, { parent => $target }, $prereq)) { # build prereq
+                info "$target: Prereq '$prereq' successfully built";
+            } else {
+                # NOTE: original continues processing here and builds every
+                # prereq, even if some fails
+                warn "$target: Failed to build prerequisite '$prereq'\n";
+            }
+            # if $prereq was changed, then we know $target will be as well
+            if ($modified eq NO and $temp->get($prereq, "modified") eq YES) {
+                $modified = YES;
+            }
+        }
+        verb "$target: Prerequsites are up-to-date";
+
+        # check files that are required to *not* exist
+        if (is_missing $keep->get($target, "prereqsnoexist")) {
+            $modified = YES;                   # FIXME: this is never saved (?)
+            verb "$target: Target and all prerequisites are up-to-date, skipping";
+            return TRUE;
+        } else {
+            verb "$target: Some non-exist prerequisites have been created";
+        }
+        verb "$target: Prerequisite file(s) have been modified, rebuilding target";
+    } else {
+        verb "$target: No previous prerequisites, rebuilding target";
+    }
+
+    # Part 5: Build buildscript
+    debug "$target: part 5";
+    my ($script, @noexist) = get_buildscript($target)
+        or die "$target: No buildscript found\n";
+
+    if ($modified eq YES) {
+        $keep->set($target, {
+            "prereqs"        => [],             # clear prereqs
+            "prereqsnoexist" => [] });          # clear non-existants
+        # say STDERR "OSCUHSORCEHSORECUH";
+        # exit;
+        debug "SOCRUOCHESCROEHUSRCOHU: $script @noexist";
+        # rebuild buildscript
+        if (fix_on_update($opt, { parent => $target }, $script)
+                and fix_on_create($opt, { parent=> $target }, @noexist)) {
+            info "$target: Buildscript '$script' successfully built\n";
+        } else {
+            die "$target: Failed to build buildscript '$script'\n";
+        }
+        debug "$target: Buildscript '$script' is modified, rebuilding target\n";
+    }
+
+    # Part 6: Rebuilding target
+    debug "$target: part 6";
+    my $tmpfile = "$opt{confdir}/run/$target.tmp";
+    my $outfile = "$opt{confdir}/run/$target.stdout";
+    # FIXME: Set parent here (?) --- THIS SHOULD BE FIXED
+    say STDERR "SCRIPT: $script";
+    my $exit_code = run_buildscript($opt, {
+        script  => $script,                    # script to run
+        target  => $target,                    # target to run it for
+        tmpfile => $tmpfile,                   # tmpfile name passed as $3
+        outfile => $outfile,                   # stdout of buildscript
+    });
+    my $file = -e $tmpfile                     # use user tempfile, if created
+        ? $tmpfile : $outfile;                 #   otherwise use STDOUT file
+    if ($exit_code == 0) {                     # on success (exit code == 0)
+        # FIXME: how to do checksumming if $file is a non-file?
+        if (my $checksum = $keep->updated_checksum($target, $file)) {
+            move_file($file, $target);
+            $keep->set($target, {
+                "noexist"  => [],
+                "checksum" => $checksum
+            });
+            $modified = YES;
+            info "$target: Rebuilt\n"
+        } else {
+            unlink $file;
+            $modified = NO;
+            info "$target: Rebuilt (but identical to old target)\n"
+        }
+    } else {                                    # on failure (exit code > 0)
+        unlink $file;
+        die "$target: Failed to run buildscript '$script': $!\n"
+            if $exit_code == -1;
+        die "$target: Buildscript '$script' died with signal " . ($exit_code & 127) . ", " .
+            (($exit_code & 128) ? 'with' : 'without') . " coredump\n"
+                if $exit_code & 127;
+        die "$target: Exit code " . ($exit_code >> 8) . "\n";
+    };
+    $keep->add($parent, { "prereqs"  => $target }) unless is_mother;
+    $keep->add($target, { "prereqs"  => $script });           # FIXME: really?
+    $temp->set($target, { "modified" => $modified });
+}
+
+
 # This creates a confdir in the current dir, or the dir specified using
 # B<--conf-dir> option, or B<$FIX_CONFDIR> environment variable.
 #
@@ -787,7 +855,7 @@ sub fix_on_force {
 # targets failed.
 #
 # If a second hashref, %OPT2, is provided it contains overrides of options in
-# %OPT. It's mostly provided to simplify setting of parent exiplicitly when
+# %OPT. It's mostly provided to simplify setting of parent explicitly when
 # invoking the command. E.g.:
 #
 #     fix_on_update($opt, { parent => "something" }, @target);
@@ -796,19 +864,10 @@ sub fix_on_update {
     my ($opt, @target) = @_;                   # get target names
     my %opt = (                                # options
         %$opt,                                 #   given $opt
-        ($target[0] eq "HASH"                  #   overrides in 1st @target
+        (ref($target[0]) eq "HASH"             #   overrides in 1st @target
              ? %{ shift @target } : ()),       #     if hashref
         level => $opt->{level} + 1,            #   increase level
     );
-
-    # my %opt = %$opt;                           # grab opts (copy them)
-    # if ($_[0] eq "HASH") {                     # modify opts with overrides
-    #     my %opt2 = %{ shift @_ };              #   (if any)
-    #     @opt{ keys %opt2 } = values %opt2;
-    #     # $opt{$_} = $opt2{$_} foreach keys %opt2;
-    #     $opt{level} += 1;                      #   increase level
-    # }
-
     debug "Parent : " . ( $opt{parent} eq "" ? "(no parent)" : $opt{parent});
     debug "Targets: @target";
     my $ok = TRUE;
@@ -861,132 +920,21 @@ sub _fix_force {
 
 sub _fix_on_update {
     my ($opt, $target) = @_;
+    my ($temp, $keep) = @opt{ qw/store_session store_permanent/ };
+    my $parent = $opt{parent};
 
     # Part 2: Check if already built
-    debug "$target: part 2";
-    if (get($target, "modified") eq NO) {
-        add($opt{parent}, "prereqs", $target) unless is_mother;
-        return;
+    if ($temp->get($target, "modified") eq NO) {
+        $keep->add($parent, { "prereqs" => $target }) unless is_mother;
+        debug "$target: Target already built in this run";
+        return TRUE;
     }
     # Part 3: Process file created by user (not generated by fix)
-    debug "$target: part 3";
-    if (get_target_creator($target) eq USER) { # possible: USER | AUTO
-        debug "$target: Is a file created by user";
-        if (my $checksum = has_new_checksum($target)) {
-            set($target, "noexist");
-            set($target, "checksum" => $checksum);
-            set($target, "modified" => YES);
-            add($opt{parent}, "prereqs", $target) unless is_mother;
-            # TODO: original doesn't die here -- should we?
-            die "$target: User-created file has changed\n";
-        } else {
-            set($target, "modified" => NO);
-            add($opt{parent}, "prereqs", $target) unless is_mother;
-            info "$target: User-created file is unchanged\n";
-            return TRUE;
-        }
-        warn "THIS CAN NEVER HAPPEN";
+    if ($keep->is_target_generated($target) eq FALSE) {
+        process_usermade_target($opt, $target);
+        return TRUE;
     }
-    debug "$target: Is a file generated by fix";
-
-    # Part 4: Build prereqs
-    debug "$target: part 4";
-    # If there are no prerequisites then file must be new, since all generated
-    # files has at least one prerequisite (its buildscript).
-    my $modified = NO;
-    if (my @prereq = get($target, "prereqs")) {
-        # FIXME: fix_on_update() now supports loopy thingy -- remove loop here
-        foreach my $prereq (@prereq) {
-            debug "$target: Prereq: $prereq";
-            next if get($prereq, "modified");  # skip if already built
-            if (fix_on_update($opt, { parent => $target }, $prereq)) { # build prereq
-                info "$target: Prereq '$prereq' successfully built";
-            } else {
-                # NOTE: original continues processing here and builds every
-                # prereq, even if some fails
-                warn "$target: Failed to build prerequisite '$prereq'\n";
-            }
-            # if $prereq was changed, then we know $target will be as well
-            if ($modified eq NO and get($prereq, "modified") eq YES) {
-                $modified = YES;
-            }
-        }
-        verb "$target: Prerequsites are up-to-date";
-
-        # check files that are required to *not* exist
-        if (is_missing get($target, "prereqsnoexist")) {
-            $modified = YES;                   # FIXME: this is never saved (?)
-            verb "$target: Target and all prerequisites are up-to-date, skipping";
-            return TRUE;
-        } else {
-            verb "$target: Some non-exist prerequisites have been created";
-        }
-        verb "$target: Prerequisite file(s) have been modified, rebuilding target";
-    } else {
-        verb "$target: No previous prerequisites, rebuilding target";
-    }
-
-    # Part 5: Build buildscript
-    debug "$target: part 5";
-    my ($script, @noexist) = get_buildscript($target)
-        or die "$target: No buildscript found\n";
-
-    if ($modified eq YES) {
-        set($target, "prereqs");               #   clear prereqs
-        set($target, "prereqsnoexist");        #   clear non-existants
-
-        debug "SOCRUOCHESCROEHUSRCOHU: $script @noexist";
-        # rebuild buildscript
-        if (fix_on_update($opt, { parent => $target }, $script)
-                and fix_on_create($opt, { parent=> $target }, @noexist)) {
-            info "$target: Buildscript '$script' successfully built\n";
-        } else {
-            die "$target: Failed to build buildscript '$script'\n";
-        }
-        debug "$target: Buildscript '$script' is modified, rebuilding target\n";
-    }
-
-    # Part 6: Rebuilding target
-    debug "$target: part 6";
-    my $tmpfile = "$opt{confdir}/run/$target.tmp";
-    my $outfile = "$opt{confdir}/run/$target.stdout";
-    # FIXME: Set parent here (?)
-    my $exit_code = run_buildscript($opt, {
-        script  => $script,                    # script to run
-        target  => $target,                    # target to run it for
-        tmpfile => $tmpfile,                   # tmpfile name passed as $3
-        outfile => $outfile,                   # stdout of buildscript
-    });
-
-    my $file = -e $tmpfile                     # use user tempfile, if created
-        ? $tmpfile : $outfile;                 #   otherwise use STDOUT file
-    if ($exit_code == 0) {                     # on success (exit code == 0)
-        # FIXME: do something special here to get
-        # checksums right if $file is a non-file
-        if (my $checksum = has_new_checksum($target, $file)) {
-            move_file($file, $target);
-            set($target, "noexist");
-            set($target, "checksum", $checksum);
-            $modified = YES;
-            info "$target: Rebuilt\n"
-        } else {
-            unlink $file;
-            $modified = NO;
-            info "$target: Rebuilt (but identical to old target)\n"
-        }
-    } else {                                    # on failure (exit code > 0)
-        unlink $file;
-        die "$target: Failed to run buildscript '$script': $!\n"
-            if $exit_code == -1;
-        die "$target: Buildscript '$script' died with signal " . ($exit_code & 127) . ", " .
-            (($exit_code & 128) ? 'with' : 'without') . " coredump\n"
-                if $exit_code & 127;
-        die "$target: Exit code " . ($exit_code >> 8) . "\n";
-    };
-    debug "OSCRUHOSERCUHOSERCHUOSERCUH";
-
-    add($opt{parent}, "prereqs", $target) unless is_mother;
-    set($target, "modified" => $modified);
+    process_generated_target($opt, $target);
 }
 
 ###############################################################################
@@ -1051,12 +999,11 @@ if (is_mother) {                               # in mother process
         $ENV{PATH} = "$path:$ENV{PATH}";       #     add command's path to $PATH
         debug "Path   : Added '$path' to beginning of \$PATH";
     }
+    rmtree("$opt{confdir}/run");
+    mkpath("$opt{confdir}/run");
 }
 
 @ARGV = ("all") if not @ARGV;
-
-__END__
-
 
 ###############################################################################
 ##                                                                           ##
@@ -1066,15 +1013,13 @@ __END__
 
 %SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
 
-
-cfg(dir => "$opt{confdir}/run");
-
-my $keep = new Store({ dir => "$opt{confdir}/run" });
-my $temp = new Store({ dir => "$opt{confdir}/tmp" });
+@opt{ qw/store_session store_permanent/ } = (
+    new Store({ dir => "$opt{confdir}/run" }), # persistent store
+    new Store({ dir => "$opt{confdir}/tmp" }), # session store
+);
 
 my $subref = \&{ $opt{command} };
 &{$subref}(\%opt, @ARGV);
-
 
 # FIXME: Erase "$opt{confdir}/pid" on exit
 
@@ -1112,7 +1057,7 @@ way.
 symlinks as well.
 
 =item * FUTURE: Creating file checksums that do not depend on exact content,
-but usesfilters to disrecard comments or other non-relevant stuff in sources.
+but uses filters to disregard comments or other non-relevant stuff in sources.
 
 =back
 

@@ -1,0 +1,89 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use encoding::warnings 'FATAL';
+use 5.10.0;
+use utf8;
+use open ':utf8';
+binmode(STDOUT, ':utf8');
+
+use Cwd qw/cwd realpath/;
+use File::Path qw(mkpath rmtree); # use 'mkpath' and 'rmtree'
+use Encode qw(encode_utf8);
+use Data::Dumper;
+$Data::Dumper::Indent   = 1;
+$Data::Dumper::Sortkeys = 1;
+$Data::Dumper::Terse    = 1;
+
+###############################################################################
+##                                                                           ##
+##  Settings                                                                 ##
+##                                                                           ##
+###############################################################################
+
+my %opt = (
+    shell => '/bin/dash',
+);
+
+
+###############################################################################
+##                                                                           ##
+##  Functions                                                                ##
+##                                                                           ##
+###############################################################################
+
+sub read_file {
+    my ($file) = @_;
+    open(my $in, "<:utf8", $file)
+        or die "Failed to open file '$file' for reading: $!\n";
+    local $/ = undef;
+    return <$in>;
+}
+
+sub run {
+    my ($fix_file) = @_;
+    my $do = read_file($fix_file);
+    my ($target) = $fix_file =~ /^(.*)\.fix$/;
+    my $outfile = "$target--fixing";
+
+    my $exit_code;
+    {
+        #local $ENV{FIX_PARENT} = "$target";
+        open(my $oldout, ">&", "STDOUT");
+        open(STDOUT, ">", $outfile)
+            or die "\$target: Failed to redirect STDOUT for buildscript to '$outfile': $!\n";
+        select(STDOUT); $| = 1;     # make unbuffered
+
+        if (open(my $pipe, '|-', $opt{shell}, '-e')) {
+            print $pipe $do;
+            $exit_code = close($pipe)
+                or warn $! ? "Failed to run buildscript: $!\n"
+                           : "Buildscript exited with exit status $?\n";
+        } else {
+            warn "failed to execute shell '$opt{shell}': $!\n";
+        };
+        close(STDOUT);
+        open(STDOUT, ">&$oldout");
+    }
+    return $exit_code;
+
+    
+}
+
+###############################################################################
+##                                                                           ##
+##  Main                                                                     ##
+##                                                                           ##
+###############################################################################
+
+foreach my $fix_file (@ARGV) {
+    $fix_file .= '.fix' unless $fix_file =~ /\.fix$/;
+    if (not -f $fix_file) {
+        warn "Build script '$fix_file' does not exist\n";
+        next;
+    }
+
+    run $fix_file;
+}
+
+

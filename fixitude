@@ -10,6 +10,7 @@ binmode(STDOUT, ':utf8');
 use Cwd qw/cwd realpath/;
 use File::Path qw(mkpath rmtree); # use 'mkpath' and 'rmtree'
 use Encode qw(encode_utf8);
+use Digest::SHA qw(sha1_hex);
 use Data::Dumper;
 $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
@@ -21,8 +22,15 @@ $Data::Dumper::Terse    = 1;
 ##                                                                           ##
 ###############################################################################
 
+use vars qw($NAME $VERSION $YEAR);
+$VERSION = "0.2a";
+$YEAR    = "2013";
+$NAME    = ($0 =~ m#([^/]*)$#)[0];
+
 my %opt = (
     shell => '/bin/dash',
+    state_file => 'yadda',
+    level   => $ENV{FIX_LEVEL}  += 1,          # child level (mother = 1)
 );
 
 
@@ -32,6 +40,18 @@ my %opt = (
 ##                                                                           ##
 ###############################################################################
 
+sub TRUE { 1 }
+sub FALSE { '' }
+
+sub PLAIN  { 0 } # loglevel for msg()
+sub BOLD   { 1 }
+
+sub ERROR   { 4 }   # red
+sub WARN    { 2 }   # yellow
+sub INFO    { 3 }   # green
+sub VERBOSE { 3 }   # green
+sub DEBUG   { 0 }   # plain
+
 sub read_file {
     my ($file) = @_;
     open(my $in, "<:utf8", $file)
@@ -40,35 +60,146 @@ sub read_file {
     return <$in>;
 }
 
+sub write_file {
+    my ($outfile, @data) = @_;
+    my $tmpfile = "$outfile--writing";
+    my $out;
+    unless (open $out, ">:utf8", $tmpfile) {
+        warn "Failed to open tempfile '$tmpfile' for writing: $!\n";
+        return undef;
+    }
+    unless (print $out @data) {
+        warn "Failed to write data to tempfile '$tmpfile': $!\n";
+        return undef;
+    }
+    unless (close $out) {
+        warn "Failed to close tempfile '$tmpfile' after writing: $!\n";
+        return undef;
+    }
+    unless (rename $tmpfile, $outfile) {
+        warn "Failed rename tempfile '$tmpfile' -> '$outfile' after writing: $!\n";
+        return undef;
+    }
+    return TRUE;
+}
+
+
+
+sub sha1 {
+    my ($file) = @_;
+    return '' unless -f $file;
+    sha1_hex(encode_utf8(read_file($file)));
+}
+
 sub run {
-    my ($fix_file) = @_;
-    my $do = read_file($fix_file);
-    my ($target) = $fix_file =~ /^(.*)\.fix$/;
-    my $outfile = "$target--fixing";
+    my ($fixfile, $target) = @_;
+    my $do = read_file($fixfile);
+    my $tmpfile = "$target--fixing";
 
     my $exit_code;
     {
-        #local $ENV{FIX_PARENT} = "$target";
-        open(my $oldout, ">&", "STDOUT");
-        open(STDOUT, ">", $outfile)
-            or die "\$target: Failed to redirect STDOUT for buildscript to '$outfile': $!\n";
-        select(STDOUT); $| = 1;     # make unbuffered
+        open my $oldout, ">&", "STDOUT"
+            or die "Failed to copy STDIN before running build script '$fixfile': $!\n";
+        open(STDOUT, ">", $tmpfile)
+            or die "Failed to redirect build script STDOUT to tempfile '$tmpfile': $!\n";
+        select STDOUT;
+        local $| = 1;                          # turn off buffering
+
+        local $ENV{FIX_PARENT} = "$target";
 
         if (open(my $pipe, '|-', $opt{shell}, '-e')) {
             print $pipe $do;
-            $exit_code = close($pipe)
-                or warn $! ? "Failed to run buildscript: $!\n"
-                           : "Buildscript exited with exit status $?\n";
+            if ($exit_code = close($pipe)) {
+                if (rename $tmpfile, $target) {
+                    state_update(
+                        $target => sha1($target),
+                        $fixfile => sha1($fixfile)
+                    );
+                } else {
+                    warn "Failed to replace '$target' with tempfile '$tmpfile'\n";
+                }
+            } else {
+                warn ($! > 0 ? "Could not run buildscript: $!\n"
+                          : "Buildscript failed with exit status: $?\n");
+            }
         } else {
             warn "failed to execute shell '$opt{shell}': $!\n";
         };
-        close(STDOUT);
-        open(STDOUT, ">&$oldout");
+        close STDOUT;
+        open STDOUT, '>&', $oldout
+            or die "Failed to reconnect old STDIN after running build script '$fixfile': $!\n";
+        close $oldout;
     }
     return $exit_code;
-
-    
 }
+
+# FIXME: clean up msg()
+{
+    my @ansi = ("\e[m", "\e[1m", "\e[33m", "\e[32m", "\e[31m");
+    sub msg {
+        my ($loglevel, $message) = @_;
+        die "msg(): missing loglevel" unless defined $ansi[$loglevel];
+        chomp $message;
+        say STDERR $ansi[$loglevel] . $NAME . ("  " x $opt{level}) .
+            $ansi[BOLD] . $message . $ansi[PLAIN];
+        exit 255 if $loglevel == ERROR;
+    }
+}
+sub info {
+    chomp(my $msg = shift);
+    say STDERR "\e[32m$NAME" . ("  " x $opt{level}) . "\e[1m$msg\e[m";
+}
+# Display verbose msg in mother process, or all processes with --verbose/--debug
+sub verb { (!$opt{parent} or $opt{debug} or $opt{verbose}) and info @_ }
+sub debug {
+    return unless $opt{debug};
+    chomp(my $msg = shift);
+    say STDERR $NAME . ("  " x $opt{level}) . $msg;
+}
+sub _warn { msg WARN, @_ }
+sub _die { msg ERROR, @_ }
+
+
+###############################################################################
+##                                                                           ##
+##  State Storage                                                            ##
+##                                                                           ##
+###############################################################################
+
+{
+    my %state = ();
+    my $file;
+
+    sub load_state {
+        ($file) = @_;
+        %state = map {
+            split(/:/, $_, 2);
+        } split /\n+/, read_file($file);
+    }
+
+    sub save_state {
+        write_file($file, map { "$_:$state{$_}\n" } sort keys %state);
+    }
+
+    sub state_update {
+        my (%x) = @_;
+        @state{ keys %x } = values %x;
+        save_state;
+    }
+
+    sub get_state {
+        my ($key) = @_;
+        return $state{$key} // '';
+    }
+
+    # NB: $file must exist
+    sub has_changed {
+        my ($file) = @_;
+        return sha1($file) ne get_state($file) ? TRUE : FALSE;
+    }
+
+}
+
 
 ###############################################################################
 ##                                                                           ##
@@ -76,14 +207,30 @@ sub run {
 ##                                                                           ##
 ###############################################################################
 
-foreach my $fix_file (@ARGV) {
-    $fix_file .= '.fix' unless $fix_file =~ /\.fix$/;
-    if (not -f $fix_file) {
-        warn "Build script '$fix_file' does not exist\n";
+%SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
+load_state $opt{state_file};
+#print Dumper \%state;
+
+foreach my $target (@ARGV) {
+    $target  =~ s/\.fix$//;                    # target name
+    my $fixfile = "$target.fix";
+    unless (-f $fixfile) {                     # ERROR: no fix file
+        warn "Build script '$fixfile' does not exist\n";
         next;
     }
+    if (-f $target) {
+        if (has_changed $target) {             # ERROR: target modified
+            # FIXME: '--force' option to overwrite changed target files
+            die "Target file '$target' externally modified, won't overwrite.\n";
+        }
+        if (not has_changed $fixfile) {        #
+            warn "Target '$target' is up-to-date.\n";
+            next;
+        }
+    }
 
-    run $fix_file;
+    warn "File '$fixfile' has changed, rebuilding\n";
+    run $fixfile, $target;
 }
 
-
+#[eof]

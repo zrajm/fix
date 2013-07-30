@@ -648,13 +648,17 @@ sub run_buildscript {
     my $exit_code;
     {
         local $ENV{FIX_PARENT} = "$target";
-        open(my $oldout, ">&", "STDOUT");
-        open(STDOUT, ">", $outfile)
-            or die "$target: Failed to redirect STDOUT for buildscript to '$outfile': $!\n";
-        select(STDOUT); $| = 1;     # make unbuffered
+        open my $oldout, ">&", "STDOUT"
+            or die "Failed to copy STDIN before running build script '$script': $!\n";
+        open STDOUT, ">", $outfile
+            or die "$target: Failed to redirect build script STDOUT to tempfile '$outfile': $!\n";
+        select STDOUT;
+        local $| = 1;                          # turn off buffering
         $exit_code = system(@build_command);
-        close(STDOUT);
-        open(STDOUT, ">&$oldout");
+        close STDOUT;
+        open STDOUT, '>&', $oldout
+            or die "Failed to reconnect old STDIN after running build script '$script': $!\n";
+        close $oldout;
     }
     return $exit_code;
 }

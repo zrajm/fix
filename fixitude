@@ -16,6 +16,22 @@ $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Terse    = 1;
 
+#
+# FIXME: Unit tests of some kind
+#
+# FIXME: When a re-compiled target turns out identical to previous one, we
+# shouldn't recompile all the stuff that depends on it.
+#
+# HMMM. Apenwarr redo generates no output file if nothing was written by a
+# rule. Is this good? Should we do this too? (Note, however, that apenwarr redo
+# also does not attempt to regenerate the non-existing output, unless any
+# dependencies have changed. 'redo-ifchange target' works to build the target
+# the first time, but after that it does not run unless changes were made in
+# the dependencies.)
+#
+# This in itself is good for a target like 'all', but how about something like
+# 'clean'?
+
 ###############################################################################
 ##                                                                           ##
 ##  Settings                                                                 ##
@@ -28,9 +44,11 @@ $YEAR    = "2013";
 $NAME    = ($0 =~ m#([^/]*)$#)[0];
 
 my %opt = (
-    shell => '/bin/dash',
-    state_file => 'yadda',
-    level   => $ENV{FIX_LEVEL}  += 1,          # child level (mother = 1)
+    shell       => '/bin/dash',
+    parent_name => $ENV{FIX_PARENT} // "",   # parent target (set when called by fix itself)
+    state_file  => '.fix/state',
+    level       => $ENV{FIX_LEVEL}  += 1,    # child level (mother = 1)
+    debug       => 1,
 );
 
 
@@ -41,7 +59,7 @@ my %opt = (
 ###############################################################################
 
 sub TRUE { 1 }
-sub FALSE { '' }
+sub FALSE { 0 }
 
 sub PLAIN  { 0 } # loglevel for msg()
 sub BOLD   { 1 }
@@ -83,8 +101,6 @@ sub write_file {
     return TRUE;
 }
 
-
-
 sub sha1 {
     my ($file) = @_;
     return '' unless -f $file;
@@ -96,11 +112,15 @@ sub run {
     my $do = read_file($fixfile);
     my $tmpfile = "$target--fixing";
 
+    # before running fixfile, clear dependency information
+    # (will be rebuilt in the run)
+    clear_deps($target);
+
     my $exit_code;
     {
         open my $oldout, ">&", "STDOUT"
             or die "Failed to copy STDIN before running build script '$fixfile': $!\n";
-        open(STDOUT, ">", $tmpfile)
+        open STDOUT, ">", $tmpfile
             or die "Failed to redirect build script STDOUT to tempfile '$tmpfile': $!\n";
         select STDOUT;
         local $| = 1;                          # turn off buffering
@@ -111,10 +131,11 @@ sub run {
             print $pipe $do;
             if ($exit_code = close($pipe)) {
                 if (rename $tmpfile, $target) {
-                    state_update(
-                        $target => sha1($target),
-                        $fixfile => sha1($fixfile)
-                    );
+                    set_checksum($target, sha1($target));
+                    set_type($target, 'target');
+                    add_dep($target, $fixfile);
+                    set_checksum($fixfile, sha1($fixfile));
+                    set_type($fixfile, 'source');
                 } else {
                     warn "Failed to replace '$target' with tempfile '$tmpfile'\n";
                 }
@@ -140,21 +161,21 @@ sub run {
         my ($loglevel, $message) = @_;
         die "msg(): missing loglevel" unless defined $ansi[$loglevel];
         chomp $message;
-        say STDERR $ansi[$loglevel] . $NAME . ("  " x $opt{level}) .
+        say STDERR "$ansi[$loglevel]$NAME " . ("  " x ($opt{level} - 1)) .
             $ansi[BOLD] . $message . $ansi[PLAIN];
         exit 255 if $loglevel == ERROR;
     }
 }
 sub info {
     chomp(my $msg = shift);
-    say STDERR "\e[32m$NAME" . ("  " x $opt{level}) . "\e[1m$msg\e[m";
+    say STDERR "\e[32m$NAME " . ("  " x ($opt{level} - 1)) . "\e[1m$msg\e[m";
 }
 # Display verbose msg in mother process, or all processes with --verbose/--debug
 sub verb { (!$opt{parent} or $opt{debug} or $opt{verbose}) and info @_ }
 sub debug {
     return unless $opt{debug};
     chomp(my $msg = shift);
-    say STDERR $NAME . ("  " x $opt{level}) . $msg;
+    say STDERR "$NAME " . ("  " x ($opt{level} - 1)) . $msg;
 }
 sub _warn { msg WARN, @_ }
 sub _die { msg ERROR, @_ }
@@ -167,37 +188,77 @@ sub _die { msg ERROR, @_ }
 ###############################################################################
 
 {
-    my %state = ();
-    my $file;
+    my $state = {};
+    my $basedir;
+
+    sub init_state {
+        ($basedir) = @_ ? @_ : $basedir;
+        use File::Path 'make_path';
+        if (not -d $basedir) {
+            make_path($basedir)
+                or die "Failed to create state dir '$basedir'\n";
+        }
+    }
+
+    # Rereads the state file every time, since subprocess may have updated it.
+    sub get_state {
+        my ($file) = @_;
+        # FIXME: reread file only when it has been changed
+        my $full = "$basedir/$file";
+        $state->{$file} = -f $full ? eval read_file($full) : {};
+        return $state->{$file};
+    }
+
 
     sub load_state {
-        ($file) = @_;
-        %state = map {
-            split(/:/, $_, 2);
-        } split /\n+/, read_file($file);
+        my ($file) = @_;
+        if (not exists $state->{$file}) {
+            my $full = "$basedir/$file";
+            $state->{$file} = -f $full ? eval read_file($full) : {};
+        }
+        return $state->{$file};
     }
 
     sub save_state {
-        write_file($file, map { "$_:$state{$_}\n" } sort keys %state);
-    }
-
-    sub state_update {
-        my (%x) = @_;
-        @state{ keys %x } = values %x;
-        save_state;
-    }
-
-    sub get_state {
-        my ($key) = @_;
-        return $state{$key} // '';
-    }
-
-    # NB: $file must exist
-    sub has_changed {
         my ($file) = @_;
-        return sha1($file) ne get_state($file) ? TRUE : FALSE;
+        return write_file("$basedir/$file", Dumper $state->{$file});
     }
 
+}
+
+sub set_checksum {
+    my ($file, $checksum) = @_;
+    my $state = get_state($file);
+    $state->{checksum} = $checksum;
+    save_state($file);
+}
+
+sub set_type {
+    my ($file, $type) = @_;
+    my $state = get_state($file);
+    $state->{type} = $type;
+    save_state($file);
+}
+
+sub clear_deps {
+    my ($file, $dep) = @_;
+    my $state = get_state($file);
+    delete $state->{deps};
+    save_state($file);
+}
+
+sub add_dep {
+    my ($file, @dep) = @_;
+    my $state = get_state($file);
+    push @{ $state->{deps} }, @dep;
+    save_state($file);
+}
+
+# NB: $file must exist for has_changed() to give meaningful result
+sub has_changed {
+    my ($file) = @_;
+    my $state = get_state($file);
+    return sha1($file) ne $state->{checksum} ? TRUE : FALSE;
 }
 
 
@@ -207,30 +268,137 @@ sub _die { msg ERROR, @_ }
 ##                                                                           ##
 ###############################################################################
 
+sub xx {
+    return;
+    my ($indent, $txt) = @_;
+    my $spc = "    " x $indent;
+    $txt =~ s/^/$spc/me;
+    warn $txt;
+}
+
+# rebuilds that do not require dependency updates
+{
+    my (@deleted) = ();
+    sub check_deps {
+        my ($indent, $targets) = @_;
+        $indent += 1;
+        my $rebuild_parent = FALSE;
+        foreach my $target (@$targets) {
+            my $state = get_state($target);
+
+            if (keys %$state == 0) {           # previously unbuilt file
+                die "Build script '$target.fix' does not exist\n"
+                    unless -f "$target.fix";
+                xx $indent, "$target previously unbuilt file";
+                $rebuild_parent = TRUE;
+                $state->{rebuild} = TRUE;
+                next;
+            }
+            if (not exists $state->{deps}) {   # (no deps) = build file
+                if (sha1($target) ne $state->{checksum}) { # build file modified
+                    xx $indent, "build file $target HAS CHANGED\n";
+                    $rebuild_parent   = TRUE;  #   rebuild parent targets
+                } else {
+                    xx $indent, "build file $target IS UNCHANGED\n";
+                }
+                $state->{rebuild} = FALSE;     # never rebuild a build file
+                next;
+            }
+
+            my $deps_changed = check_deps($indent, $state->{deps});
+            xx $indent, "TARGET: $target\n";
+
+            if ($deps_changed) {               # a dependency changed
+                xx $indent, "$target \e[42mDEP CHANGED\e[m -- rebuild\n";
+                $rebuild_parent   = TRUE;      #   rebuild parents
+                $state->{rebuild} = TRUE;      #   rebuild this target
+                next;
+            }
+            if (not -e $target) {              # target deleted (but unchanged)
+                # When we get here, we *know* that we have a deleted file with
+                # unchanged dependencies. This file when recreated will be
+                # identical to the previous file, and so nothing that depends on it
+                # will have to be rebuilt.
+                xx $indent, "$target \e[42mDELETED\e[m -- rebuild w/o rebuilding deps\n";
+                push @deleted, $target;
+                $state->{rebuild} = TRUE;      #   rebuild this target
+                next;
+            }
+
+            if (sha1($target) eq $state->{checksum}) { # target unchanged
+                xx $indent, "$target UNCHANGED\n";
+                $state->{rebuild} = FALSE;     #   don't rebuild this target
+                next;
+            } else {                           # target changed
+                xx $indent, "$target \e[42mCHANGED\e[m -- rebuild\n";
+                $rebuild_parent   = TRUE;      #   rebuild parents
+                $state->{rebuild} = TRUE;      #   rebuild this target
+                next;
+            }
+        } continue {
+            save_state($target);
+        }
+        xx $indent, "RETURN \e[7m$rebuild_parent\e[m\n";
+        return $rebuild_parent;
+    }
+
+    sub deleted {
+        return @deleted;
+    }
+}
+
+if (my @non_existing = grep { ! -f $_ } @ARGV) {
+    die join "", map {
+        "$NAME: Build script '$_.fix' does not exist.\n";
+    } @non_existing;
+}
+
+
+init_state $opt{state_file};
+if (not $opt{parent_name}) {
+    # go through everything and calculate which targets to run
+
+    # walk through dependency storage and mark which targets to 'rebuild'
+
+    if (check_deps(0, \@ARGV)) {
+        warn "Dependencies has changed, will rebuild stuff.\n";
+    }
+
+    if (my @deleted = deleted()) {
+        warn "Deleted files with unchanged dependencies (in build order):\n";
+        warn "    $_\n" foreach @deleted;
+    }
+}
+
 %SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
-load_state $opt{state_file};
-#print Dumper \%state;
 
 foreach my $target (@ARGV) {
-    $target  =~ s/\.fix$//;                    # target name
+    warn "$target\n";
     my $fixfile = "$target.fix";
-    unless (-f $fixfile) {                     # ERROR: no fix file
-        warn "Build script '$fixfile' does not exist\n";
+    unless (-f $fixfile) {                     # ERROR: no build file
+        debug "Build script '$fixfile' does not exist\n";
         next;
     }
     if (-f $target) {
-        if (has_changed $target) {             # ERROR: target modified
+        if (has_changed($target)) {             # ERROR: target modified
             # FIXME: '--force' option to overwrite changed target files
-            die "Target file '$target' externally modified, won't overwrite.\n";
+            die "Target file externally modified, won't overwrite.\n";
         }
-        if (not has_changed $fixfile) {        #
-            warn "Target '$target' is up-to-date.\n";
+        my $state = get_state($target);
+        if (not $state->{rebuild}) {            # 
+            debug "Target is up-to-date.\n";
             next;
         }
     }
 
-    warn "File '$fixfile' has changed, rebuilding\n";
+    debug "Modified dependencies, rebuilding\n";
     run $fixfile, $target;
+    save_state($target);
+}
+
+# add current args as dependency for parent
+if ($opt{parent_name}) {
+    add_dep($opt{parent_name}, @ARGV);
 }
 
 #[eof]

@@ -8,7 +8,8 @@ use open ':utf8';
 binmode(STDOUT, ':utf8');
 
 use Cwd qw/cwd realpath/;
-use File::Path qw(mkpath rmtree); # use 'mkpath' and 'rmtree'
+#use File::Path qw(mkpath rmtree); # use 'mkpath' and 'rmtree'
+use File::Path 'make_path';
 use Encode qw(encode_utf8);
 use Digest::SHA qw(sha1_hex);
 use Data::Dumper;
@@ -41,12 +42,12 @@ $Data::Dumper::Terse    = 1;
 use vars qw($NAME $VERSION $YEAR);
 $VERSION = "0.2a";
 $YEAR    = "2013";
-$NAME    = ($0 =~ m#([^/]*)$#)[0];
+$NAME    = ($0 =~ m#([^/]*)$#)[0];             # last non-slash part of path
 
 my %opt = (
     shell       => '/bin/dash',
     parent_name => $ENV{FIX_PARENT} // "",   # parent target (set when called by fix itself)
-    state_file  => '.fix/state',
+    fix_dir     => '.fix',
     level       => $ENV{FIX_LEVEL}  += 1,    # child level (mother = 1)
     debug       => 1,
 );
@@ -82,20 +83,25 @@ sub write_file {
     my ($outfile, @data) = @_;
     my $tmpfile = "$outfile--writing";
     my $out;
+    my $tmpdir = ($tmpfile =~ m#^(.*[^/])/# )[0];
+    unless (-d $tmpdir or make_path($tmpdir)) {
+        warn "$NAME: Failed to create dir '$tmpdir'\n";
+        return undef;
+    }
     unless (open $out, ">:utf8", $tmpfile) {
-        warn "Failed to open tempfile '$tmpfile' for writing: $!\n";
+        warn "$NAME: Failed to open tempfile '$tmpfile' for writing: $!\n";
         return undef;
     }
     unless (print $out @data) {
-        warn "Failed to write data to tempfile '$tmpfile': $!\n";
+        warn "$NAME: Failed to write data to tempfile '$tmpfile': $!\n";
         return undef;
     }
     unless (close $out) {
-        warn "Failed to close tempfile '$tmpfile' after writing: $!\n";
+        warn "$NAME: Failed to close tempfile '$tmpfile' after writing: $!\n";
         return undef;
     }
     unless (rename $tmpfile, $outfile) {
-        warn "Failed rename tempfile '$tmpfile' -> '$outfile' after writing: $!\n";
+        warn "$NAME: Failed rename tempfile '$tmpfile' -> '$outfile' after writing: $!\n";
         return undef;
     }
     return TRUE;
@@ -189,14 +195,15 @@ sub _die { msg ERROR, @_ }
 
 {
     my $state = {};
-    my $basedir;
+    my $state_dir;
 
     sub init_state {
-        ($basedir) = @_ ? @_ : $basedir;
+        my ($fix_dir) = @_;
+        $state_dir = "$fix_dir/state";
         use File::Path 'make_path';
-        if (not -d $basedir) {
-            make_path($basedir)
-                or die "Failed to create state dir '$basedir'\n";
+        if (not -d $state_dir) {
+            make_path($state_dir)
+                or die "$NAME: Failed to create state dir '$state_dir'\n";
         }
     }
 
@@ -204,7 +211,7 @@ sub _die { msg ERROR, @_ }
     sub get_state {
         my ($file) = @_;
         # FIXME: reread file only when it has been changed
-        my $full = "$basedir/$file";
+        my $full = "$state_dir/$file";
         $state->{$file} = -f $full ? eval read_file($full) : {};
         return $state->{$file};
     }
@@ -213,7 +220,7 @@ sub _die { msg ERROR, @_ }
     sub load_state {
         my ($file) = @_;
         if (not exists $state->{$file}) {
-            my $full = "$basedir/$file";
+            my $full = "$state_dir/$file";
             $state->{$file} = -f $full ? eval read_file($full) : {};
         }
         return $state->{$file};
@@ -221,9 +228,8 @@ sub _die { msg ERROR, @_ }
 
     sub save_state {
         my ($file) = @_;
-        return write_file("$basedir/$file", Dumper $state->{$file});
+        return write_file("$state_dir/$file", Dumper $state->{$file});
     }
-
 }
 
 sub set_checksum {
@@ -347,19 +353,53 @@ sub xx {
     }
 }
 
-if (my @non_existing = grep { ! -f $_ } @ARGV) {
+die "$NAME: No target specified\n\n" .
+    "Usage: $NAME [OPTION]... TARGET...\n" .
+    "Build the specified TARGET(s).\n"
+    unless @ARGV;
+if (my @non_existing = grep { ! -f "$_.fix" } @ARGV) {
     die join "", map {
         "$NAME: Build script '$_.fix' does not exist.\n";
     } @non_existing;
 }
 
+init_state($opt{fix_dir});
 
-init_state $opt{state_file};
 if (not $opt{parent_name}) {
+    # Add the currently running 'fix' command first in $PATH (which is
+    # inherited by all child processes). -- This makes sure that all build
+    # scripts that invoke 'fix' find it, even if 'fix' wasn't in the invoking
+    # user's $PATH to begin with.
+    #
+    # We achieve this by creating a '.fix/bin' directory, add a symlink to the
+    # 'fix' command there, and tuck that directory name onto the beginning of
+    # the $PATH environment variable that gets inherited by our children.
+    {
+        use Cwd 'realpath';
+        my $bindir = "$opt{fix_dir}/bin";
+        if (not -d $bindir) {                   # make sure '.fix/bin' exists
+            make_path($bindir)
+                or die "$NAME: Failed to create dir '$bindir'\n";
+        }
+        my $link = "$opt{fix_dir}/bin/$NAME";   # name of link to create
+        unless (-e $link) {                     # make sure fix symlink exists
+            symlink(realpath($0), $link)
+                or die "$NAME: Failed to create symlink '$link': $!\n";
+        }
+        my $full = realpath($bindir);
+        if ($full =~ /:/) {                     # guard for stupid system bug
+            # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I
+            # know). Therefore the cwd cannot contain a colon (we could fix
+            # this this by having this stuff in /tmp, I guess).
+            die "$NAME: Colon not allowed in current dir path ('" .
+                cwd() . "')\n",
+        }
+        $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
+    }
+
     # go through everything and calculate which targets to run
 
     # walk through dependency storage and mark which targets to 'rebuild'
-
     if (check_deps(0, \@ARGV)) {
         warn "Dependencies has changed, will rebuild stuff.\n";
     }
@@ -376,7 +416,7 @@ foreach my $target (@ARGV) {
     warn "$target\n";
     my $fixfile = "$target.fix";
     unless (-f $fixfile) {                     # ERROR: no build file
-        debug "Build script '$fixfile' does not exist\n";
+        debug "$NAME: Build script '$fixfile' does not exist\n";
         next;
     }
     if (-f $target) {

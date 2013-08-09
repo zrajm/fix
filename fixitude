@@ -9,7 +9,7 @@ binmode(STDOUT, ':utf8');
 
 use Cwd qw/cwd realpath/;
 #use File::Path qw(mkpath rmtree); # use 'mkpath' and 'rmtree'
-use File::Path 'make_path';
+use File::Path 'mkpath';
 use Encode qw(encode_utf8);
 use Digest::SHA qw(sha1_hex);
 use Data::Dumper;
@@ -32,6 +32,11 @@ $Data::Dumper::Terse    = 1;
 #
 # This in itself is good for a target like 'all', but how about something like
 # 'clean'?
+#
+# FIXME: Replace 'mkpath' with own function.
+#
+# FIXME: Build test cases
+#   o Zero size output should not result in file
 
 ###############################################################################
 ##                                                                           ##
@@ -84,7 +89,7 @@ sub write_file {
     my $tmpfile = "$outfile--writing";
     my $out;
     my $tmpdir = ($tmpfile =~ m#^(.*[^/])/# )[0];
-    unless (-d $tmpdir or make_path($tmpdir)) {
+    unless (-d $tmpdir or mkpath($tmpdir)) {
         warn "$NAME: Failed to create dir '$tmpdir'\n";
         return undef;
     }
@@ -200,9 +205,9 @@ sub _die { msg ERROR, @_ }
     sub init_state {
         my ($fix_dir) = @_;
         $state_dir = "$fix_dir/state";
-        use File::Path 'make_path';
+        use File::Path 'mkpath';
         if (not -d $state_dir) {
-            make_path($state_dir)
+            mkpath($state_dir)
                 or die "$NAME: Failed to create state dir '$state_dir'\n";
         }
     }
@@ -378,7 +383,7 @@ if (not $opt{parent_name}) {
         use Cwd 'realpath';
         my $bindir = "$opt{fix_dir}/bin";
         if (not -d $bindir) {                   # make sure '.fix/bin' exists
-            make_path($bindir)
+            mkpath($bindir)
                 or die "$NAME: Failed to create dir '$bindir'\n";
         }
         my $link = "$opt{fix_dir}/bin/$NAME";   # name of link to create
@@ -440,5 +445,42 @@ foreach my $target (@ARGV) {
 if ($opt{parent_name}) {
     add_dep($opt{parent_name}, @ARGV);
 }
+
+#[eof]
+
+
+__END__
+
+
+=head1 PRINCIPLES
+
+=head2 About Target Files
+
+When a target file is built B<fix> records a SHA1 sum of the generated file.
+Upon rebuilding the same target B<fix> uses this SHA1 sum to determine if it is
+okay to overwrite the previous file as follows:
+
+=over 4
+
+=item B<Target file is non-existing or unmodified since last built>
+
+If a previously built target already exist but was written by B<fix> (and has
+not been modified since), B<fix> will do whatever it pleases with the file
+(delete it, overwrite it, whatever).
+
+=item B<Target file has been modified since last built>
+
+If a target file already exists but is unknown to B<fix>, or if the file is
+known but the content of the file has been modified in some way after B<fix>
+wrote it, then B<fix> will refuse to modify it and abort with an error message.
+(Use B<--force> to override this, and have B<fix> overwrite all target files.)
+
+B<NOTE:> B<fix> never cares about file timestamps, but only the I<content>. (So
+if you modify the timestamp, will not influence B<fix>'s decision of whether or
+not to overwrite the file.)
+
+=back
+
+=cut
 
 #[eof]

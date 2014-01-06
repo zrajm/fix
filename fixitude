@@ -17,6 +17,8 @@ $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Terse    = 1;
 
+$ENV{FIX_CMD} = realpath(__FILE__);
+
 #
 # FIXME: Unit tests of some kind
 #
@@ -47,12 +49,12 @@ $Data::Dumper::Terse    = 1;
 use vars qw($NAME $VERSION $YEAR);
 $VERSION = "0.2a";
 $YEAR    = "2013";
-$NAME    = ($0 =~ m#([^/]*)$#)[0];             # last non-slash part of path
+($NAME)  = __FILE__ =~ m#([^/]*)$#;            # last non-slash part of path
 
 my %opt = (
     shell       => '/bin/dash',
     parent_name => $ENV{FIX_PARENT} // "",   # parent target (set when called by fix itself)
-    fix_dir     => '.fix',
+    fix_dir     => ".$NAME",
     level       => $ENV{FIX_LEVEL}  += 1,    # child level (mother = 1)
     debug       => 1,
 );

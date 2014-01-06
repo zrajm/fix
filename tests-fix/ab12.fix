@@ -1,0 +1,2 @@
+$FIX_CMD ab 12
+head -n100 ab 12

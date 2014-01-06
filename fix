@@ -14,6 +14,8 @@ $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Terse    = 1;
 
+$ENV{FIX_CMD} = realpath(__FILE__);
+
 # TODO
 # ====
 #   * add()/set() should only save on actual change -- this should avoid
@@ -122,7 +124,7 @@ $Data::Dumper::Terse    = 1;
 use vars qw($NAME $VERSION $YEAR);
 $VERSION = "0.2a";
 $YEAR    = "2012";
-$NAME    = ($0 =~ m#([^/]*)$#)[0];
+($NAME)  = __FILE__ =~ m#([^/]*)$#;            # last non-slash part of path
 
 my %opt = (
     command => 'fix_on_update',                # command to run

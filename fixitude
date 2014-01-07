@@ -8,16 +8,13 @@ use open ':utf8';
 binmode(STDOUT, ':utf8');
 
 use Cwd qw/cwd realpath/;
-#use File::Path qw(mkpath rmtree); # use 'mkpath' and 'rmtree'
-use File::Path 'mkpath';
+use File::Path 'mkpath';                       # use 'mkpath' and 'rmtree'
 use Encode qw(encode_utf8);
 use Digest::SHA qw(sha1_hex);
 use Data::Dumper;
 $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Terse    = 1;
-
-$ENV{FIX_CMD} = realpath(__FILE__);
 
 #
 # FIXME: Unit tests of some kind
@@ -53,7 +50,7 @@ $YEAR    = "2013";
 
 my %opt = (
     shell       => '/bin/dash',
-    parent_name => $ENV{FIX_PARENT} // "",   # parent target (set when called by fix itself)
+    parent_name => $ENV{FIX_PARENT} // '',   # parent target (set when called by fix itself)
     fix_dir     => ".$NAME",
     level       => $ENV{FIX_LEVEL}  += 1,    # child level (mother = 1)
     debug       => 1,
@@ -107,11 +104,33 @@ sub write_file {
         warn "$NAME: Failed to close tempfile '$tmpfile' after writing: $!\n";
         return undef;
     }
-    unless (rename $tmpfile, $outfile) {
+    unless (rename($tmpfile, $outfile)) {
         warn "$NAME: Failed rename tempfile '$tmpfile' -> '$outfile' after writing: $!\n";
         return undef;
     }
     return TRUE;
+}
+
+# Replace FILE2 with FILE1. If both files are identical (in permissions and
+# content), then the old FILE2 is kept as-is (and FILE1 is deleted).
+sub replace_file {
+    my ($file1, $file2) = @_;
+    if (not -f $file1) {
+        die "replace_file: File '$file1' does not exist, or is not a file\n"
+    }
+    my ($stat1, $stat2) = map {
+        my @stat = lstat($_);                  # (permissions, uid, gid, size)
+        @stat ? join('-', @stat[2, 4, 5, 7]) : '';
+    } ($file1, $file2);
+    # FIXME: Compare files in chunks (to use less RAM usage on big files)
+    if ($stat1 eq $stat2                       # files are the same
+            and read_file($file1) eq read_file($file2)) {
+        unlink $file1                          #   keep old file
+            or die "replace_file(): Failed to delete file '$file1': $!\n";
+        return 1;
+    }
+    rename $file1, $file2
+        or die "replace_file(): Failed to rename file '$file1' -> '$file2': $!\n";
 }
 
 sub sha1 {
@@ -127,7 +146,7 @@ sub run {
 
     # before running fixfile, clear dependency information
     # (will be rebuilt in the run)
-    clear_deps($target);
+    set($target, deps => []);
 
     my $exit_code;
     {
@@ -138,26 +157,31 @@ sub run {
         select STDOUT;
         local $| = 1;                          # turn off buffering
 
-        local $ENV{FIX_PARENT} = "$target";
+        local $ENV{FIX_PARENT} = $target;
 
         if (open(my $pipe, '|-', $opt{shell}, '-e')) {
             print $pipe $do;
             if ($exit_code = close($pipe)) {
-                if (rename $tmpfile, $target) {
-                    set_checksum($target, sha1($target));
-                    set_type($target, 'target');
-                    add_dep($target, $fixfile);
-                    set_checksum($fixfile, sha1($fixfile));
-                    set_type($fixfile, 'source');
+                if (replace_file($tmpfile, $target)) {
+                    set($target,
+                        checksum => sha1($target),
+                        type     => 'target',
+                        add_deps => [ $fixfile ],
+                    );
+                    set($fixfile,
+                        checksum => sha1($fixfile),
+                        type     => 'source',
+                    );
                 } else {
-                    warn "Failed to replace '$target' with tempfile '$tmpfile'\n";
+                    # FIXME: Specify what went wrong
+                    warn "Failed to replace target '$target' with tempfile '$tmpfile'\n";
                 }
             } else {
                 warn ($! > 0 ? "Could not run buildscript: $!\n"
                           : "Buildscript failed with exit status: $?\n");
             }
         } else {
-            warn "failed to execute shell '$opt{shell}': $!\n";
+            warn "Failed to execute shell '$opt{shell}': $!\n";
         };
         close STDOUT;
         open STDOUT, '>&', $oldout
@@ -176,7 +200,6 @@ sub run {
         chomp $message;
         say STDERR "$ansi[$loglevel]$NAME " . ("  " x ($opt{level} - 1)) .
             $ansi[BOLD] . $message . $ansi[PLAIN];
-        exit 255 if $loglevel == ERROR;
     }
 }
 sub info {
@@ -191,7 +214,7 @@ sub debug {
     say STDERR "$NAME " . ("  " x ($opt{level} - 1)) . $msg;
 }
 sub _warn { msg WARN, @_ }
-sub _die { msg ERROR, @_ }
+sub _die { msg ERROR, @_; exit 255 }
 
 
 ###############################################################################
@@ -223,7 +246,6 @@ sub _die { msg ERROR, @_ }
         return $state->{$file};
     }
 
-
     sub load_state {
         my ($file) = @_;
         if (not exists $state->{$file}) {
@@ -239,47 +261,32 @@ sub _die { msg ERROR, @_ }
     }
 }
 
-sub set_checksum {
-    my ($file, $checksum) = @_;
+sub get {
+    my ($file, @field) = @_;
     my $state = get_state($file);
-    $state->{checksum} = $checksum;
-    save_state($file);
+    return wantarray()
+        ? map { $state->{$_} } @field
+        : $state->{ shift(@field) } // '';
 }
 
-sub set_type {
-    my ($file, $type) = @_;
+sub set {
+    my ($file, %arg) = @_;
     my $state = get_state($file);
-    $state->{type} = $type;
-    save_state($file);
-}
-
-sub clear_deps {
-    my ($file, $dep) = @_;
-    my $state = get_state($file);
-    delete $state->{deps};
-    save_state($file);
-}
-
-sub add_dep {
-    my ($file, @dep) = @_;
-    my $state = get_state($file);
-    push @{ $state->{deps} }, @dep;
+    if (exists $arg{add_deps}) {
+        push @{ $state->{deps} }, @{ delete $arg{add_deps} };
+    }
+    foreach my $field (keys %arg) {
+        $state->{$field} = $arg{$field};
+    }
     save_state($file);
 }
 
 # NB: $file must exist for has_changed() to give meaningful result
 sub has_changed {
     my ($file) = @_;
-    my $state = get_state($file);
-    return sha1($file) ne $state->{checksum} ? TRUE : FALSE;
+    my $checksum = get($file, 'checksum');
+    return sha1($file) ne $checksum ? TRUE : FALSE;
 }
-
-
-###############################################################################
-##                                                                           ##
-##  Main                                                                     ##
-##                                                                           ##
-###############################################################################
 
 sub xx {
     return;
@@ -291,7 +298,7 @@ sub xx {
 
 # rebuilds that do not require dependency updates
 {
-    my (@deleted) = ();
+    my @deleted;
     sub check_deps {
         my ($indent, $targets) = @_;
         $indent += 1;
@@ -355,10 +362,14 @@ sub xx {
         return $rebuild_parent;
     }
 
-    sub deleted {
-        return @deleted;
-    }
+    sub deleted { @deleted }
 }
+
+###############################################################################
+##                                                                           ##
+##  Initialisation                                                           ##
+##                                                                           ##
+###############################################################################
 
 die "$NAME: No target specified\n\n" .
     "Usage: $NAME [OPTION]... TARGET...\n" .
@@ -370,9 +381,17 @@ if (my @non_existing = grep { ! -f "$_.fix" } @ARGV) {
     } @non_existing;
 }
 
+###############################################################################
+##                                                                           ##
+##  Main                                                                     ##
+##                                                                           ##
+###############################################################################
+
 init_state($opt{fix_dir});
 
-if (not $opt{parent_name}) {
+if ($opt{parent_name} eq '') {
+    $ENV{FIX_CMD} = realpath(__FILE__);
+
     # Add the currently running 'fix' command first in $PATH (which is
     # inherited by all child processes). -- This makes sure that all build
     # scripts that invoke 'fix' find it, even if 'fix' wasn't in the invoking
@@ -382,15 +401,14 @@ if (not $opt{parent_name}) {
     # 'fix' command there, and tuck that directory name onto the beginning of
     # the $PATH environment variable that gets inherited by our children.
     {
-        use Cwd 'realpath';
         my $bindir = "$opt{fix_dir}/bin";
-        if (not -d $bindir) {                   # make sure '.fix/bin' exists
-            mkpath($bindir)
-                or die "$NAME: Failed to create dir '$bindir'\n";
-        }
-        my $link = "$opt{fix_dir}/bin/$NAME";   # name of link to create
-        unless (-e $link) {                     # make sure fix symlink exists
-            symlink(realpath($0), $link)
+        my $link   = "$opt{fix_dir}/bin/$NAME"; # name of link to create
+        if (not -l $link) {                     # if missing '.fix/bin/fix'
+            if (not -d $bindir) {               #   make sure '.fix/bin' exists
+                mkpath($bindir)
+                    or die "$NAME: Failed to create dir '$bindir'\n";
+            }
+            symlink(realpath(__FILE__), $link)
                 or die "$NAME: Failed to create symlink '$link': $!\n";
         }
         my $full = realpath($bindir);
@@ -429,11 +447,11 @@ foreach my $target (@ARGV) {
     if (-f $target) {
         if (has_changed($target)) {             # ERROR: target modified
             # FIXME: '--force' option to overwrite changed target files
-            die "Target file externally modified, won't overwrite.\n";
+            msg ERROR, "Target file '$target' externally modified, won't overwrite.\n";
+            exit 1;
         }
-        my $state = get_state($target);
-        if (not $state->{rebuild}) {            # 
-            debug "Target is up-to-date.\n";
+        if (not get($target, 'rebuild')) {
+            debug "Target file '$target' is up-to-date.\n";
             next;
         }
     }
@@ -445,7 +463,7 @@ foreach my $target (@ARGV) {
 
 # add current args as dependency for parent
 if ($opt{parent_name}) {
-    add_dep($opt{parent_name}, @ARGV);
+    set($opt{parent_name}, add_deps => \@ARGV);
 }
 
 #[eof]

@@ -194,45 +194,46 @@ sub redir_stdout {
     restore_stdout($oldout);
 }
 
-# execute_script({ script => SCRIPT, output => OUTFILE, parent => PARENT })
+# build_target($target);
 #
-# Executes SCRIPT, outputting its standard output to OUTFILE, and setting
-# environment variable $FIX_PARENT to PARENT, for the duration of the script
-# execution. Return exit status of the executed script.
-sub execute_script {
-    my ($arg) = @_;
-
+# Builds TARGET by executing its buildfile. Return TRUE if build succeeded.
+sub build_target {
+    my ($target) = @_;
     my $exit_code;
-    redir_stdout($arg->{output}, sub {
+    my $outfile = "$target--fixing";
+    my $buildscript = "$target.fix";
+    redir_stdout($outfile, sub {
 
-        local $ENV{FIX_PARENT} = $arg->{parent};
+        local $ENV{FIX_PARENT} = $target;
 
         # FIXME: Should we allow #! in buildscripts?
         open(my $shell, '|-', $opt{shell}, '-e')
             or die "Failed to execute shell '$opt{shell}': $!\n";
-        print $shell read_file($arg->{script});
+        print $shell read_file($buildscript);
 
         # NB: outfile is kept on failure (so user may inspect it)
         $exit_code = close($shell) or do {
             my $errno = $!;
             if ($errno != 0) {
-                die "Failed to run buildscript '$arg->{script}': $errno\n";
+                die "Failed to run buildscript '$buildscript': $errno\n";
             }
             my $exit = $? >> 8;
-            msg(ERROR, "$arg->{parent}: exit status $exit\n");
+            msg(ERROR, "$target: exit status $exit\n");
             exit $exit;
         };
     });
+    replace_file($outfile, $target);
     return $exit_code;
 }
 
 # Run a buildscript, return its exit code.
 sub run {
-    my ($fixfile, $target) = @_;
-    my $do = read_file($fixfile);
+    my ($target) = @_;
+    my $buildscript = "$target.fix";
+    my $do = read_file($buildscript);
 
-    if (not -f $fixfile) {
-        warn("$NAME: Buildscript '$fixfile' does not exist.\n");
+    if (not -f $buildscript) {
+        warn("$NAME: Buildscript '$buildscript' does not exist.\n");
         exit 2;
     }
     if (-f $target and has_changed($target)) {
@@ -243,22 +244,14 @@ sub run {
     # clear dependency information (is rebuilt each run)
     set($target, deps => []);
 
-    my $outfile = "$target--fixing";
-
-    my $exit_code = execute_script({
-        parent => $target,
-        script => $fixfile,
-        output => $outfile,
-    });
-
-    replace_file($outfile, $target);
+    my $exit_code = build_target($target);
     set($target,
         checksum => sha1($target),
         type     => 'target',
-        add_deps => [ $fixfile ],
+        add_deps => [ $buildscript ],
     );
-    set($fixfile,
-        checksum => sha1($fixfile),
+    set($buildscript,
+        checksum => sha1($buildscript),
         type     => 'source',
     );
 
@@ -322,7 +315,9 @@ sub _die { msg ERROR, @_; exit 255 }
                 $state{$file} = eval read_file($full);
             }
         } else {                               # no state file exists
-            $state{$file} = { deps => [] };
+            $state{$file} = {
+                deps => [], type => '',
+            };
         }
         return $state{$file};
     }
@@ -349,7 +344,7 @@ sub get {
     my $state = get_state($file);
     return wantarray()
         ? map { $state->{$_} } @field
-        : $state->{ shift(@field) } // '';
+        : $state->{ $field[0] };
 }
 
 sub set {
@@ -544,11 +539,6 @@ if ($opt{parent_name} eq '') {                 # only mother process
 
 foreach my $target (@ARGV) {
     warn "$target\n";
-    my $fixfile = "$target.fix";
-    unless (-f $fixfile) {                     # ERROR: no build file
-        debug "$NAME: Buildscript '$fixfile' does not exist\n";
-        next;
-    }
     if (-f $target) {
         if (has_changed($target)) {             # ERROR: target modified
             # FIXME: '--force' option to overwrite changed target files
@@ -562,7 +552,7 @@ foreach my $target (@ARGV) {
     }
 
     debug "Modified dependencies, rebuilding\n";
-    run $fixfile, $target;
+    run($target);
     save_state($target);
 }
 

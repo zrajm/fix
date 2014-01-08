@@ -52,10 +52,10 @@ my %opt = (
     shell       => '/bin/dash',
     parent_name => $ENV{FIX_PARENT} // '',   # parent target (set when called by fix itself)
     fix_dir     => ".$NAME",
-    level       => $ENV{FIX_LEVEL}  += 1,    # child level (mother = 1)
-    debug       => 1,
+    level       => $ENV{FIX_LEVEL} += 1,     # child level (mother = 1)
+    debug       => $ENV{FIX_DEBUG} ? 1 : 0,  # -D/--debug $FIX_DEBUG
+    force       => $ENV{FIX_FORCE} ? 1 : 0,  # -f/--force $FIX_FORCE
 );
-
 
 ###############################################################################
 ##                                                                           ##
@@ -74,6 +74,27 @@ sub WARN    { 2 }   # yellow
 sub INFO    { 3 }   # green
 sub VERBOSE { 3 }   # green
 sub DEBUG   { 0 }   # plain
+
+# Read file stat fingerprint. If this is unchanged since a previous check, know
+# the file is unchanged. If fingerprint has changed, then we need to look at
+# the file content to determine whether that has changed or not. The following
+# lstat() properties are used:
+#
+#      1 ino      inode number
+#      2 mode     file mode (type and permissions)
+#      4 uid      numeric user ID of file's owner
+#      5 gid      numeric group ID of file's owner
+#      7 size     total size of file, in bytes
+#      9 mtime    last modify time in seconds since the epoch
+#     10 ctime    inode change time in seconds since the epoch (*)
+#
+# (See: http://www.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt)
+sub read_file_fingerprint {
+    my ($file) = @_;
+    my @stat = lstat($file)
+        or die "Failed to stat file '$file': $!\n";
+    return join("-", @stat[1, 2, 4, 5, 7, 9, 10]);
+}
 
 sub read_file {
     my ($file) = @_;
@@ -116,21 +137,20 @@ sub write_file {
 sub replace_file {
     my ($file1, $file2) = @_;
     if (not -f $file1) {
-        die "replace_file: File '$file1' does not exist, or is not a file\n"
+        die "Tempfile '$file1' does not exist, cannot replace target '$file2'\n";
     }
     my ($stat1, $stat2) = map {
-        my @stat = lstat($_);                  # (permissions, uid, gid, size)
-        @stat ? join('-', @stat[2, 4, 5, 7]) : '';
+        join('-', (lstat($_))[2, 4, 5, 7]);    # (permissions, uid, gid, size)
     } ($file1, $file2);
     # FIXME: Compare files in chunks (to use less RAM usage on big files)
     if ($stat1 eq $stat2                       # files are the same
             and read_file($file1) eq read_file($file2)) {
         unlink $file1                          #   keep old file
-            or die "replace_file(): Failed to delete file '$file1': $!\n";
+            or die "Failed to remove tempfile '$file1' identical to target '$file2': $!\n";
         return 1;
     }
     rename $file1, $file2
-        or die "replace_file(): Failed to rename file '$file1' -> '$file2': $!\n";
+        or die "Failed to replace target '$file2' with tempfile '$file1': $!\n";
 }
 
 sub sha1 {
@@ -139,55 +159,109 @@ sub sha1 {
     sha1_hex(encode_utf8(read_file($file)));
 }
 
+# Redirect standard output to FILE. Return hashref suitable for passing to
+# restore_stdout(), or die() on failure.
+sub redirect_stdout {
+    my ($file) = @_;
+    my $prev = { flush => $|, handle => undef, file => $file };
+    open($prev->{handle}, '>&', 'STDOUT')
+        or die "Failed to copy STDOUT before redirect to '$file': $!\n";
+    open(STDOUT, '>', $file)
+        or die "Failed to redirect STDOUT to file '$file': $!\n";
+    select STDOUT;
+    local $| = 1;                              # turn off buffering
+    return $prev;
+}
+
+# Restore standard output after redirect_stdout(). PREV is the hashref returned
+# by redirect_stdout(). Die()s on failure.
+sub restore_stdout {
+    my ($prev) = @_;
+    close(STDOUT);
+    open(STDOUT, '>&', $prev->{handle})
+        or die "Failed to restore STDOUT after redirect to file '$prev->{file}': $!\n";
+    close($prev->{handle});
+    select STDOUT;
+    local $| = $prev->{flush};                 # restore buffering
+}
+
+# Redirect standard output to FILE, execute CODEREF, then restore STDOUT.
+# CODEREF is passed a single argument containing FILE.
+sub redir_stdout {
+    my ($file, $coderef) = @_;
+    my $oldout = redirect_stdout($file);
+    &$coderef($file);
+    restore_stdout($oldout);
+}
+
+# execute_script({ script => SCRIPT, output => OUTFILE, parent => PARENT })
+#
+# Executes SCRIPT, outputting its standard output to OUTFILE, and setting
+# environment variable $FIX_PARENT to PARENT, for the duration of the script
+# execution. Return exit status of the executed script.
+sub execute_script {
+    my ($arg) = @_;
+
+    my $exit_code;
+    redir_stdout($arg->{output}, sub {
+
+        local $ENV{FIX_PARENT} = $arg->{parent};
+
+        # FIXME: Should we allow #! in buildscripts?
+        open(my $shell, '|-', $opt{shell}, '-e')
+            or die "Failed to execute shell '$opt{shell}': $!\n";
+        print $shell read_file($arg->{script});
+
+        # NB: outfile is kept on failure (so user may inspect it)
+        $exit_code = close($shell) or do {
+            my $errno = $!;
+            if ($errno != 0) {
+                die "Failed to run buildscript '$arg->{script}': $errno\n";
+            }
+            my $exit = $? >> 8;
+            msg(ERROR, "$arg->{parent}: exit status $exit\n");
+            exit $exit;
+        };
+    });
+    return $exit_code;
+}
+
+# Run a buildscript, return its exit code.
 sub run {
     my ($fixfile, $target) = @_;
     my $do = read_file($fixfile);
-    my $tmpfile = "$target--fixing";
 
-    # before running fixfile, clear dependency information
-    # (will be rebuilt in the run)
+    if (not -f $fixfile) {
+        warn("$NAME: Buildscript '$fixfile' does not exist.\n");
+        exit 2;
+    }
+    if (-f $target and has_changed($target)) {
+        warn("Target '$target' externally modified, won't overwrite.\n");
+        exit 1;
+    }
+
+    # clear dependency information (is rebuilt each run)
     set($target, deps => []);
 
-    my $exit_code;
-    {
-        open my $oldout, ">&", "STDOUT"
-            or die "Failed to copy STDIN before running build script '$fixfile': $!\n";
-        open STDOUT, ">", $tmpfile
-            or die "Failed to redirect build script STDOUT to tempfile '$tmpfile': $!\n";
-        select STDOUT;
-        local $| = 1;                          # turn off buffering
+    my $outfile = "$target--fixing";
 
-        local $ENV{FIX_PARENT} = $target;
+    my $exit_code = execute_script({
+        parent => $target,
+        script => $fixfile,
+        output => $outfile,
+    });
 
-        if (open(my $pipe, '|-', $opt{shell}, '-e')) {
-            print $pipe $do;
-            if ($exit_code = close($pipe)) {
-                if (replace_file($tmpfile, $target)) {
-                    set($target,
-                        checksum => sha1($target),
-                        type     => 'target',
-                        add_deps => [ $fixfile ],
-                    );
-                    set($fixfile,
-                        checksum => sha1($fixfile),
-                        type     => 'source',
-                    );
-                } else {
-                    # FIXME: Specify what went wrong
-                    warn "Failed to replace target '$target' with tempfile '$tmpfile'\n";
-                }
-            } else {
-                warn ($! > 0 ? "Could not run buildscript: $!\n"
-                          : "Buildscript failed with exit status: $?\n");
-            }
-        } else {
-            warn "Failed to execute shell '$opt{shell}': $!\n";
-        };
-        close STDOUT;
-        open STDOUT, '>&', $oldout
-            or die "Failed to reconnect old STDIN after running build script '$fixfile': $!\n";
-        close $oldout;
-    }
+    replace_file($outfile, $target);
+    set($target,
+        checksum => sha1($target),
+        type     => 'target',
+        add_deps => [ $fixfile ],
+    );
+    set($fixfile,
+        checksum => sha1($fixfile),
+        type     => 'source',
+    );
+
     return $exit_code;
 }
 
@@ -216,7 +290,6 @@ sub debug {
 sub _warn { msg WARN, @_ }
 sub _die { msg ERROR, @_; exit 255 }
 
-
 ###############################################################################
 ##                                                                           ##
 ##  State Storage                                                            ##
@@ -224,7 +297,7 @@ sub _die { msg ERROR, @_; exit 255 }
 ###############################################################################
 
 {
-    my $state = {};
+    my (%state, %print);
     my $state_dir;
 
     sub init_state {
@@ -238,26 +311,36 @@ sub _die { msg ERROR, @_; exit 255 }
     }
 
     # Rereads the state file every time, since subprocess may have updated it.
+    # FIXME: reread file only when it has been changed
     sub get_state {
         my ($file) = @_;
-        # FIXME: reread file only when it has been changed
-        my $full = "$state_dir/$file";
-        $state->{$file} = -f $full ? eval read_file($full) : {};
-        return $state->{$file};
+        my $full  = "$state_dir/$file";
+        if (-f $full) {                        # state file exists
+            my $print = read_file_fingerprint($full);
+            if ($print ne ($print{$file} // '')) {
+                $print{$file} = $print;        #   read if modified
+                $state{$file} = eval read_file($full);
+            }
+        } else {                               # no state file exists
+            $state{$file} = { deps => [] };
+        }
+        return $state{$file};
     }
 
-    sub load_state {
-        my ($file) = @_;
-        if (not exists $state->{$file}) {
-            my $full = "$state_dir/$file";
-            $state->{$file} = -f $full ? eval read_file($full) : {};
-        }
-        return $state->{$file};
-    }
+    # sub load_state {
+    #     my ($file) = @_;
+    #     if (not exists $state{$file}) {
+    #         my $full = "$state_dir/$file";
+    #         $state{$file} = -f $full ? eval read_file($full) : {};
+    #     }
+    #     return $state{$file};
+    # }
 
     sub save_state {
         my ($file) = @_;
-        return write_file("$state_dir/$file", Dumper $state->{$file});
+        my $full = "$state_dir/$file";
+        write_file($full, Dumper $state{$file});
+        $print{file} = read_file_fingerprint($full);
     }
 }
 
@@ -307,7 +390,7 @@ sub xx {
             my $state = get_state($target);
 
             if (keys %$state == 0) {           # previously unbuilt file
-                die "Build script '$target.fix' does not exist\n"
+                die "Buildscript '$target.fix' does not exist\n"
                     unless -f "$target.fix";
                 xx $indent, "$target previously unbuilt file";
                 $rebuild_parent = TRUE;
@@ -371,25 +454,43 @@ sub xx {
 ##                                                                           ##
 ###############################################################################
 
+# parse command line options
+use Getopt::Long qw(
+    GetOptionsFromArray :config posix_default bundling gnu_compat
+    no_ignore_case permute pass_through
+);
+GetOptions(              # info displayed by help()
+    \%opt,               # ========================
+    'debug|D'   => sub {             ### enable debugging mode
+        $opt{debug} = $ENV{FIX_DEBUG} = 1 },
+    'no-debug'   => sub {
+        $opt{debug} = $ENV{FIX_DEBUG} = 0 },
+    'force|f'   => sub {  ### force overwrite, even when target has changed
+        $opt{force} = $ENV{FIX_FORCE} = 1 },
+    'no-force'   => sub {  ### force overwrite, even when target has changed
+        $opt{force} = $ENV{FIX_FORCE} = 0 },
+
+    #'help|h',            ### display this help and exit
+    #'manpage|M',         ### display program manpage and exit
+    #'version|V',         ### output version information and exit
+) or exit 2;
+
 die "$NAME: No target specified\n\n" .
     "Usage: $NAME [OPTION]... TARGET...\n" .
     "Build the specified TARGET(s).\n"
     unless @ARGV;
-if (my @non_existing = grep { ! -f "$_.fix" } @ARGV) {
-    die join "", map {
-        "$NAME: Build script '$_.fix' does not exist.\n";
-    } @non_existing;
-}
 
-###############################################################################
-##                                                                           ##
-##  Main                                                                     ##
-##                                                                           ##
-###############################################################################
+%SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
+
+# die on missing buildscripts
+if (my @missing = grep { ! -f "$_.fix" } @ARGV) {
+    warn join "", map { "No rule to make '$_'.\n" } @missing;
+    exit 2;
+}
 
 init_state($opt{fix_dir});
 
-if ($opt{parent_name} eq '') {
+if ($opt{parent_name} eq '') {                 # only mother process
     $ENV{FIX_CMD} = realpath(__FILE__);
 
     # Add the currently running 'fix' command first in $PATH (which is
@@ -430,18 +531,22 @@ if ($opt{parent_name} eq '') {
     }
 
     if (my @deleted = deleted()) {
-        warn "Deleted files with unchanged dependencies (in build order):\n";
-        warn "    $_\n" foreach @deleted;
+        print STDERR "Deleted files with unchanged dependencies (in build order):\n";
+        print STDERR "    $_\n" foreach @deleted;
     }
 }
 
-%SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
+###############################################################################
+##                                                                           ##
+##  Main                                                                     ##
+##                                                                           ##
+###############################################################################
 
 foreach my $target (@ARGV) {
     warn "$target\n";
     my $fixfile = "$target.fix";
     unless (-f $fixfile) {                     # ERROR: no build file
-        debug "$NAME: Build script '$fixfile' does not exist\n";
+        debug "$NAME: Buildscript '$fixfile' does not exist\n";
         next;
     }
     if (-f $target) {
@@ -466,11 +571,7 @@ if ($opt{parent_name}) {
     set($opt{parent_name}, add_deps => \@ARGV);
 }
 
-#[eof]
-
-
 __END__
-
 
 =head1 PRINCIPLES
 

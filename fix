@@ -354,7 +354,7 @@ sub dirname {
 sub get_basedir {
     $_ = cwd;
     until (-e "$_/.$NAME") {
-        die "No confdir found (use 'fix --init' to create)\n"
+        die "No confdir found (create with 'fix --init')\n"
             unless s#/[^/]*$##;
     }
     return $_;

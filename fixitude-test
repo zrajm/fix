@@ -6,40 +6,47 @@ use Test::More;
 use Cwd qw(cwd realpath);
 use File::Path 'rmtree';
 
+use Carp 'confess';
+$SIG{__DIE__} = \&Carp::confess;
+
+
 ###############################################################################
 ##                                                                           ##
 ##  Functions                                                                ##
 ##                                                                           ##
 ###############################################################################
 
+# Delete file. Ignore errors if file is gone in the end.
 sub delete_file {
     my (@file) = @_;
     foreach my $file (@file) {
-        unlink($file) or die "Failed to delete file '$file'\n";
+        unlink($file) or do {
+            my $msg = $!;
+            die "Failed to delete file '$file': $msg," if -f $file;
+        };
     }
 }
 
 sub write_file {
     my ($file, @data) = @_;
     open(my $out, '>', $file)
-        or die "Failed to open file '$file' for writing: $!\n";
+        or die "Failed to open file '$file' for writing: $!,";
     print $out @data;
     close($out)
-        or die "Failed to close file '$file' after writing: $!\n";
+        or die "Failed to close file '$file' after writing: $!,";
 }
 
 sub read_file {
     my ($file) = @_;
     open(my $in, '<', $file)
-        or die "Failed to open file '$file' for reading: $!\n";
+        or die "Failed to open file '$file' for reading: $!,";
     local $/ = undef;
     return <$in>;
 }
 
 sub read_file_fingerprint {
     my ($file) = @_;
-    my @stat = lstat($file)
-        or die "Failed to stat file '$file': $!\n";
+    my @stat = lstat($file) or die "Failed to stat file '$file': $!,";
     return join("-", @stat[1, 2, 4, 5, 7, 9, 10]);
 }
 
@@ -58,10 +65,7 @@ sub make_tempdir {
     return $tempdir;
 }
 
-sub unchomp {
-    return map { "$_\n" } @_;
-}
-
+sub nl { join "", map "$_\n", @_ }
 
 ###############################################################################
 ##                                                                           ##
@@ -75,7 +79,9 @@ $fix =~ s#-test.*?##;
 my ($name) = $fix =~ m#([^/]+)$#;
 
 my $testdir = make_tempdir($name);
-chdir($testdir) or die "Failed to cd to '$testdir': $!";
+chdir($testdir) or die "Failed to cd to '$testdir': $!,";
+
+if ($name eq 'fix') { system("$fix --init") }
 
 ###############################################################################
 ##                                                                           ##
@@ -83,146 +89,188 @@ chdir($testdir) or die "Failed to cd to '$testdir': $!";
 ##                                                                           ##
 ###############################################################################
 
-note 'Non-existing build script';
+note 'Non-existing buildscript';
 {
     my $r = system("$fix 1 2>/dev/null");
-    is($r >> 8,        2,        'Non-existing build script, exit status');
-    ok(not (-f '1--fixing'),     'Non-existing build script, non-existence of tempfile');
-    ok(not (-f '1'),             'Non-existing build script, non-existence of output');
+    is($r >> 8,        2,        'Non-existing buildscript, exit status');
+    ok(not (-f '1--fixing'),     'Non-existing buildscript, non-existence of tempfile');
+    ok(not (-f '1'),             'Non-existing buildscript, non-existence of output');
 }
-
-# note 'Build from one malformed build script, to see if it fails correctly';
-# {
-#     write_file('1.fix', "NONEXISTING-SHELL-COMMAND\n");
-#     my $r = system("$fix 1 2>/dev/null");
-#     is($r >> 8,        1,        'Malformed single build script (1st run), exit status');
-#     ok(not (-f '1--fixing'),     'Malformed single build script (1st run), non-existence of tempfile');
-#     ok(not (-f '1'),             'Malformed single build script (1st run), non-existence of output');
-# }
-# delete_file('1');
-# {
-#     write_file('1.fix', "NONEXISTING-SHELL-COMMAND\n");
-#     my $r = system("$fix 1 2>/dev/null");
-#     is($r >> 8,          1,        'Malformed single build script (2nd run), exit status');
-#     ok(not (-f '1--fixing'),       'Malformed single build script (2nd run), non-existence of tempfile');
-#     ok(not (-f '1'),               'Malformed single build script (2nd run), non-existence of output');
-# }
-
-note 'Single build script - new build script';
+note 'Buildscript with non-zero exit status';
+{
+    write_file('1.fix', nl('echo pre', 'exit 1', 'echo post'));
+    my $result  = nl('pre');
+    my $tmpfile = '1--fixing';
+    my $r = system("$fix 1 2>/dev/null");
+    is($r >> 8,             1,       'Buildscript with exit status 1, exit status');
+    ok(  not (-f '1'),               'Buildscript with exit status 1, non-existence of output');
+    ok(       -f $tmpfile,           'Buildscript with exit status 1, existence of tempfile');
+    is(read_file($tmpfile), $result, 'Buildscript with exit status 1, content of target "ab12"');
+}
+{
+    write_file('1.fix', nl('echo pre', 'exit 5', 'echo post'));
+    my $result  = nl('pre');
+    my $tmpfile = '1--fixing';
+    my $r = system("$fix 1 2>/dev/null");
+    is($r >> 8,             5,       'Buildscript with exit status 5, exit status');
+    ok(  not (-f '1'),               'Buildscript with exit status 5, non-existence of output');
+    ok(       -f $tmpfile,           'Buildscript with exit status 5, existence of tempfile');
+    is(read_file($tmpfile), $result, 'Buildscript with exit status 5, content of target "ab12"');
+}
+note 'Buildscript shell "-e" option';
+{
+    write_file('1.fix', nl('echo pre', 'false', 'echo post'));
+    my $result  = nl('pre');
+    my $tmpfile = '1--fixing';
+    my $r = system("$fix 1 2>/dev/null");
+    is($r >> 8,             1,       'Buildscript returning false, exit status');
+    ok(  not (-f '1'),               'Buildscript returning false, non-existence of output');
+    ok(       -f $tmpfile,           'Buildscript returning false, existence of tempfile');
+    is(read_file($tmpfile), $result, 'Buildscript returning false, content of target "ab12"');
+}
+note 'Buildscript with non-existing command';
+{
+    write_file('1.fix', "NONEXISTING-SHELL-COMMAND\n");
+    my $tmpfile = '1--fixing';
+    my $r = system("$fix 1 2>/dev/null");
+    is($r >> 8,        127,     'Malformed buildscript, exit status');
+    ok(  not (-f '1'),          'Malformed buildscript, non-existence of output');
+    ok(       -f $tmpfile,      'Malformed buildscript, existence of tempfile');
+    is(read_file($tmpfile), '', 'Malformed buildscript, content of target "ab12"');
+}
+note 'Single buildscript - new buildscript';
 {
     write_file('1.fix', ("echo 1\n") x 2);
     my $r = system("$fix 1 2>/dev/null");
-    is($r >> 8,        0,        'Single build script first run, exit status');
-    ok(not (-f '1--fixing'),     'Single build script first run, non-existence of tempfile');
-    ok(     -f '1',              'Single build script first run, existence of target');
-    is(read_file('1'), "1\n1\n", 'Single build script first run, content of target');
+    is($r >> 8,        0,        'Single buildscript first run, exit status');
+    ok(not (-f '1--fixing'),     'Single buildscript first run, non-existence of tempfile');
+    ok(     -f '1',              'Single buildscript first run, existence of target');
+    is(read_file('1'), "1\n1\n", 'Single buildscript first run, content of target');
 }
-note 'Single build script - rerun without changes';
+note 'Single buildscript - rerun without changes';
 {
     my $oldstat = read_file_fingerprint('1');
     write_file('1.fix', ("echo 1\n") x 2);
     my $r = system("$fix 1 2>/dev/null");
     my $newstat = read_file_fingerprint('1');
-    is($r >> 8,        0,        'Single build script rerun without change, exit status');
-    ok(not (-f '1--fixing'),     'Single build script rerun without change, non-existence of tempfile');
-    ok(     -f '1',              'Single build script rerun without change, existence of target');
-    is($newstat,       $oldstat, 'Single build script rerun without change, unmodified target');
+    is($r >> 8,        0,        'Single buildscript rerun without change, exit status');
+    ok(not (-f '1--fixing'),     'Single buildscript rerun without change, non-existence of tempfile');
+    ok(     -f '1',              'Single buildscript rerun without change, existence of target');
+    is($newstat,       $oldstat, 'Single buildscript rerun without change, unmodified target');
 }
-note 'Single build script - rerun after changed target file';
+note 'Single buildscript - rerun on manually edited target file';
 {
     write_file('1', "XXX\n");    # modify target file
     my $oldstat = read_file_fingerprint('1');
     my $r = system("$fix 1 2>/dev/null");
     my $newstat = read_file_fingerprint('1');
-    is  ($r >> 8,        1,        'Single build script rerun after modified target, exit status');
-    ok  (not (-f '1--fixing'),     'Single build script rerun after modified target, non-existence of tempfile');
-    ok  (     -f '1',              'Single build script rerun after modified target, existence of target');
-    is  (read_file('1'), "XXX\n",  'Single build script rerun after modified target, content of target');
-    is  ($newstat,       $oldstat, 'Single build script rerun after modified target, unmodified target');
+    is  ($r >> 8,        1,        'Single buildscript rerun on manually edited target, exit status');
+    ok  (not (-f '1--fixing'),     'Single buildscript rerun on manually edited target, non-existence of tempfile');
+    ok  (     -f '1',              'Single buildscript rerun on manually edited target, existence of target');
+    is  (read_file('1'), "XXX\n",  'Single buildscript rerun on manually edited target, content of target');
+    is  ($newstat,       $oldstat, 'Single buildscript rerun on manually edited target, unmodified target');
 }
-note 'Single build script - rerun after deleted target file';
+note 'Single buildscript - rerun after deleted target file';
 {
     my $oldstat = read_file_fingerprint('1');
     delete_file('1');
     my $r = system("$fix 1 2>/dev/null");
     my $newstat = read_file_fingerprint('1');
-    is  ($r >> 8,        0,        'Single build script rerun after delete, exit status');
-    ok  (not (-f '1--fixing'),     'Single build script rerun after delete, non-existence of tempfile');
-    ok  (     -f '1',              'Single build script rerun after delete, existence of target');
-    is  (read_file('1'), "1\n1\n", 'Single build script rerun after delete, content of target');
-    isnt($newstat,       $oldstat, 'Single build script rerun after delete, modified target');
+    is  ($r >> 8,        0,        'Single buildscript rerun after delete, exit status');
+    ok  (not (-f '1--fixing'),     'Single buildscript rerun after delete, non-existence of tempfile');
+    ok  (     -f '1',              'Single buildscript rerun after delete, existence of target');
+    is  (read_file('1'), "1\n1\n", 'Single buildscript rerun after delete, content of target');
+    isnt($newstat,       $oldstat, 'Single buildscript rerun after delete, modified target');
 }
-note 'Single build script - rerun after changed build script with same output';
+note 'Single buildscript - rerun after changed buildscript with same output';
 {
     my $oldstat = read_file_fingerprint('1');
     write_file('1.fix', ("echo 1\n") x 2, "# comment not affecting output\n");
     my $r = system("$fix 1 2>/dev/null");
     my $newstat = read_file_fingerprint('1');
-    is($r >> 8,        0,        'Single build script rerun after change with same output, exit status');
-    ok(not (-f '1--fixing'),     'Single build script rerun after change with same output, non-existence of tempfile');
-    ok(     -f '1',              'Single build script rerun after change with same output, existence of target');
-    is($newstat,       $oldstat, 'Single build script rerun after change with same output, unmodified target');
+    is($r >> 8,        0,        'Single buildscript rerun after change with same output, exit status');
+    ok(not (-f '1--fixing'),     'Single buildscript rerun after change with same output, non-existence of tempfile');
+    ok(     -f '1',              'Single buildscript rerun after change with same output, existence of target');
+    is($newstat,       $oldstat, 'Single buildscript rerun after change with same output, unmodified target');
 }
-note 'Single build script - rerun after changed build script with new output';
+note 'Single buildscript - rerun after changed buildscript with new output';
 {
     my $oldstat = read_file_fingerprint('1');
     write_file('1.fix', "echo 1\n");
     my $r = system("$fix 1 2>/dev/null");
     my $newstat = read_file_fingerprint('1');
-    is  ($r >> 8,        0,      'Single build script rerun after change, exit status');
-    ok  (not (-f '1--fixing'),   'Single build script rerun after change, non-existence of tempfile');
-    ok  (     -f '1',            'Single build script rerun after change, existence of target');
-    is  (read_file('1'), "1\n",  'Single build script rerun after change, content of target');
-    isnt($newstat,     $oldstat, 'Single build script rerun after change, modified target');
+    is  ($r >> 8,        0,      'Single buildscript rerun after change, exit status');
+    ok  (not (-f '1--fixing'),   'Single buildscript rerun after change, non-existence of tempfile');
+    ok  (     -f '1',            'Single buildscript rerun after change, existence of target');
+    is  (read_file('1'), "1\n",  'Single buildscript rerun after change, content of target');
+    isnt($newstat,     $oldstat, 'Single buildscript rerun after change, modified target');
 }
 
 # clear all existing files
 rmtree([ ".$name", "1", "1.fix" ]);
 
-note 'Build script with dependencies - new build script';
+note 'Buildscript with dependencies - new buildscript';
 {
-    write_file('a.fix',    unchomp 'echo a');
-    write_file('b.fix',    unchomp 'echo b');
-    write_file('1.fix',    unchomp 'echo 1');
-    write_file('2.fix',    unchomp 'echo 2');
-    write_file('12.fix',   unchomp '$FIX_CMD 1 2',   'echo 12',   'cat 1 2 | sed "s/^/>/"');
-    write_file('ab.fix',   unchomp '$FIX_CMD a b',   'echo ab',   'cat a b | sed "s/^/>/"');
-    write_file('ab12.fix', unchomp '$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"');
-    my $result = join "",  unchomp qw/ab12 >ab >>a >>b >12 >>1 >>2/;
+    write_file('a.fix',    nl 'echo a');
+    write_file('b.fix',    nl 'echo b');
+    write_file('1.fix',    nl 'echo 1');
+    write_file('2.fix',    nl 'echo 2');
+    write_file('12.fix',   nl '$FIX_CMD 1 2',   'echo 12',   'cat 1 2 | sed "s/^/>/"');
+    write_file('ab.fix',   nl '$FIX_CMD a b',   'echo ab',   'cat a b | sed "s/^/>/"');
+    write_file('ab12.fix', nl '$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"');
+    my $result =           nl qw/ab12 >ab >>a >>b >12 >>1 >>2/;
     my $r = system("$fix ab12 2>/dev/null");
-    is($r >> 8,        0,           'Build script with deps first run, exit status');
-    ok(not (-f 'a--fixing'),        'Build script with deps first run, non-existence of tempfile for "a"');
-    ok(not (-f 'b--fixing'),        'Build script with deps first run, non-existence of tempfile for "b"');
-    ok(not (-f '1--fixing'),        'Build script with deps first run, non-existence of tempfile for "1"');
-    ok(not (-f '2--fixing'),        'Build script with deps first run, non-existence of tempfile for "2"');
-    ok(not (-f 'ab--fixing'),       'Build script with deps first run, non-existence of tempfile for "ab"');
-    ok(not (-f '12--fixing'),       'Build script with deps first run, non-existence of tempfile for "12"');
-    ok(not (-f 'ab12--fixing'),     'Build script with deps first run, non-existence of tempfile for "ab12"');
-    ok(     -f 'a',                 'Build script with deps first run, existence of target "a"');
-    ok(     -f 'b',                 'Build script with deps first run, existence of target "b"');
-    ok(     -f '1',                 'Build script with deps first run, existence of target "1"');
-    ok(     -f '2',                 'Build script with deps first run, existence of target "2"');
-    ok(     -f '12',                'Build script with deps first run, existence of target "12"');
-    ok(     -f 'ab',                'Build script with deps first run, existence of target "ab"');
-    ok(     -f 'ab12',              'Build script with deps first run, existence of target "ab12"');
-    is(read_file('ab12'), $result,  'Build script with deps first run, content of target "ab12"');
+    is($r >> 8,        0,           'Buildscript with deps first run, exit status');
+    ok(not (-f 'a--fixing'),        'Buildscript with deps first run, non-existence of tempfile for "a"');
+    ok(not (-f 'b--fixing'),        'Buildscript with deps first run, non-existence of tempfile for "b"');
+    ok(not (-f '1--fixing'),        'Buildscript with deps first run, non-existence of tempfile for "1"');
+    ok(not (-f '2--fixing'),        'Buildscript with deps first run, non-existence of tempfile for "2"');
+    ok(not (-f 'ab--fixing'),       'Buildscript with deps first run, non-existence of tempfile for "ab"');
+    ok(not (-f '12--fixing'),       'Buildscript with deps first run, non-existence of tempfile for "12"');
+    ok(not (-f 'ab12--fixing'),     'Buildscript with deps first run, non-existence of tempfile for "ab12"');
+    ok(     -f 'a',                 'Buildscript with deps first run, existence of target "a"');
+    ok(     -f 'b',                 'Buildscript with deps first run, existence of target "b"');
+    ok(     -f '1',                 'Buildscript with deps first run, existence of target "1"');
+    ok(     -f '2',                 'Buildscript with deps first run, existence of target "2"');
+    ok(     -f '12',                'Buildscript with deps first run, existence of target "12"');
+    ok(     -f 'ab',                'Buildscript with deps first run, existence of target "ab"');
+    ok(     -f 'ab12',              'Buildscript with deps first run, existence of target "ab12"');
+    is(read_file('ab12'), $result,  'Buildscript with deps first run, content of target "ab12"');
 }
-note 'Build script with dependencies - rerun after changed dependency build script';
+note 'Buildscript with dependencies - rerun after changed dependency buildscript';
 {
-    write_file('1.fix',    unchomp 'echo 1', 'echo 1');
-    my $result = join "",  unchomp qw/ab12 >ab >>a >>b >12 >>1 >>1 >>2/;
+    write_file('1.fix', nl 'echo 1', 'echo 1');
+    my $result = nl qw/ab12 >ab >>a >>b >12 >>1 >>1 >>2/;
     my $r = system("$fix ab12 2>/dev/null");
-    is($r >> 8,        0,           'Build script with deps rerun after dep change, exit status');
-    ok(not (-f '1--fixing'),        'Build script with deps rerun after dep change, non-existence of tempfile for "1"');
-    ok(not (-f '12--fixing'),       'Build script with deps rerun after dep change, non-existence of tempfile for "12"');
-    ok(not (-f 'ab12--fixing'),     'Build script with deps rerun after dep change, non-existence of tempfile for "ab12"');
-    ok(     -f '1',                 'Build script with deps rerun after dep change, existence of target "1"');
-    ok(     -f '2',                 'Build script with deps rerun after dep change, existence of target "2"');
-    ok(     -f '12',                'Build script with deps rerun after dep change, existence of target "12"');
-    ok(     -f 'ab',                'Build script with deps rerun after dep change, existence of target "ab"');
-    ok(     -f 'ab12',              'Build script with deps rerun after dep change, existence of target "ab12"');
-    is(read_file('ab12'), $result,  'Build script with deps rerun after dep change, content of target "ab12"');
+    is($r >> 8,        0,           'Buildscript with deps rerun after dep change, exit status');
+    ok(not (-f '1--fixing'),        'Buildscript with deps rerun after dep change, non-existence of tempfile for "1"');
+    ok(not (-f '12--fixing'),       'Buildscript with deps rerun after dep change, non-existence of tempfile for "12"');
+    ok(not (-f 'ab12--fixing'),     'Buildscript with deps rerun after dep change, non-existence of tempfile for "ab12"');
+    ok(     -f '1',                 'Buildscript with deps rerun after dep change, existence of target "1"');
+    ok(     -f '2',                 'Buildscript with deps rerun after dep change, existence of target "2"');
+    ok(     -f '12',                'Buildscript with deps rerun after dep change, existence of target "12"');
+    ok(     -f 'ab',                'Buildscript with deps rerun after dep change, existence of target "ab"');
+    ok(     -f 'ab12',              'Buildscript with deps rerun after dep change, existence of target "ab12"');
+    is(read_file('ab12'), $result,  'Buildscript with deps rerun after dep change, content of target "ab12"');
 }
+note 'Buildscript with dependencies - rerun after dependency target delete';
+{
+    delete_file('12');
+    my $result = nl qw/ab12 >ab >>a >>b >12 >>1 >>1 >>2/;
+    my $r = system("$fix ab12 2>/dev/null");
+    is($r >> 8,        0,           'Buildscript with deps rerun after dep change, exit status');
+    ok(not (-f '1--fixing'),        'Buildscript with deps rerun after dep change, non-existence of tempfile for "1"');
+    ok(not (-f '12--fixing'),       'Buildscript with deps rerun after dep change, non-existence of tempfile for "12"');
+    ok(not (-f 'ab12--fixing'),     'Buildscript with deps rerun after dep change, non-existence of tempfile for "ab12"');
+    ok(     -f '1',                 'Buildscript with deps rerun after dep change, existence of target "1"');
+    ok(     -f '2',                 'Buildscript with deps rerun after dep change, existence of target "2"');
+    ok(     -f '12',                'Buildscript with deps rerun after dep change, existence of target "12"');
+    ok(     -f 'ab',                'Buildscript with deps rerun after dep change, existence of target "ab"');
+    ok(     -f 'ab12',              'Buildscript with deps rerun after dep change, existence of target "ab12"');
+    is(read_file('ab12'), $result,  'Buildscript with deps rerun after dep change, content of target "ab12"');
+}
+
+# FIXME: test failure when a dependency target have been manually edited
 
 END {
     done_testing();

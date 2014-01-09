@@ -270,9 +270,24 @@ write_file('1.fix', nl('echo 1'));
     isnt($a{'1'},          $b{'1'},     "Target modified");
     is  (read_file('1'),   nl('1'),     "Target content");
 }
+note "Buildscript creating target in subdir";
+mkdir("a");
+write_file('a/1.fix', nl('echo 1'));
+{
+    my %a = fingerprints(qw( a/1.fix a/1 ));
+    my $r = system("$fix a/1 2>/dev/null");
+    my %b = fingerprints(qw( a/1.fix a/1 ));
+
+    is  ($r >> 8,            0,             "Exit status");
+    is  ($a{'a/1.fix'},      $b{'a/1.fix'}, "Buildscript unmodified");
+    ok  (! -f 'a/1--fixing',                "Tempfile non-existing");
+    ok  (  -f 'a/1',                        "Target existing");
+    isnt($a{'a/1'},          $b{'a/1'},     "Target modified");
+    is  (read_file('a/1'),   nl('1'),       "Target content");
+}
 
 # clear all existing files
-rmtree([ ".$name", "1", "1.fix" ]);
+rmtree([ ".$name", qw/ 1 1.fix a / ]);
 
 note "First run of buildscript with dependencies";
 write_file('a.fix',    nl('echo a'));

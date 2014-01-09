@@ -3,12 +3,11 @@ use strict;
 use warnings;
 use 5.10.0;
 use Test::More;
-use Cwd qw(cwd realpath);
+use Cwd qw/cwd realpath/;
 use File::Path 'rmtree';
 
 use Carp 'confess';
 $SIG{__DIE__} = \&Carp::confess;
-
 
 ###############################################################################
 ##                                                                           ##
@@ -27,13 +26,18 @@ sub delete_file {
     }
 }
 
+# Write to a temporary file, so that we know the inode number will change when
+# file is written. This to avoid using Time::HiRes in the fingerprinting.
 sub write_file {
     my ($file, @data) = @_;
-    open(my $out, '>', $file)
+    my $outfile = "$file--tmp";
+    open(my $out, '>', $outfile)
         or die "Failed to open file '$file' for writing: $!,";
     print $out @data;
     close($out)
         or die "Failed to close file '$file' after writing: $!,";
+    rename($outfile, $file)
+        or die "Failed rename tempfile '$outfile' -> '$file' after writing: $!\n";
 }
 
 sub read_file {
@@ -44,10 +48,26 @@ sub read_file {
     return <$in>;
 }
 
-sub read_file_fingerprint {
-    my ($file) = @_;
-    my @stat = lstat($file) or die "Failed to stat file '$file': $!,";
-    return join("-", @stat[1, 2, 4, 5, 7, 9, 10]);
+# Return file fingerprint (or empty string if file doesn't exist).
+#
+# BORKEN! We use 'stat', not 'lstat' here (since the Time::HiRes version I have
+# doesn't support 'lstat') -- It was added to the module February 2013. :(
+# (See: https://rt.cpan.org/Public/Bug/Display.html?id=83356)
+{
+    #use Time::HiRes 'stat';
+    sub read_file_fingerprint {
+        my ($file) = @_;
+        my @stat = stat($file);
+        return join("-", @stat ? @stat[1, 2, 4, 5, 7, 9, 10] : ());
+    }
+}
+
+# Return hash of filenames (as keys) and stat fingerprints (as values).
+sub fingerprints {
+    my (@file) = @_;
+    return map {
+        $_ => read_file_fingerprint($_);
+    } @file;
 }
 
 sub abspath {
@@ -89,188 +109,416 @@ if ($name eq 'fix') { system("$fix --init") }
 ##                                                                           ##
 ###############################################################################
 
-note 'Non-existing buildscript';
+note "Non-existing buildscript";
 {
+    my %a = fingerprints(qw/ 1.fix /);
     my $r = system("$fix 1 2>/dev/null");
-    is($r >> 8,        2,        'Non-existing buildscript, exit status');
-    ok(not (-f '1--fixing'),     'Non-existing buildscript, non-existence of tempfile');
-    ok(not (-f '1'),             'Non-existing buildscript, non-existence of output');
+    my %b = fingerprints(qw/ 1.fix /);
+
+    is  ($r >> 8,          2,           "Exit status");
+    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unmodified");
+    ok  (! -f '1--fixing',              "Tempfile non-existing");
+    ok  (! -f '1',                      "Target non-existing");
 }
-note 'Buildscript with non-zero exit status';
+note "Buildscript with exit status = 1";
+write_file('1.fix', nl('echo FIRST', 'exit 1', 'echo SECOND'));
 {
-    write_file('1.fix', nl('echo pre', 'exit 1', 'echo post'));
-    my $result  = nl('pre');
-    my $tmpfile = '1--fixing';
+    delete_file('1--fixing');
+
+    my %a = fingerprints(qw/ 1.fix 1--fixing /);
     my $r = system("$fix 1 2>/dev/null");
-    is($r >> 8,             1,       'Buildscript with exit status 1, exit status');
-    ok(  not (-f '1'),               'Buildscript with exit status 1, non-existence of output');
-    ok(       -f $tmpfile,           'Buildscript with exit status 1, existence of tempfile');
-    is(read_file($tmpfile), $result, 'Buildscript with exit status 1, content of target "ab12"');
+    my %b = fingerprints(qw/ 1.fix 1--fixing /);
+
+    is  ($r >> 8,                1,               "Exit status");
+    is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unmodified");
+    ok  (  -f '1--fixing',                        "Tempfile existing");
+    isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile modified");
+    is  (read_file('1--fixing'), nl('FIRST'),     "Tempfile content");
+    ok  (! -f '1',                                "Target non-existing");
+
 }
+note "Buildscript with exit status = 2";
+write_file('1.fix', nl('echo FIRST', 'exit 2', 'echo SECOND'));
 {
-    write_file('1.fix', nl('echo pre', 'exit 5', 'echo post'));
-    my $result  = nl('pre');
-    my $tmpfile = '1--fixing';
+    delete_file('1--fixing');
+
+    my %a = fingerprints(qw/ 1.fix 1--fixing /);
     my $r = system("$fix 1 2>/dev/null");
-    is($r >> 8,             5,       'Buildscript with exit status 5, exit status');
-    ok(  not (-f '1'),               'Buildscript with exit status 5, non-existence of output');
-    ok(       -f $tmpfile,           'Buildscript with exit status 5, existence of tempfile');
-    is(read_file($tmpfile), $result, 'Buildscript with exit status 5, content of target "ab12"');
+    my %b = fingerprints(qw/ 1.fix 1--fixing /);
+
+    is  ($r >> 8,                2,               "Exit status");
+    is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unmodified");
+    ok  (  -f '1--fixing',                        "Tempfile existing");
+    isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile modified");
+    is  (read_file('1--fixing'), nl('FIRST'),     "Tempfile content");
+    ok  (! -f '1',                                "Target non-existing");
 }
-note 'Buildscript shell "-e" option';
+note "Buildscript with command returning false";
+write_file('1.fix', nl('echo FIRST', 'false', 'echo SECOND'));
 {
-    write_file('1.fix', nl('echo pre', 'false', 'echo post'));
-    my $result  = nl('pre');
-    my $tmpfile = '1--fixing';
+    delete_file('1--fixing');
+
+    my %a = fingerprints(qw/ 1.fix 1--fixing /);
     my $r = system("$fix 1 2>/dev/null");
-    is($r >> 8,             1,       'Buildscript returning false, exit status');
-    ok(  not (-f '1'),               'Buildscript returning false, non-existence of output');
-    ok(       -f $tmpfile,           'Buildscript returning false, existence of tempfile');
-    is(read_file($tmpfile), $result, 'Buildscript returning false, content of target "ab12"');
+    my %b = fingerprints(qw/ 1.fix 1--fixing /);
+
+    is  ($r >> 8,                1,               "Exit status");
+    is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unmodified");
+    ok  (  -f '1--fixing',                        "Tempfile existing");
+    isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile modified");
+    is  (read_file('1--fixing'), nl('FIRST'),     "Tempfile content");
+    ok  (! -f '1',                                "Target non-existing");
 }
-note 'Buildscript with non-existing command';
+note "Buildscript with non-existing command";
+write_file('1.fix', nl("NONEXISTING-SHELL-COMMAND"));
 {
-    write_file('1.fix', "NONEXISTING-SHELL-COMMAND\n");
-    my $tmpfile = '1--fixing';
+    delete_file('1--fixing');
+
+    my %a = fingerprints(qw/ 1.fix 1--fixing /);
     my $r = system("$fix 1 2>/dev/null");
-    is($r >> 8,        127,     'Malformed buildscript, exit status');
-    ok(  not (-f '1'),          'Malformed buildscript, non-existence of output');
-    ok(       -f $tmpfile,      'Malformed buildscript, existence of tempfile');
-    is(read_file($tmpfile), '', 'Malformed buildscript, content of target "ab12"');
+    my %b = fingerprints(qw/ 1.fix 1--fixing /);
+
+    is  ($r >> 8,                127,             "Exit status");
+    is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unmodified");
+    ok  (-f '1--fixing',                          "Tempfile existing");
+    isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile modified");
+    is  (read_file('1--fixing'), '',              "Tempfile content");
+    ok  (! -f '1',                                "Target non-existing");
 }
-note 'Single buildscript - new buildscript';
+note "First run of (working) buildscript";
+write_file('1.fix', nl('echo 11'));
 {
-    write_file('1.fix', ("echo 1\n") x 2);
+    my %a = fingerprints(qw/ 1.fix 1 /);
     my $r = system("$fix 1 2>/dev/null");
-    is($r >> 8,        0,        'Single buildscript first run, exit status');
-    ok(not (-f '1--fixing'),     'Single buildscript first run, non-existence of tempfile');
-    ok(     -f '1',              'Single buildscript first run, existence of target');
-    is(read_file('1'), "1\n1\n", 'Single buildscript first run, content of target');
+    my %b = fingerprints(qw/ 1.fix 1 /);
+
+    is  ($r >> 8,          0,           "Exit status");
+    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unmodified");
+    ok  (! -f '1--fixing',              "Tempfile non-existing");
+    ok  (  -f '1',                      "Target existing");
+    isnt($a{'1'},          $b{'1'},     "Target modified");
+    is  (read_file('1'),   nl('11'),    "Target content");
 }
-note 'Single buildscript - rerun without changes';
+note "Rerun without changes";
 {
-    my $oldstat = read_file_fingerprint('1');
-    write_file('1.fix', ("echo 1\n") x 2);
+    my %a = fingerprints(qw/ 1.fix 1 /);
     my $r = system("$fix 1 2>/dev/null");
-    my $newstat = read_file_fingerprint('1');
-    is($r >> 8,        0,        'Single buildscript rerun without change, exit status');
-    ok(not (-f '1--fixing'),     'Single buildscript rerun without change, non-existence of tempfile');
-    ok(     -f '1',              'Single buildscript rerun without change, existence of target');
-    is($newstat,       $oldstat, 'Single buildscript rerun without change, unmodified target');
+    my %b = fingerprints(qw/ 1.fix 1 /);
+
+    is  ($r >> 8,          0,           "Exit status");
+    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unmodified");
+    ok  (! -f '1--fixing',              "Tempfile non-existing");
+    ok  (  -f '1',                      "Target existing");
+    is  ($a{'1'},          $b{'1'},     "Target unmodified");
+    is  (read_file('1'),   nl('11'),    "Target content");
 }
-note 'Single buildscript - rerun on manually edited target file';
+note "Rerun after target was externally modified";
 {
-    write_file('1', "XXX\n");    # modify target file
-    my $oldstat = read_file_fingerprint('1');
+    write_file('1', nl('XXX'));    # modify target file
+
+    my %a = fingerprints(qw/ 1.fix 1 /);
     my $r = system("$fix 1 2>/dev/null");
-    my $newstat = read_file_fingerprint('1');
-    is  ($r >> 8,        1,        'Single buildscript rerun on manually edited target, exit status');
-    ok  (not (-f '1--fixing'),     'Single buildscript rerun on manually edited target, non-existence of tempfile');
-    ok  (     -f '1',              'Single buildscript rerun on manually edited target, existence of target');
-    is  (read_file('1'), "XXX\n",  'Single buildscript rerun on manually edited target, content of target');
-    is  ($newstat,       $oldstat, 'Single buildscript rerun on manually edited target, unmodified target');
+    my %b = fingerprints(qw/ 1.fix 1 /);
+
+    is  ($r >> 8,          1,           "Exit status");
+    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unmodified");
+    ok  (! -f '1--fixing',              "Tempfile non-existing");
+    ok  (  -f '1',                      "Target existing");
+    is  ($a{'1'},          $b{'1'},     "Target unmodified");
+    is  (read_file('1'),   nl('XXX'),   "Target content");
 }
-note 'Single buildscript - rerun after deleted target file';
+note "Rerun after target was deleted";
 {
-    my $oldstat = read_file_fingerprint('1');
     delete_file('1');
+
+    my %a = fingerprints(qw/ 1.fix 1 /);
     my $r = system("$fix 1 2>/dev/null");
-    my $newstat = read_file_fingerprint('1');
-    is  ($r >> 8,        0,        'Single buildscript rerun after delete, exit status');
-    ok  (not (-f '1--fixing'),     'Single buildscript rerun after delete, non-existence of tempfile');
-    ok  (     -f '1',              'Single buildscript rerun after delete, existence of target');
-    is  (read_file('1'), "1\n1\n", 'Single buildscript rerun after delete, content of target');
-    isnt($newstat,       $oldstat, 'Single buildscript rerun after delete, modified target');
+    my %b = fingerprints(qw/ 1.fix 1 /);
+
+    is  ($r >> 8,          0,           "Exit status");
+    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unmodified");
+    ok  (! -f '1--fixing',              "Tempfile non-existing");
+    ok  (  -f '1',                      "Target existing");
+    isnt($a{'1'},          $b{'1'},     "Target modified");
+    is  (read_file('1'),   nl('11'),    "Target content");
 }
-note 'Single buildscript - rerun after changed buildscript with same output';
+note "Rerun after buildscript was changed, but give same output";
+write_file('1.fix', nl('echo 11', '# COMMENT'));
 {
-    my $oldstat = read_file_fingerprint('1');
-    write_file('1.fix', ("echo 1\n") x 2, "# comment not affecting output\n");
+    my %a = fingerprints(qw/ 1.fix 1 /);
     my $r = system("$fix 1 2>/dev/null");
-    my $newstat = read_file_fingerprint('1');
-    is($r >> 8,        0,        'Single buildscript rerun after change with same output, exit status');
-    ok(not (-f '1--fixing'),     'Single buildscript rerun after change with same output, non-existence of tempfile');
-    ok(     -f '1',              'Single buildscript rerun after change with same output, existence of target');
-    is($newstat,       $oldstat, 'Single buildscript rerun after change with same output, unmodified target');
+    my %b = fingerprints(qw/ 1.fix 1 /);
+
+    is  ($r >> 8,          0,           "Exit status");
+    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unmodified");
+    ok  (! -f '1--fixing',              "Tempfile non-existing");
+    ok  (  -f '1',                      "Target existing");
+    is  ($a{'1'},          $b{'1'},     "Target unmodified");
+    is  (read_file('1'),   nl('11'),    "Target content");
 }
-note 'Single buildscript - rerun after changed buildscript with new output';
+note "Rerun after buildscript was changed, and give new output";
+write_file('1.fix', nl('echo 1'));
 {
-    my $oldstat = read_file_fingerprint('1');
-    write_file('1.fix', "echo 1\n");
+    my %a = fingerprints(qw/ 1.fix 1 /);
     my $r = system("$fix 1 2>/dev/null");
-    my $newstat = read_file_fingerprint('1');
-    is  ($r >> 8,        0,      'Single buildscript rerun after change, exit status');
-    ok  (not (-f '1--fixing'),   'Single buildscript rerun after change, non-existence of tempfile');
-    ok  (     -f '1',            'Single buildscript rerun after change, existence of target');
-    is  (read_file('1'), "1\n",  'Single buildscript rerun after change, content of target');
-    isnt($newstat,     $oldstat, 'Single buildscript rerun after change, modified target');
+    my %b = fingerprints(qw/ 1.fix 1 /);
+
+    is  ($r >> 8,          0,           "Exit status");
+    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unmodified");
+    ok  (! -f '1--fixing',              "Tempfile non-existing");
+    ok  (  -f '1',                      "Target existing");
+    isnt($a{'1'},          $b{'1'},     "Target modified");
+    is  (read_file('1'),   nl('1'),     "Target content");
 }
 
 # clear all existing files
 rmtree([ ".$name", "1", "1.fix" ]);
 
-note 'Buildscript with dependencies - new buildscript';
+note "First run of buildscript with dependencies";
+write_file('a.fix',    nl('echo a'));
+write_file('b.fix',    nl('echo b'));
+write_file('1.fix',    nl('echo 1'));
+write_file('2.fix',    nl('echo 2'));
+write_file('12.fix',   nl('$FIX_CMD 1 2',   'echo 12',   'cat 1 2 | sed "s/^/>/"'));
+write_file('ab.fix',   nl('$FIX_CMD a b',   'echo ab',   'cat a b | sed "s/^/>/"'));
+write_file('ab12.fix', nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'));
+my ($_a, $_b, $_1, $_2, $_ab, $_12, $_ab12);
+$_a    = nl(qw/           a                 /); # expected target content
+$_b    = nl(qw/               b             /);
+$_1    = nl(qw/                       1     /);
+$_2    = nl(qw/                           2 /);
+$_ab   = nl(qw/      ab  >a  >b             /);
+$_12   = nl(qw/                  12  >1  >2 /);
+$_ab12 = nl(qw/ab12 >ab >>a >>b >12 >>1 >>2 /);
 {
-    write_file('a.fix',    nl 'echo a');
-    write_file('b.fix',    nl 'echo b');
-    write_file('1.fix',    nl 'echo 1');
-    write_file('2.fix',    nl 'echo 2');
-    write_file('12.fix',   nl '$FIX_CMD 1 2',   'echo 12',   'cat 1 2 | sed "s/^/>/"');
-    write_file('ab.fix',   nl '$FIX_CMD a b',   'echo ab',   'cat a b | sed "s/^/>/"');
-    write_file('ab12.fix', nl '$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"');
-    my $result =           nl qw/ab12 >ab >>a >>b >12 >>1 >>2/;
+    my %a = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
     my $r = system("$fix ab12 2>/dev/null");
-    is($r >> 8,        0,           'Buildscript with deps first run, exit status');
-    ok(not (-f 'a--fixing'),        'Buildscript with deps first run, non-existence of tempfile for "a"');
-    ok(not (-f 'b--fixing'),        'Buildscript with deps first run, non-existence of tempfile for "b"');
-    ok(not (-f '1--fixing'),        'Buildscript with deps first run, non-existence of tempfile for "1"');
-    ok(not (-f '2--fixing'),        'Buildscript with deps first run, non-existence of tempfile for "2"');
-    ok(not (-f 'ab--fixing'),       'Buildscript with deps first run, non-existence of tempfile for "ab"');
-    ok(not (-f '12--fixing'),       'Buildscript with deps first run, non-existence of tempfile for "12"');
-    ok(not (-f 'ab12--fixing'),     'Buildscript with deps first run, non-existence of tempfile for "ab12"');
-    ok(     -f 'a',                 'Buildscript with deps first run, existence of target "a"');
-    ok(     -f 'b',                 'Buildscript with deps first run, existence of target "b"');
-    ok(     -f '1',                 'Buildscript with deps first run, existence of target "1"');
-    ok(     -f '2',                 'Buildscript with deps first run, existence of target "2"');
-    ok(     -f '12',                'Buildscript with deps first run, existence of target "12"');
-    ok(     -f 'ab',                'Buildscript with deps first run, existence of target "ab"');
-    ok(     -f 'ab12',              'Buildscript with deps first run, existence of target "ab12"');
-    is(read_file('ab12'), $result,  'Buildscript with deps first run, content of target "ab12"');
+    my %b = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
+
+    is  ($r >> 8,             0,              "Exit status");
+    is  ($a{'a.fix'},         $b{'a.fix'},    "Buildscript unmodified: 'a.fix'");
+    is  ($a{'b.fix'},         $b{'b.fix'},    "Buildscript unmodified: 'b.fix'");
+    is  ($a{'1.fix'},         $b{'1.fix'},    "Buildscript unmodified: '1.fix'");
+    is  ($a{'2.fix'},         $b{'2.fix'},    "Buildscript unmodified: '2.fix'");
+    is  ($a{'ab.fix'},        $b{'ab.fix'},   "Buildscript unmodified: 'ab.fix'");
+    is  ($a{'12.fix'},        $b{'12.fix'},   "Buildscript unmodified: '12.fix'");
+    is  ($a{'ab12.fix'},      $b{'ab12.fix'}, "Buildscript unmodified: 'ab12.fix'");
+    ok  (! -f 'a--fixing',                    "Tempfile non-existing: 'a--fixing'");
+    ok  (! -f 'b--fixing',                    "Tempfile non-existing: 'b--fixing'");
+    ok  (! -f '1--fixing',                    "Tempfile non-existing: '1--fixing'");
+    ok  (! -f '2--fixing',                    "Tempfile non-existing: '2--fixing'");
+    ok  (! -f 'ab--fixing',                   "Tempfile non-existing: 'ab--fixing'");
+    ok  (! -f '12--fixing',                   "Tempfile non-existing: '12--fixing'");
+    ok  (! -f 'ab12--fixing',                 "Tempfile non-existing: 'ab12-fixing'");
+    ok  (  -f 'a',                            "Target existing: 'a'");
+    ok  (  -f 'b',                            "Target existing: 'b'");
+    ok  (  -f '1',                            "Target existing: '1'");
+    ok  (  -f '2',                            "Target existing: '2'");
+    ok  (  -f 'ab',                           "Target existing: 'ab'");
+    ok  (  -f '12',                           "Target existing: '12'");
+    ok  (  -f 'ab12',                         "Target existing: 'ab12'");
+    isnt($a{'a'},             $b{'a'},        "Target modified: 'a'");
+    isnt($a{'b'},             $b{'b'},        "Target modified: 'b'");
+    isnt($a{'1'},             $b{'1'},        "Target modified: '1'");
+    isnt($a{'2'},             $b{'2'},        "Target modified: '2'");
+    isnt($a{'ab'},            $b{'ab'},       "Target modified: 'ab'");
+    isnt($a{'12'},            $b{'12'},       "Target modified: '12'");
+    isnt($a{'ab12'},          $b{'ab12'},     "Target modified: 'ab12'");
+    is  (read_file('a'),      $_a,            "Target content: 'a'");
+    is  (read_file('b'),      $_b,            "Target content: 'b'");
+    is  (read_file('1'),      $_1,            "Target content: '1'");
+    is  (read_file('2'),      $_2,            "Target content: '2'");
+    is  (read_file('ab'),     $_ab,           "Target content: 'ab'");
+    is  (read_file('12'),     $_12,           "Target content: '12'");
+    is  (read_file('ab12'),   $_ab12,         "Target content: 'ab12'");
 }
-note 'Buildscript with dependencies - rerun after changed dependency buildscript';
+note "Rerun without change of buildscript with dependencies";
 {
-    write_file('1.fix', nl 'echo 1', 'echo 1');
-    my $result = nl qw/ab12 >ab >>a >>b >12 >>1 >>1 >>2/;
+    my %a = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
     my $r = system("$fix ab12 2>/dev/null");
-    is($r >> 8,        0,           'Buildscript with deps rerun after dep change, exit status');
-    ok(not (-f '1--fixing'),        'Buildscript with deps rerun after dep change, non-existence of tempfile for "1"');
-    ok(not (-f '12--fixing'),       'Buildscript with deps rerun after dep change, non-existence of tempfile for "12"');
-    ok(not (-f 'ab12--fixing'),     'Buildscript with deps rerun after dep change, non-existence of tempfile for "ab12"');
-    ok(     -f '1',                 'Buildscript with deps rerun after dep change, existence of target "1"');
-    ok(     -f '2',                 'Buildscript with deps rerun after dep change, existence of target "2"');
-    ok(     -f '12',                'Buildscript with deps rerun after dep change, existence of target "12"');
-    ok(     -f 'ab',                'Buildscript with deps rerun after dep change, existence of target "ab"');
-    ok(     -f 'ab12',              'Buildscript with deps rerun after dep change, existence of target "ab12"');
-    is(read_file('ab12'), $result,  'Buildscript with deps rerun after dep change, content of target "ab12"');
+    my %b = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
+
+    is  ($r >> 8,             0,              "Exit status");
+    is  ($a{'a.fix'},         $b{'a.fix'},    "Buildscript unmodified: 'a.fix'");
+    is  ($a{'b.fix'},         $b{'b.fix'},    "Buildscript unmodified: 'b.fix'");
+    is  ($a{'1.fix'},         $b{'1.fix'},    "Buildscript unmodified: '1.fix'");
+    is  ($a{'2.fix'},         $b{'2.fix'},    "Buildscript unmodified: '2.fix'");
+    is  ($a{'ab.fix'},        $b{'ab.fix'},   "Buildscript unmodified: 'ab.fix'");
+    is  ($a{'12.fix'},        $b{'12.fix'},   "Buildscript unmodified: '12.fix'");
+    is  ($a{'ab12.fix'},      $b{'ab12.fix'}, "Buildscript unmodified: 'ab12.fix'");
+    ok  (! -f 'a--fixing',                    "Tempfile non-existing: 'a--fixing'");
+    ok  (! -f 'b--fixing',                    "Tempfile non-existing: 'b--fixing'");
+    ok  (! -f '1--fixing',                    "Tempfile non-existing: '1--fixing'");
+    ok  (! -f '2--fixing',                    "Tempfile non-existing: '2--fixing'");
+    ok  (! -f 'ab--fixing',                   "Tempfile non-existing: 'ab--fixing'");
+    ok  (! -f '12--fixing',                   "Tempfile non-existing: '12--fixing'");
+    ok  (! -f 'ab12--fixing',                 "Tempfile non-existing: 'ab12-fixing'");
+    ok  (  -f 'a',                            "Target existing: 'a'");
+    ok  (  -f 'b',                            "Target existing: 'b'");
+    ok  (  -f '1',                            "Target existing: '1'");
+    ok  (  -f '2',                            "Target existing: '2'");
+    ok  (  -f 'ab',                           "Target existing: 'ab'");
+    ok  (  -f '12',                           "Target existing: '12'");
+    ok  (  -f 'ab12',                         "Target existing: 'ab12'");
+    is  ($a{'a'},             $b{'a'},        "Target unmodified: 'a'");
+    is  ($a{'b'},             $b{'b'},        "Target unmodified: 'b'");
+    is  ($a{'1'},             $b{'1'},        "Target unmodified: '1'");
+    is  ($a{'2'},             $b{'2'},        "Target unmodified: '2'");
+    is  ($a{'ab'},            $b{'ab'},       "Target unmodified: 'ab'");
+    is  ($a{'12'},            $b{'12'},       "Target unmodified: '12'");
+    is  ($a{'ab12'},          $b{'ab12'},     "Target unmodified: 'ab12'");
 }
-note 'Buildscript with dependencies - rerun after dependency target delete';
+note "Rerun after change of subtarget '2'";
+write_file('2.fix', nl('echo 22'));
+$_a    = nl(qw/           a                  /); # expected target content
+$_b    = nl(qw/               b              /);
+$_1    = nl(qw/                       1      /);
+$_2    = nl(qw/                           22 /);   # -> changed
+$_ab   = nl(qw/      ab  >a  >b              /);
+$_12   = nl(qw/                  12  >1  >22 /);   # -> changed
+$_ab12 = nl(qw/ab12 >ab >>a >>b >12 >>1 >>22 /);   # -> changed
+{
+    my %a = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
+    my $r = system("$fix ab12 2>/dev/null");
+    my %b = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
+
+    is  ($r >> 8,             0,              "Exit status");
+    is  ($a{'a.fix'},         $b{'a.fix'},    "Buildscript unmodified: 'a.fix'");
+    is  ($a{'b.fix'},         $b{'b.fix'},    "Buildscript unmodified: 'b.fix'");
+    is  ($a{'1.fix'},         $b{'1.fix'},    "Buildscript unmodified: '1.fix'");
+    is  ($a{'2.fix'},         $b{'2.fix'},    "Buildscript unmodified: '2.fix'");
+    is  ($a{'ab.fix'},        $b{'ab.fix'},   "Buildscript unmodified: 'ab.fix'");
+    is  ($a{'12.fix'},        $b{'12.fix'},   "Buildscript unmodified: '12.fix'");
+    is  ($a{'ab12.fix'},      $b{'ab12.fix'}, "Buildscript unmodified: 'ab12.fix'");
+    ok  (! -f 'a--fixing',                    "Tempfile non-existing: 'a--fixing'");
+    ok  (! -f 'b--fixing',                    "Tempfile non-existing: 'b--fixing'");
+    ok  (! -f '1--fixing',                    "Tempfile non-existing: '1--fixing'");
+    ok  (! -f '2--fixing',                    "Tempfile non-existing: '2--fixing'");
+    ok  (! -f 'ab--fixing',                   "Tempfile non-existing: 'ab--fixing'");
+    ok  (! -f '12--fixing',                   "Tempfile non-existing: '12--fixing'");
+    ok  (! -f 'ab12--fixing',                 "Tempfile non-existing: 'ab12-fixing'");
+    ok  (  -f 'a',                            "Target existing: 'a'");
+    ok  (  -f 'b',                            "Target existing: 'b'");
+    ok  (  -f '1',                            "Target existing: '1'");
+    ok  (  -f '2',                            "Target existing: '2'");
+    ok  (  -f 'ab',                           "Target existing: 'ab'");
+    ok  (  -f '12',                           "Target existing: '12'");
+    ok  (  -f 'ab12',                         "Target existing: 'ab12'");
+    isnt($a{'2'},             $b{'2'},        "Target modified: '2'");
+    isnt($a{'12'},            $b{'12'},       "Target modified: '12'");
+    isnt($a{'ab12'},          $b{'ab12'},     "Target modified: 'ab12'");
+    is  ($a{'a'},             $b{'a'},        "Target unmodified: 'a'");
+    is  ($a{'b'},             $b{'b'},        "Target unmodified: 'b'");
+    is  ($a{'1'},             $b{'1'},        "Target unmodified: '1'");
+    is  ($a{'ab'},            $b{'ab'},       "Target unmodified: 'ab'");
+    is  (read_file('a'),      $_a,            "Target content: 'a'");
+    is  (read_file('b'),      $_b,            "Target content: 'b'");
+    is  (read_file('1'),      $_1,            "Target content: '1'");
+    is  (read_file('2'),      $_2,            "Target content: '2'");
+    is  (read_file('ab'),     $_ab,           "Target content: 'ab'");
+    is  (read_file('12'),     $_12,           "Target content: '12'");
+    is  (read_file('ab12'),   $_ab12,         "Target content: 'ab12'");
+}
+note "Rerun after a dependency (target) has been deleted";
 {
     delete_file('12');
-    my $result = nl qw/ab12 >ab >>a >>b >12 >>1 >>1 >>2/;
-    my $r = system("$fix ab12 2>/dev/null");
-    is($r >> 8,        0,           'Buildscript with deps rerun after dep change, exit status');
-    ok(not (-f '1--fixing'),        'Buildscript with deps rerun after dep change, non-existence of tempfile for "1"');
-    ok(not (-f '12--fixing'),       'Buildscript with deps rerun after dep change, non-existence of tempfile for "12"');
-    ok(not (-f 'ab12--fixing'),     'Buildscript with deps rerun after dep change, non-existence of tempfile for "ab12"');
-    ok(     -f '1',                 'Buildscript with deps rerun after dep change, existence of target "1"');
-    ok(     -f '2',                 'Buildscript with deps rerun after dep change, existence of target "2"');
-    ok(     -f '12',                'Buildscript with deps rerun after dep change, existence of target "12"');
-    ok(     -f 'ab',                'Buildscript with deps rerun after dep change, existence of target "ab"');
-    ok(     -f 'ab12',              'Buildscript with deps rerun after dep change, existence of target "ab12"');
-    is(read_file('ab12'), $result,  'Buildscript with deps rerun after dep change, content of target "ab12"');
-}
 
-# FIXME: test failure when a dependency target have been manually edited
+    my %a = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
+    my $r = system("$fix ab12 2>/dev/null");
+    my %b = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
+
+    is  ($r >> 8,             0,              "Exit status");
+    is  ($a{'a.fix'},         $b{'a.fix'},    "Buildscript unmodified: 'a.fix'");
+    is  ($a{'b.fix'},         $b{'b.fix'},    "Buildscript unmodified: 'b.fix'");
+    is  ($a{'1.fix'},         $b{'1.fix'},    "Buildscript unmodified: '1.fix'");
+    is  ($a{'2.fix'},         $b{'2.fix'},    "Buildscript unmodified: '2.fix'");
+    is  ($a{'ab.fix'},        $b{'ab.fix'},   "Buildscript unmodified: 'ab.fix'");
+    is  ($a{'12.fix'},        $b{'12.fix'},   "Buildscript unmodified: '12.fix'");
+    is  ($a{'ab12.fix'},      $b{'ab12.fix'}, "Buildscript unmodified: 'ab12.fix'");
+    ok  (! -f 'a--fixing',                    "Tempfile non-existing: 'a--fixing'");
+    ok  (! -f 'b--fixing',                    "Tempfile non-existing: 'b--fixing'");
+    ok  (! -f '1--fixing',                    "Tempfile non-existing: '1--fixing'");
+    ok  (! -f '2--fixing',                    "Tempfile non-existing: '2--fixing'");
+    ok  (! -f 'ab--fixing',                   "Tempfile non-existing: 'ab--fixing'");
+    ok  (! -f '12--fixing',                   "Tempfile non-existing: '12--fixing'");
+    ok  (! -f 'ab12--fixing',                 "Tempfile non-existing: 'ab12-fixing'");
+    ok  (  -f 'a',                            "Target existing: 'a'");
+    ok  (  -f 'b',                            "Target existing: 'b'");
+    ok  (  -f '1',                            "Target existing: '1'");
+    ok  (  -f '2',                            "Target existing: '2'");
+    ok  (  -f 'ab',                           "Target existing: 'ab'");
+    ok  (  -f '12',                           "Target existing: '12'");
+    ok  (  -f 'ab12',                         "Target existing: 'ab12'");
+    isnt($a{'12'},            $b{'12'},       "Target modified: '12'");
+    is  ($a{'a'},             $b{'a'},        "Target unmodified: 'a'");
+    is  ($a{'b'},             $b{'b'},        "Target unmodified: 'b'");
+    is  ($a{'1'},             $b{'1'},        "Target unmodified: '1'");
+    is  ($a{'2'},             $b{'2'},        "Target unmodified: '2'");
+    is  ($a{'ab'},            $b{'ab'},       "Target unmodified: 'ab'");
+    is  ($a{'ab12'},          $b{'ab12'},     "Target unmodified: 'ab12'");
+    is  (read_file('a'),      $_a,            "Target content: 'a'");
+    is  (read_file('b'),      $_b,            "Target content: 'b'");
+    is  (read_file('1'),      $_1,            "Target content: '1'");
+    is  (read_file('2'),      $_2,            "Target content: '2'");
+    is  (read_file('ab'),     $_ab,           "Target content: 'ab'");
+    is  (read_file('12'),     $_12,           "Target content: '12'");
+    is  (read_file('ab12'),   $_ab12,         "Target content: 'ab12'");
+}
+note "Rerun after dependency target '1' was externally modified";
+{
+    write_file('1', nl('XXX'));    # modify target file
+
+    my %a = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
+    my $r = system("$fix ab12 2>/dev/null");
+    my %b = fingerprints(qw/ a     b     1     2     ab     12     ab12
+                             a.fix b.fix 1.fix 2.fix ab.fix 12.fix ab12.fix /);
+
+    is  ($r >> 8,             1,              "Exit status");
+    is  ($a{'a.fix'},         $b{'a.fix'},    "Buildscript unmodified: 'a.fix'");
+    is  ($a{'b.fix'},         $b{'b.fix'},    "Buildscript unmodified: 'b.fix'");
+    is  ($a{'1.fix'},         $b{'1.fix'},    "Buildscript unmodified: '1.fix'");
+    is  ($a{'2.fix'},         $b{'2.fix'},    "Buildscript unmodified: '2.fix'");
+    is  ($a{'ab.fix'},        $b{'ab.fix'},   "Buildscript unmodified: 'ab.fix'");
+    is  ($a{'12.fix'},        $b{'12.fix'},   "Buildscript unmodified: '12.fix'");
+    is  ($a{'ab12.fix'},      $b{'ab12.fix'}, "Buildscript unmodified: 'ab12.fix'");
+    ok  (! -f 'a--fixing',                    "Tempfile non-existing: 'a--fixing'");
+    ok  (! -f 'b--fixing',                    "Tempfile non-existing: 'b--fixing'");
+    ok  (! -f '1--fixing',                    "Tempfile non-existing: '1--fixing'");
+    ok  (! -f '2--fixing',                    "Tempfile non-existing: '2--fixing'");
+    ok  (! -f 'ab--fixing',                   "Tempfile non-existing: 'ab--fixing'");
+    ok  (! -f '12--fixing',                   "Tempfile non-existing: '12--fixing'");
+    ok  (! -f 'ab12--fixing',                 "Tempfile non-existing: 'ab12-fixing'");
+    ok  (  -f 'a',                            "Target existing: 'a'");
+    ok  (  -f 'b',                            "Target existing: 'b'");
+    ok  (  -f '1',                            "Target existing: '1'");
+    ok  (  -f '2',                            "Target existing: '2'");
+    ok  (  -f 'ab',                           "Target existing: 'ab'");
+    ok  (  -f '12',                           "Target existing: '12'");
+    ok  (  -f 'ab12',                         "Target existing: 'ab12'");
+    is  ($a{'a'},             $b{'a'},        "Target unmodified: 'a'");
+    is  ($a{'b'},             $b{'b'},        "Target unmodified: 'b'");
+    is  ($a{'1'},             $b{'1'},        "Target unmodified: '1'");
+    is  ($a{'2'},             $b{'2'},        "Target unmodified: '2'");
+    is  ($a{'12'},            $b{'12'},       "Target unmodified: '12'");
+    is  ($a{'ab'},            $b{'ab'},       "Target unmodified: 'ab'");
+    is  ($a{'ab12'},          $b{'ab12'},     "Target unmodified: 'ab12'");
+    is  (read_file('a'),      $_a,            "Target content: 'a'");
+    is  (read_file('b'),      $_b,            "Target content: 'b'");
+    is  (read_file('1'),      nl('XXX'),      "Target content: '1'");
+    is  (read_file('2'),      $_2,            "Target content: '2'");
+    is  (read_file('ab'),     $_ab,           "Target content: 'ab'");
+    is  (read_file('12'),     $_12,           "Target content: '12'");
+    is  (read_file('ab12'),   $_ab12,         "Target content: 'ab12'");
+}
 
 END {
     done_testing();

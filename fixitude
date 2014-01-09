@@ -8,7 +8,7 @@ use open ':utf8';
 binmode(STDOUT, ':utf8');
 
 use Cwd qw/cwd realpath/;
-use File::Path 'mkpath';                       # use 'mkpath' and 'rmtree'
+use File::Path qw/mkpath rmtree/;              # use 'mkpath' and 'rmtree'
 use Encode qw(encode_utf8);
 use Digest::SHA qw(sha1_hex);
 use Data::Dumper;
@@ -16,11 +16,19 @@ $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Terse    = 1;
 
+# FIXME: Prettier output. Each target name should only be outputted once.
+#
+# FIXME: Runstate should be stored separately ('state/ABORT' should be there)
+#
+# FIXME: Be careful in overwriting tempfiles(?) (e.i. refuse to do it, if it
+# already exists, and wasn't produced by fixitude itself)
+#
+# FIXME: When there is no fix state entry and target already exist, build
+# anyway, then error if output differs from the newly built file. (This way we
+# can silently reconstruct missing parts of the database if nothing has
+# changed.) -- Using '--force' should just wipe the existing target, however.
 #
 # FIXME: Unit tests of some kind
-#
-# FIXME: When a re-compiled target turns out identical to previous one, we
-# shouldn't recompile all the stuff that depends on it.
 #
 # HMMM. Apenwarr redo generates no output file if nothing was written by a
 # rule. Is this good? Should we do this too? (Note, however, that apenwarr redo
@@ -44,8 +52,8 @@ $Data::Dumper::Terse    = 1;
 ###############################################################################
 
 use vars qw($NAME $VERSION $YEAR);
-$VERSION = "0.2a";
-$YEAR    = "2013";
+$VERSION = "0.3";
+$YEAR    = "2012-2014";
 ($NAME)  = __FILE__ =~ m#([^/]*)$#;            # last non-slash part of path
 
 my %opt = (
@@ -104,14 +112,24 @@ sub read_file {
     return <$in>;
 }
 
+sub rename_file {
+    my ($file1, $file2) = @_;
+    rename($file1, $file2) or "Failed to rename '$file1' -> '$file2': $!\n";
+}
+
 sub write_file {
     my ($outfile, @data) = @_;
     my $tmpfile = "$outfile--writing";
     my $out;
-    my $tmpdir = ($tmpfile =~ m#^(.*[^/])/# )[0];
-    unless (-d $tmpdir or mkpath($tmpdir)) {
-        warn "$NAME: Failed to create dir '$tmpdir'\n";
-        return undef;
+    if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
+        if (-e $dir and not -d $dir) {
+            warn "$NAME: Failed to create dir '$dir': File exists\n";
+            return undef;
+        }
+        unless (-d $dir or mkpath($dir)) {
+            warn "$NAME: Failed to create dir '$dir'\n";
+            return undef;
+        }
     }
     unless (open $out, ">:utf8", $tmpfile) {
         warn "$NAME: Failed to open tempfile '$tmpfile' for writing: $!\n";
@@ -190,72 +208,88 @@ sub restore_stdout {
 sub redir_stdout {
     my ($file, $coderef) = @_;
     my $oldout = redirect_stdout($file);
-    &$coderef($file);
+    my @x = &$coderef($file);
     restore_stdout($oldout);
+    return wantarray() ? @x : $x[0];
 }
 
-# build_target($target);
+# build_target($level, $target);
 #
-# Builds TARGET by executing its buildfile. Return TRUE if build succeeded.
+# Builds TARGET by executing its buildfile. Return TRUE if the content of
+# TARGET was modified because of the (re)build, FALSE if target was not
+# modified. Die()s on error.
+#
+# NOTE: If a target was rebuilt, but the target content remained the same after
+# the rebuild, then that target does not count as updated. (This can happen
+# e.g. when the build file was modified in a way that did not change its output
+# [e.g. a comment was added to it] or if a deleted target with unmodified
+# dependencies was rebuilt.)
 sub build_target {
-    my ($target) = @_;
-    my $exit_code;
+    my ($level, $target) = @_;
+    info($target);
+    if (-f $target and has_changed($target)) {
+        set("ABORT/$target",           ABORT => $target);
+        set("ABORT/$opt{parent_name}", ABORT => $target)
+            if $opt{parent_name};
+        msg(ERROR, "$target: Target externally modified, aborting\n");
+        exit 1;
+    }
+
     my $outfile = "$target--fixing";
     my $buildscript = "$target.fix";
-    redir_stdout($outfile, sub {
-
+    # clear dependency information (is rebuilt each run)
+    set($target,
+        type => 'target',
+        deps => [[ $buildscript ]],
+    );
+    my ($exit_code, $exit, $errno) = redir_stdout($outfile, sub {
         local $ENV{FIX_PARENT} = $target;
+        local $ENV{FIX_LEVEL}  = $level;
 
         # FIXME: Should we allow #! in buildscripts?
         open(my $shell, '|-', $opt{shell}, '-e')
             or die "Failed to execute shell '$opt{shell}': $!\n";
         print $shell read_file($buildscript);
 
-        # NB: outfile is kept on failure (so user may inspect it)
-        $exit_code = close($shell) or do {
-            my $errno = $!;
-            if ($errno != 0) {
-                die "Failed to run buildscript '$buildscript': $errno\n";
-            }
-            my $exit = $? >> 8;
-            msg(ERROR, "$target: exit status $exit\n");
-            exit $exit;
-        };
+        my $close = close($shell);
+        return ($close, $?, $!);
     });
-    replace_file($outfile, $target);
-    return $exit_code;
-}
 
-# Run a buildscript, return its exit code.
-sub run {
-    my ($target) = @_;
-    my $buildscript = "$target.fix";
-    my $do = read_file($buildscript);
+    # NOTE: outfile is kept on failure (so user may inspect it)
+    #
+    # - Except when a dependency completely failed to run (e.g. its output file
+    #   was externally modified) in which case we remove the outfile.
+    $exit_code or do {
+        $exit >>= 8;
+        if ($errno != 0) {
+            die "Failed to run buildscript '$buildscript': $errno\n";
+        }
+        my $aborted = get("ABORT/$target", 'ABORT');
+        if ($aborted ne '') {                  # a dependency failed to run
+            unlink($outfile);                  #   erase outfile and
+            set(                               #     and tell our parent that
+                "ABORT/$opt{parent_name}",     #     that we failed, too
+                ABORT => $aborted,
+            ) if $opt{parent_name};
+        } else {                               # a buildscript returned non-zero
+            msg(ERROR, "$target: exit status $exit\n");
+        }
+        exit $exit;
+    };
 
-    if (not -f $buildscript) {
-        warn("$NAME: Buildscript '$buildscript' does not exist.\n");
-        exit 2;
+    my $old_checksum = get($target, 'checksum');
+    my $new_checksum = sha1($outfile);
+    if ($new_checksum eq $old_checksum) {      # target unmodified
+        if (-e $target) {                      #   if target exist
+            unlink($outfile);
+        } else {                               #   if target was deleted
+            rename_file($outfile, $target);
+        }
+        return FALSE;
     }
-    if (-f $target and has_changed($target)) {
-        warn("Target '$target' externally modified, won't overwrite.\n");
-        exit 1;
-    }
-
-    # clear dependency information (is rebuilt each run)
-    set($target, deps => []);
-
-    my $exit_code = build_target($target);
-    set($target,
-        checksum => sha1($target),
-        type     => 'target',
-        add_deps => [ $buildscript ],
-    );
-    set($buildscript,
-        checksum => sha1($buildscript),
-        type     => 'source',
-    );
-
-    return $exit_code;
+    rename_file($outfile, $target);            # target modified
+    set($target, checksum => $new_checksum);   #   store new checksum
+    return TRUE;
 }
 
 # FIXME: clean up msg()
@@ -296,18 +330,23 @@ sub _die { msg ERROR, @_; exit 255 }
     sub init_state {
         my ($fix_dir) = @_;
         $state_dir = "$fix_dir/state";
-        use File::Path 'mkpath';
         if (not -d $state_dir) {
             mkpath($state_dir)
                 or die "$NAME: Failed to create state dir '$state_dir'\n";
         }
     }
 
+    sub delete_state {
+        my ($file) = @_;
+        my $full = "$state_dir/$file";
+        rmtree($full);
+    }
+
     # Rereads the state file every time, since subprocess may have updated it.
     # FIXME: reread file only when it has been changed
     sub get_state {
         my ($file) = @_;
-        my $full  = "$state_dir/$file";
+        my $full = "$state_dir/$file";
         if (-f $full) {                        # state file exists
             my $print = read_file_fingerprint($full);
             if ($print ne ($print{$file} // '')) {
@@ -315,9 +354,7 @@ sub _die { msg ERROR, @_; exit 255 }
                 $state{$file} = eval read_file($full);
             }
         } else {                               # no state file exists
-            $state{$file} = {
-                deps => [], type => '',
-            };
+            $state{$file} = { deps => [] };
         }
         return $state{$file};
     }
@@ -343,15 +380,16 @@ sub get {
     my ($file, @field) = @_;
     my $state = get_state($file);
     return wantarray()
-        ? map { $state->{$_} } @field
-        : $state->{ $field[0] };
+        ? map { $state->{$_} // '' } @field
+        : $state->{ $field[0] } // '';
 }
 
 sub set {
     my ($file, %arg) = @_;
+    return if $file eq '';
     my $state = get_state($file);
     if (exists $arg{add_deps}) {
-        push @{ $state->{deps} }, @{ delete $arg{add_deps} };
+        push @{ $state->{deps} }, \@{ delete $arg{add_deps} };
     }
     foreach my $field (keys %arg) {
         $state->{$field} = $arg{$field};
@@ -363,99 +401,66 @@ sub set {
 sub has_changed {
     my ($file) = @_;
     my $checksum = get($file, 'checksum');
-    return sha1($file) ne $checksum ? TRUE : FALSE;
+    return sha1($file) eq $checksum ? FALSE : TRUE;
 }
 
-sub xx {
-    return;
-    my ($indent, $txt) = @_;
-    my $spc = "    " x $indent;
-    $txt =~ s/^/$spc/me;
-    warn $txt;
-}
-
-# rebuilds that do not require dependency updates
-{
-    my @deleted;
-    sub check_deps {
-        my ($indent, $targets) = @_;
-        $indent += 1;
-        my $rebuild_parent = FALSE;
-        foreach my $target (@$targets) {
-            my $state = get_state($target);
-
-            if (keys %$state == 0) {           # previously unbuilt file
-                die "Buildscript '$target.fix' does not exist\n"
-                    unless -f "$target.fix";
-                xx $indent, "$target previously unbuilt file";
-                $rebuild_parent = TRUE;
-                $state->{rebuild} = TRUE;
-                next;
+# update_targets($level, @target);
+#
+# Make sure all TARGET(s) are up-to-date, rebuilding them if necessary. Return
+# TRUE if the content one or more TARGET(s) was modified because of a rebuild,
+# FALSE if no targets were modified. Die()s on error.
+#
+# NOTE: If a target was rebuilt, but the target content remained the same after
+# the rebuild, then that target does not count as updated. (This can happen
+# e.g. when the build file was modified in a way that did not change its output
+# [e.g. a comment was added to it] or if a deleted target with unmodified
+# dependencies was rebuilt.)
+sub update_targets {
+    my ($level, @target) = @_;
+    local $opt{level} = $level;
+    my $changed  = FALSE;
+  TARGET: foreach my $target (@target) {
+        my ($type, $dep_clusters) = get($target, 'type', 'deps');
+        if ($type eq '') {                     # target is not known by fix
+            my $buildscript = "$target.fix";
+            set($buildscript,
+                checksum => sha1($buildscript),
+                type     => 'source',
+            );
+            build_target($level, $target)      #   (all target has at least
+                and $changed = TRUE;           #   its own buildfile as dep)
+        } elsif ($type eq 'target') {          # file previously seen by fix
+            info "$target (previously built)";
+            my $deps_changed = FALSE;
+            foreach my $deps (@$dep_clusters) {#   check deps
+                update_targets($level + 1, @$deps)
+                    and $deps_changed = TRUE;
             }
-            if (not exists $state->{deps}) {   # (no deps) = build file
-                if (sha1($target) ne $state->{checksum}) { # build file modified
-                    xx $indent, "build file $target HAS CHANGED\n";
-                    $rebuild_parent   = TRUE;  #   rebuild parent targets
-                } else {
-                    xx $indent, "build file $target IS UNCHANGED\n";
-                }
-                $state->{rebuild} = FALSE;     # never rebuild a build file
-                next;
+            if ($deps_changed or (not -e $target) or has_changed($target)) {
+                build_target($level, $target)
+                    and $changed = TRUE;
             }
-
-            my $deps_changed = check_deps($indent, $state->{deps});
-            xx $indent, "TARGET: $target\n";
-
-            if ($deps_changed) {               # a dependency changed
-                xx $indent, "$target \e[42mDEP CHANGED\e[m -- rebuild\n";
-                $rebuild_parent   = TRUE;      #   rebuild parents
-                $state->{rebuild} = TRUE;      #   rebuild this target
-                next;
-            }
-            if (not -e $target) {              # target deleted (but unchanged)
-                # When we get here, we *know* that we have a deleted file with
-                # unchanged dependencies. This file when recreated will be
-                # identical to the previous file, and so nothing that depends on it
-                # will have to be rebuilt.
-                xx $indent, "$target \e[42mDELETED\e[m -- rebuild w/o rebuilding deps\n";
-                push @deleted, $target;
-                $state->{rebuild} = TRUE;      #   rebuild this target
-                next;
-            }
-
-            if (sha1($target) eq $state->{checksum}) { # target unchanged
-                xx $indent, "$target UNCHANGED\n";
-                $state->{rebuild} = FALSE;     #   don't rebuild this target
-                next;
-            } else {                           # target changed
-                xx $indent, "$target \e[42mCHANGED\e[m -- rebuild\n";
-                $rebuild_parent   = TRUE;      #   rebuild parents
-                $state->{rebuild} = TRUE;      #   rebuild this target
-                next;
-            }
-        } continue {
-            save_state($target);
+        } elsif ($type eq 'source') {          # buildscript
+            if (has_changed($target)) { $changed = TRUE }
+        } else {
+            die "ERROR: Corrupt fix state\n" .
+                "Field 'type' for file '$target' must be 'target' or 'source'\n";
         }
-        xx $indent, "RETURN \e[7m$rebuild_parent\e[m\n";
-        return $rebuild_parent;
     }
-
-    sub deleted { @deleted }
+    return $changed;
 }
 
 ###############################################################################
 ##                                                                           ##
-##  Initialisation                                                           ##
+##  Initialization                                                           ##
 ##                                                                           ##
 ###############################################################################
 
 # parse command line options
 use Getopt::Long qw(
-    GetOptionsFromArray :config posix_default bundling gnu_compat
-    no_ignore_case permute pass_through
+    :config posix_default bundling gnu_compat no_ignore_case permute
 );
 GetOptions(              # info displayed by help()
-    \%opt,               # ========================
     'debug|D'   => sub {             ### enable debugging mode
         $opt{debug} = $ENV{FIX_DEBUG} = 1 },
     'no-debug'   => sub {
@@ -464,7 +469,6 @@ GetOptions(              # info displayed by help()
         $opt{force} = $ENV{FIX_FORCE} = 1 },
     'no-force'   => sub {  ### force overwrite, even when target has changed
         $opt{force} = $ENV{FIX_FORCE} = 0 },
-
     #'help|h',            ### display this help and exit
     #'manpage|M',         ### display program manpage and exit
     #'version|V',         ### output version information and exit
@@ -517,18 +521,6 @@ if ($opt{parent_name} eq '') {                 # only mother process
         }
         $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
     }
-
-    # go through everything and calculate which targets to run
-
-    # walk through dependency storage and mark which targets to 'rebuild'
-    if (check_deps(0, \@ARGV)) {
-        warn "Dependencies has changed, will rebuild stuff.\n";
-    }
-
-    if (my @deleted = deleted()) {
-        print STDERR "Deleted files with unchanged dependencies (in build order):\n";
-        print STDERR "    $_\n" foreach @deleted;
-    }
 }
 
 ###############################################################################
@@ -537,29 +529,13 @@ if ($opt{parent_name} eq '') {                 # only mother process
 ##                                                                           ##
 ###############################################################################
 
-foreach my $target (@ARGV) {
-    warn "$target\n";
-    if (-f $target) {
-        if (has_changed($target)) {             # ERROR: target modified
-            # FIXME: '--force' option to overwrite changed target files
-            msg ERROR, "Target file '$target' externally modified, won't overwrite.\n";
-            exit 1;
-        }
-        if (not get($target, 'rebuild')) {
-            debug "Target file '$target' is up-to-date.\n";
-            next;
-        }
-    }
-
-    debug "Modified dependencies, rebuilding\n";
-    run($target);
-    save_state($target);
-}
-
-# add current args as dependency for parent
+# delete runstate from previous run
 if ($opt{parent_name}) {
-    set($opt{parent_name}, add_deps => \@ARGV);
+    delete_state('ABORT');
+    set($opt{parent_name}, add_deps => \@ARGV );
 }
+
+update_targets($opt{level}, @ARGV);
 
 __END__
 

@@ -16,35 +16,6 @@ $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Terse    = 1;
 
-# FIXME: Prettier output. Each target name should only be outputted once.
-#
-# FIXME: Runstate should be stored separately ('state/ABORT' should be there)
-#
-# FIXME: Be careful in overwriting tempfiles(?) (e.i. refuse to do it, if it
-# already exists, and wasn't produced by fixitude itself)
-#
-# FIXME: When there is no fix state entry and target already exist, build
-# anyway, then error if output differs from the newly built file. (This way we
-# can silently reconstruct missing parts of the database if nothing has
-# changed.) -- Using '--force' should just wipe the existing target, however.
-#
-# FIXME: Unit tests of some kind
-#
-# HMMM. Apenwarr redo generates no output file if nothing was written by a
-# rule. Is this good? Should we do this too? (Note, however, that apenwarr redo
-# also does not attempt to regenerate the non-existing output, unless any
-# dependencies have changed. 'redo-ifchange target' works to build the target
-# the first time, but after that it does not run unless changes were made in
-# the dependencies.)
-#
-# This in itself is good for a target like 'all', but how about something like
-# 'clean'?
-#
-# FIXME: Replace 'mkpath' with own function.
-#
-# FIXME: Build test cases
-#   o Zero size output should not result in file
-
 ###############################################################################
 ##                                                                           ##
 ##  Settings                                                                 ##
@@ -58,11 +29,11 @@ $YEAR    = "2012-2014";
 
 my %opt = (
     shell       => '/bin/dash',
-    parent_name => $ENV{FIX_PARENT} // '',   # parent target (set when called by fix itself)
+    parent_name => $ENV{FIX_PARENT} // '',     # parent target (set when called by fix itself)
     fix_dir     => ".$NAME",
-    level       => $ENV{FIX_LEVEL} += 1,     # child level (mother = 1)
-    debug       => $ENV{FIX_DEBUG} ? 1 : 0,  # -D/--debug $FIX_DEBUG
-    force       => $ENV{FIX_FORCE} ? 1 : 0,  # -f/--force $FIX_FORCE
+    level       => $ENV{FIX_LEVEL} += 1,       # child level (mother = 1)
+    debug       => $ENV{FIX_DEBUG} ? 1 : 0,    # -D/--debug $FIX_DEBUG
+    force       => $ENV{FIX_FORCE} ? 1 : 0,    # -f/--force $FIX_FORCE
 );
 
 ###############################################################################
@@ -71,17 +42,17 @@ my %opt = (
 ##                                                                           ##
 ###############################################################################
 
-sub TRUE { 1 }
+sub TRUE  { 1 }
 sub FALSE { 0 }
 
-sub PLAIN  { 0 } # loglevel for msg()
-sub BOLD   { 1 }
+sub PLAIN { 0 }                                # loglevel for msg()
+sub BOLD  { 1 }
 
-sub ERROR   { 4 }   # red
-sub WARN    { 2 }   # yellow
-sub INFO    { 3 }   # green
-sub VERBOSE { 3 }   # green
-sub DEBUG   { 0 }   # plain
+sub ERROR   { 4 }                              # red
+sub WARN    { 2 }                              # yellow
+sub INFO    { 3 }                              # green
+sub VERBOSE { 3 }                              # green
+sub DEBUG   { 0 }                              # plain
 
 # Read file stat fingerprint. If this is unchanged since a previous check, know
 # the file is unchanged. If fingerprint has changed, then we need to look at
@@ -208,9 +179,9 @@ sub restore_stdout {
 sub redir_stdout {
     my ($file, $coderef) = @_;
     my $oldout = redirect_stdout($file);
-    my @x = &$coderef($file);
+    my @result = &$coderef($file);
     restore_stdout($oldout);
-    return wantarray() ? @x : $x[0];
+    return wantarray() ? @result : $result[0];
 }
 
 # build_target($level, $target);
@@ -235,9 +206,9 @@ sub build_target {
         exit 1;
     }
 
-    my $outfile = "$target--fixing";
     my $buildscript = "$target.fix";
-    # clear dependency information (is rebuilt each run)
+    my $outfile     = "$target--fixing";
+    # clear dependency information (rebuilt each run)
     set($target,
         type => 'target',
         deps => [[ $buildscript ]],
@@ -315,7 +286,7 @@ sub debug {
     say STDERR "$NAME " . ("  " x ($opt{level} - 1)) . $msg;
 }
 sub _warn { msg WARN, @_ }
-sub _die { msg ERROR, @_; exit 255 }
+sub _die  { msg ERROR, @_; exit 255 }
 
 ###############################################################################
 ##                                                                           ##
@@ -491,7 +462,6 @@ init_state($opt{fix_dir});
 
 if ($opt{parent_name} eq '') {                 # only mother process
     $ENV{FIX_CMD} = realpath(__FILE__);
-
     # Add the currently running 'fix' command first in $PATH (which is
     # inherited by all child processes). -- This makes sure that all build
     # scripts that invoke 'fix' find it, even if 'fix' wasn't in the invoking
@@ -500,27 +470,25 @@ if ($opt{parent_name} eq '') {                 # only mother process
     # We achieve this by creating a '.fix/bin' directory, add a symlink to the
     # 'fix' command there, and tuck that directory name onto the beginning of
     # the $PATH environment variable that gets inherited by our children.
-    {
-        my $bindir = "$opt{fix_dir}/bin";
-        my $link   = "$opt{fix_dir}/bin/$NAME"; # name of link to create
-        if (not -l $link) {                     # if missing '.fix/bin/fix'
-            if (not -d $bindir) {               #   make sure '.fix/bin' exists
-                mkpath($bindir)
-                    or die "$NAME: Failed to create dir '$bindir'\n";
-            }
-            symlink(realpath(__FILE__), $link)
-                or die "$NAME: Failed to create symlink '$link': $!\n";
+    my $bindir = "$opt{fix_dir}/bin";
+    my $link   = "$opt{fix_dir}/bin/$NAME";    # name of link to create
+    if (not -l $link) {                        # if missing '.fix/bin/fix'
+        if (not -d $bindir) {                  #   make sure '.fix/bin' exists
+            mkpath($bindir)
+                or die "$NAME: Failed to create dir '$bindir'\n";
         }
-        my $full = realpath($bindir);
-        if ($full =~ /:/) {                     # guard for stupid system bug
-            # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I
-            # know). Therefore the cwd cannot contain a colon (we could fix
-            # this this by having this stuff in /tmp, I guess).
-            die "$NAME: Colon not allowed in current dir path ('" .
-                cwd() . "')\n",
-        }
-        $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
+        symlink(realpath(__FILE__), $link)
+            or die "$NAME: Failed to create symlink '$link': $!\n";
     }
+    my $full = realpath($bindir);
+    # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).
+    # Therefore the cwd cannot contain a colon (we could fix this this by
+    # having this stuff in /tmp, I guess).
+    if ($full =~ /:/) {                        # guard for stupid system bug
+        die "$NAME: Colon not allowed in current dir path ('" .
+            cwd() . "')\n";
+    }
+    $ENV{PATH} = "$full:$ENV{PATH}";           # add dir to path
 }
 
 ###############################################################################

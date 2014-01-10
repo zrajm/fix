@@ -9,8 +9,6 @@ binmode(STDOUT, ':utf8');
 
 use Cwd qw/cwd realpath/;
 use File::Path qw/mkpath rmtree/;              # use 'mkpath' and 'rmtree'
-use Encode qw(encode_utf8);
-use Digest::SHA qw(sha1_hex);
 use Data::Dumper;
 $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
@@ -44,6 +42,8 @@ my %opt = (
 
 sub TRUE  { 1 }
 sub FALSE { 0 }
+sub SOURCE { 'source' }
+sub TARGET { 'target' }
 
 sub PLAIN { 0 }                                # loglevel for msg()
 sub BOLD  { 1 }
@@ -142,9 +142,11 @@ sub replace_file {
         or die "Failed to replace target '$file2' with tempfile '$file1': $!\n";
 }
 
-sub sha1 {
+sub checksum_file {
     my ($file) = @_;
     return '' unless -f $file;
+    use Encode qw(encode_utf8);
+    use Digest::SHA qw(sha1_hex);
     sha1_hex(encode_utf8(read_file($file)));
 }
 
@@ -210,7 +212,7 @@ sub build_target {
     my $outfile     = "$target--fixing";
     # clear dependency information (rebuilt each run)
     set($target,
-        type => 'target',
+        type => TARGET,
         deps => [[ $buildscript ]],
     );
     my ($exit_code, $exit, $errno) = redir_stdout($outfile, sub {
@@ -249,7 +251,7 @@ sub build_target {
     };
 
     my $old_checksum = get($target, 'checksum');
-    my $new_checksum = sha1($outfile);
+    my $new_checksum = checksum_file($outfile);
     if ($new_checksum eq $old_checksum) {      # target unmodified
         if (-e $target) {                      #   if target exist
             unlink($outfile);
@@ -372,7 +374,7 @@ sub set {
 sub has_changed {
     my ($file) = @_;
     my $checksum = get($file, 'checksum');
-    return sha1($file) eq $checksum ? FALSE : TRUE;
+    return checksum_file($file) eq $checksum ? FALSE : TRUE;
 }
 
 # update_targets($level, @target);
@@ -395,12 +397,12 @@ sub update_targets {
         if ($type eq '') {                     # target is not known by fix
             my $buildscript = "$target.fix";
             set($buildscript,
-                checksum => sha1($buildscript),
-                type     => 'source',
+                checksum => checksum_file($buildscript),
+                type     => SOURCE,
             );
             build_target($level, $target)      #   (all target has at least
                 and $changed = TRUE;           #   its own buildfile as dep)
-        } elsif ($type eq 'target') {          # file previously seen by fix
+        } elsif ($type eq TARGET) {            # file previously seen by fix
             info "$target (previously built)";
             my $deps_changed = FALSE;
             foreach my $deps (@$dep_clusters) {#   check deps
@@ -411,8 +413,14 @@ sub update_targets {
                 build_target($level, $target)
                     and $changed = TRUE;
             }
-        } elsif ($type eq 'source') {          # buildscript
-            if (has_changed($target)) { $changed = TRUE }
+        } elsif ($type eq SOURCE) {            # buildscript
+            if (has_changed($target)) {
+                set($target,
+                    checksum => checksum_file($target),
+                    type     => SOURCE,
+                );
+                $changed = TRUE;
+            }
         } else {
             die "ERROR: Corrupt fix state\n" .
                 "Field 'type' for file '$target' must be 'target' or 'source'\n";

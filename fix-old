@@ -1,0 +1,1330 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use encoding::warnings 'FATAL';
+use 5.10.0;
+use utf8;
+use open ':locale';
+
+use Cwd qw/cwd realpath/;
+use File::Path qw(mkpath rmtree); # use 'mkpath' and 'rmtree'
+use Encode qw(encode_utf8);
+use Data::Dumper;
+$Data::Dumper::Indent   = 1;
+$Data::Dumper::Sortkeys = 1;
+$Data::Dumper::Terse    = 1;
+
+$ENV{FIX_CMD} = realpath(__FILE__);
+
+# TODO
+# ====
+#   * add()/set() should only save on actual change -- this should avoid
+#     rebuilding on cyclic dependencies
+#   * Implement fix_on_create
+#   * Abort/warn on missing buildscript
+#   * Read protect files in '.fix', just like git (i.e. 'chmod -w')
+#   * Instead of adding fix's whole path, should:
+#     o If currently running 'fix' is not found 1st in path
+#       + Unless ~/.fix/bin/fix exists and is a link to currently running fix
+#         * Create ~/.fix/bin/, and add symlink to the currently running binary.
+#     o Add ~/.fix/bin as 1st component in $PATH.
+#   * Fork and run parallel 'fix' for each argument
+#   * CSS style dependency. I.e. The HTML file requires the CSS to exist, but
+#     the HTML does not have to be rebuilt when the CSS changes.
+#   * Document $FIX_XTRACE, $FIX_DEBUG and $FIX_VERBOSE
+#   * Speed up determining whether file has changed
+#
+#     Git seems to be pretty clever at this. :) There is also a discussion on
+#     "racily clean entries" that is relevant to this context.
+#     [http://www.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt]
+#
+#     Note: not all members in `struct stat` obtained via `lstat(2)` are used
+#     for this comparison. For example, `st_atime` obviously is not useful.
+#     Currently, git compares the file type (regular files vs symbolic links)
+#     and executable bits (only for regular files) from `st_mode` member,
+#     `st_mtime` and `st_ctime` timestamps, `st_uid`, `st_gid`, `st_ino`, and
+#     `st_size` members.
+#
+#     lstat return values used:
+#          1 ino      inode number
+#          2 mode     file mode  (type and permissions)
+#          4 uid      numeric user ID of file's owner
+#          5 gid      numeric group ID of file's owner
+#          7 size     total size of file, in bytes
+#          9 mtime    last modify time in seconds since the epoch
+#         10 ctime    inode change time in seconds since the epoch (*)
+#
+#   * Parallel builds
+#         my $subref = \&{"$opt{command}"};
+#         foreach my $arg (@ARGV ? @ARGV : "all") {
+#             my $child_pid = fork();
+#             die "Failed to fork process" unless defined $child_pid;
+#             if ($child_pid == 0) {                 # child process
+#                 &{$subref}(\%opt, $arg);
+#                 exit;
+#             }
+#         }
+#         # FIXME: handle badness in children, exist status in $? after each wait()
+#         1 while (wait() != -1);
+#
+# Path Names
+# ==========
+# All pathnames are relative paths, always. Buildscripts are invoked with the
+# current directory set to the same dir as the build script. $FIX_BASEDIR is
+# set to the root dir of the worktree within the buildscript. (I.e. you may run
+# "bin/tool" from the basedir using "$FIX_BASEDIR/bin/tool", or by setting path
+# in a higher target, e.g. "$PATH=$(readlink -f $FIX_BASEDIR)/bin:$PATH.)
+#
+#
+# Terminology
+# ===========
+# mother process ---- user-invoked proccess (as opposed to process called from
+#                     buildscript)
+#
+# Stored Values
+# =============
+#
+# Permanent ($keep)
+# -----------------
+# checksum       ----- [md5] hex string
+# generated      ----- [type] yes (fix built file) | no (user wrote file)
+# exit_status    ----- [result] numeric value
+#                      Exit status of buildscript which built this target.
+# noexist        ----- file did not exist on last invocation
+# prereqs        ----- uniquified list of files passed to 'fix'
+#                      Target depends on these files, and will be rebuilt
+#                      whenever one (or more) of them changes.
+# prereqsnoexist ----- uniquified list of files passed to 'fix --on-create'
+#                      Target depends on the non-existance of these files, and
+#                      will be rebuilt whenever one (or more) of them are
+#                      created.
+#
+# Resetted between invocations ($temp)
+# ------------------------------------
+# modified       ----- YES (content was changed) | NO (content is same as before)
+#                      'modified' is set to 'NO' if file wasn't modified, or if
+#                      file was rebuild but the result was identical to the
+#                      original content (i.e. the checksum of the newly built
+#                      file was identical to the previous checksum).
+#
+# Confdir structure
+# =================
+# ${FIX_CONFDIR}/run  --- runtime files (erase on exit/start)
+# ${FIX_CONFDIR}/tmp  --- files to keep between invokcations
+# ${FIX_CONFDIR}/bin  --- path thingy  -- use random name, don't reuse them
+# ${FIX_CONFDIR}/log  --- store logs
+
+
+###############################################################################
+##                                                                           ##
+##  Settings                                                                 ##
+##                                                                           ##
+###############################################################################
+
+use vars qw($NAME $VERSION $YEAR);
+$VERSION = "0.2a";
+$YEAR    = "2012";
+($NAME)  = __FILE__ =~ m#([^/]*)$#;            # last non-slash part of path
+
+my %opt = (
+    command => 'fix_on_update',                # command to run
+    parent  => $ENV{FIX_PARENT} // "",         # parent target (set when called by fix itself)
+    pid     => $ENV{FIX_PID}    //= $$,        # PID of mother process
+    level   => $ENV{FIX_LEVEL}  += 1,          # child level (mother = 1)
+    confdir => undef,                          # config/metadata dir
+    basedir => undef,                          # base dir of work tree
+    verbose => $ENV{FIX_VERBOSE} // "" ne "",  # -v/--verbose $FIX_VERBOSE
+    xtrace  => $ENV{FIX_XTRACE}  // "" ne "",  # -x/--xtrace $FIX_XTRACE
+    debug   => $ENV{FIX_DEBUG}   // "" ne "",  # -D/--debug $FIX_DEBUG
+);
+
+###############################################################################
+##                                                                           ##
+##  Functions                                                                ##
+##                                                                           ##
+###############################################################################
+
+# constants
+sub FALSE  { "" }
+sub TRUE   {  1 }
+
+sub PLAIN  { 0 } # loglevel for msg()
+sub BOLD   { 1 }
+
+sub ERROR   { 4 }   # red
+sub WARN    { 2 }   # yellow
+sub INFO    { 3 }   # green
+sub VERBOSE { 3 }   # green
+sub DEBUG   { 0 }   # plain
+
+sub SOURCE { "source" }
+sub TARGET { "target" }
+sub YES    { "yes" }
+sub NO     { "no" }
+sub EMPTY  { () }
+
+sub is_mother() {
+    # return true if I'm mother, false if I'm a child
+    return $ENV{FIX_PID} == $$;
+}
+
+sub mother_pid {
+    # return mother pid
+    return $$ if is_mother;
+    return $ENV{FIX_PID};
+}
+
+# Get buildscript for $target. If $target = "TARGET.A.B", then the following
+# files will be tried (in order) and the first one existing will be returned,
+# down to (but not outside) $FIX_BASEDIR. Returns FALSE if no file could be
+# found.
+#
+#     TARGET.A.B.fix
+#     default.A.B.fix
+#     default.A.fix
+#     default.fix
+#     ../default.A.B.fix
+#     ../default.A.fix
+#     ../default.fix
+#     ../../default.A.B.fix
+#     ../../default.A.fix
+#     ../../default.fix
+#
+# Returns a list. If file 'default.A.fix' is was the determined build file,
+# then the the target depends on 'default.A.fix' to exist, but also on the fact
+# that all the files before it on the list ('TARGET.A.B.fix' and
+# 'default.A.B.fix') *does not* exist.
+sub get_buildscript {
+    my ($target) = @_;
+    # FIXME: NYI
+    return "$target.fix";
+}
+
+# Check that all files in a list does not exist. Return FALSE if one or more
+# files exist, FALSE otherwise.
+sub is_missing {
+    foreach my $file (@_) {
+        return FALSE if -e $file;
+    }
+    return TRUE;
+}
+
+# Split path into dirname + filename component. Returned $dirname is "." if
+# there was no dirname component on the given file.
+sub split_path {
+    my ($_) = @_;
+    s#/+$##;                                   # strip trailing slashes
+    my ($dirname, $filename) = m#^ (.*/|) ([^/]*) $#x;
+    if ($dirname eq "") {
+        $dirname = ".";
+    } else {
+        $dirname =~ s#/+$##;                   # strip trailing slashes
+    }
+    return ($dirname, $filename);
+}
+
+# Strip all extensions off a filename (e.g. given a filename like
+# "archive.tar.gz", only "archive" is returned).
+sub strip_file_extension {
+    my ($file) = @_;
+    $file =~ s#\.[^/]*$##;
+    return $file;
+}
+
+sub set_path {
+    my ($opt, $dir, $msg) = @_;
+    return undef unless defined $dir;
+    die(($msg // "--$opt") . ": Dir '$dir' does not exist\n") unless -e $dir;
+    #$dir = realpath($dir) if $dir !~ m#^/#;
+    $opt =~ s/-//g;
+    my $envname = "FIX_" . uc($opt);
+    $ENV{$envname} = $opt{$opt} = $dir;
+}
+
+sub read_file {
+    my ($file) = @_;
+    open(my $in, "<:utf8", $file)
+        or die "Failed to open file '$file' for reading: $!\n";
+    local $/ = undef;
+    return <$in>;
+}
+
+# Convert POD into ANSI escape sequences for the terminal. Does not do
+# recursion. (But since E<...> is handled first, those are allowed inside both
+# B<...> and I<...>, and since C<...> is treated last, all other POD sequences
+# are allowed inside those.)
+sub pod2ansi {
+    my ($_) = @_;
+    return undef unless defined($_);
+    my %char = (quot => '"', amp => '&', lt => '<', gt => '>');
+    s#E<([^>]*)>#$char{lc $1}#g;     # HTML-like entity
+    s#B<([^>]*)>#\e[1m$1\e[0m#g;     # bold
+    s#[FI]<([^>]*)>#\e[4m$1\e[0m#g;  # italic / filename
+    s#C<([^>]*)>#"$1"#g;             # quoted code
+    return $_;
+}
+
+sub version {
+    print "$NAME (klingonska.org) $VERSION\n",
+        "Copyright (C) $YEAR Zrajm C Akfohg <zrajm\@klingonska.org>\n",
+        "License CC BY-SA 3.0: Creative Commons Attribution-ShareAlike 3.0 Unported\n",
+        "    <http://creativecommons.org/licenses/by-sa/3.0/>\n";
+    exit 0;
+}
+
+sub manpage {
+    exec 'pod2man "' . realpath($0) . '"|man -l -'
+        or die "Failed to exec 'pod2man'"
+}
+
+sub help {
+    my $_ = read_file(realpath($0));
+    my ($synopsis)    = m#^=head1 \s+ SYNOPSIS \s+ (.*)#mx;
+    my ($description) = m#^=head1 \s+ NAME \s+ [-\w]+ \s+-\s+ (.*)#mx;
+    print "Usage: " . pod2ansi($synopsis) . "\n",
+        ucfirst($description) . ".\n";
+    { # list --options (from comments) -- sort by longopt name
+        my @opt_doc = ();
+        my $opt_length = 0;
+        while (/^ \s*
+                (?: (['"])                  # start quote
+                    ([^\n'"=:|]*?)          #   long opt
+                    (?:\|([^\n'"=:]*))?     #   short opt
+                    (?:([:=])[^\n'"=]*)?    #   opt arg
+                    \1 [^#]*                # end quote
+                |.*?)?(?<!\#)\#\#\#\s+(.*)$/xmg) { # description
+            my $long  = $2 ? "--$2"  : "";
+            my $short = $3 ?  "-$3," : "";
+            my $arg   = $4;
+            my $desc  = $5;
+            if ($arg and $desc =~ s/([A-Z0-9]+)\s*//) {
+                $long .= $arg eq ":" ? "[=$1]" : "=$1";
+            }
+            push(@opt_doc, [ $short, $long, pod2ansi($desc) ]);
+            my $length = length($long);
+            $opt_length = $length if $length > $opt_length;
+        }
+        # length of longest option name
+        if (@opt_doc) {
+            print "\nOptions:\n", map {
+                sprintf "  %-3s %-${opt_length}s  %s\n", @$_
+            } @opt_doc;
+        }
+    }
+    print <<EOF;
+
+'fix' is a build to similar to 'redo'. However, default action ('fix') is
+equivalent to 'redo-ifchange', if you want the default 'redo' behaviour
+(rebuilding of the specified targets, regardless of whether their dependencias
+has changed) use 'fix --force'.
+EOF
+    exit 0;
+}
+
+# FIXME: clean up msg()
+sub msg {
+    my ($loglevel, $message) = @_;
+    my @ansi = ("\e[m", "\e[1m", "\e[33m", "\e[32m", "\e[31m");
+    die "msg(): missing loglevel" unless defined $ansi[$loglevel];
+    chomp $message;
+    say STDERR $ansi[$loglevel] . $NAME . ("  " x $opt{level}) .
+        $ansi[BOLD] . $message . $ansi[PLAIN];
+    exit 255 if $loglevel == ERROR;
+}
+sub info {
+    chomp(my $msg = shift);
+    say STDERR "\e[32m$NAME" . ("  " x $opt{level}) . "\e[1m$msg\e[m";
+}
+# Display verbose msg in mother process, or all processes with --verbose/--debug
+sub verb { (!$opt{parent} or $opt{debug} or $opt{verbose}) and info @_ }
+sub debug {
+    return unless $opt{debug};
+    chomp(my $msg = shift);
+    say STDERR $NAME . ("  " x $opt{level}) . $msg;
+}
+sub _warn { msg WARN, @_ }
+sub _die { msg ERROR, @_ }
+
+sub dirname {
+    my ($_) = @_;
+    s#/[^/]*$##;       # strip off basename of file
+    $_;
+}
+
+sub get_basedir {
+    $_ = cwd;
+    until (-e "$_/.$NAME") {
+        die "No confdir found (create with 'fix --init')\n"
+            unless s#/[^/]*$##;
+    }
+    return $_;
+}
+
+sub tmpfilename {
+    my ($file) = @_;
+    return "$file---fixing";
+    # my @c = ("a".."z");
+    # join("", map { $c[rand @c] } 1..5);
+}
+
+# # FIXME: use File::Path's "mkpath" here instead
+# sub mkdirs {
+#     my (@dir) = @_;
+#     foreach my $dir (@dir) {
+#         my ($_, @dir) = ($dir);
+#         until (-e $_) {
+#             push(@dir, $_);
+#             s#/[^/]*$## or die "Failed to go up dir from '$_' in '$dir'\n";
+#         }
+#         foreach (reverse @dir) {
+#             mkdir $_ or die "Failed to create dir '$_': $!\n";
+#         }
+#     }
+# }
+
+# FIXME: Uniqification could be better?
+# FIXME: Only save if anything actually changed
+{
+    package Store;
+    use File::Path qw(mkpath rmtree);
+    use Digest::SHA qw(sha1_hex);
+    use Encode qw(encode_utf8);
+    use Data::Dumper;
+    use Carp;
+    $Data::Dumper::Terse = 1;
+    # $self = {
+    #     conf => { dir   => "SOCUOHSEUCH" },  # storage dir name
+    #     stat => { FILE1 => statdata, .... }, # stat cache
+    #     data => {
+    #         FILE1 => {
+    #             PROP => [ VALUE ],
+    #             ...
+    #         },
+    #         ...
+    #     }
+    sub FALSE  { "" }
+    sub TRUE   {  1 }
+    sub new {
+        my ($class, $conf) = @_;
+        return bless({
+            data => {},
+            conf => $conf,
+        }, $class);
+    }
+    sub uniq {
+        my %seen = ();
+        return grep { !$seen{$_}++ } @_;
+    }
+    # Usage: @x = $obj->get("file", "prop" );
+    #     or %x = %{ $obj->get("file") };
+    sub get {
+        my ($self, $name, $prop) = @_;
+        my $data = $self->{data}{$name} = $self->load($name);
+        if ($prop) {
+            my @value = @{ $data->{$prop} // [] };
+            return wantarray ? @value : join(" ", @value);
+        }
+        return $data;
+    }
+    # Usage: $obj->set("file", { prop => value });
+    # FIXME: only save if changes were made
+    sub set {
+        my ($self, $name, $props) = @_;
+        croak "set(): 2nd arg must be hashref" if ref $props ne "HASH";
+        my $data = $self->{data}{$name} = $self->load($name);
+        @$data{ keys %$props } = map {
+            (ref($_) eq "ARRAY") ? $_ : [ $_ ];
+        } values %$props;
+        return $self->save($name);
+    }
+    sub exist {
+        my ($self, $file, $prop) = @_;
+        return !!(() = $self->get($file, $prop));
+    }
+    # Usage: $obj->set("file", { prop => value });
+    # Works as set(), except that content is added, not replaced.
+    # FIXME: only save if changes were made
+    sub add {
+        my ($self, $name, $props) = @_;
+        croak "add(): 2nd arg must be hashref" if ref $props ne "HASH";
+        my $data = $self->get($name);          # cause reload
+        $self->set($name => {
+            map {
+                my $values = $props->{$_};
+                $_ => [ uniq(
+                    @{ $data->{$_} // [] },
+                    (ref($values) eq "ARRAY" ? @$values : $values),
+                ) ];
+            } keys %$props
+        });
+        return $self;
+    }
+    sub load {
+        my ($self, $name) = @_;
+        my $file = "$self->{conf}{dir}/$name";
+        return $self->{data}{$name} = {} if not -e $file;
+        # reload metadata from file, if file has changed
+        my $stat = join("-", (lstat($file))[1, 2, 4, 5, 7, 9, 10]);
+        if ($stat ne ($self->{stat}{$name} // "")) {
+            open(my $in, '<', $file)
+                or die "Failed to open file '$file' for reading: $!\n";
+            my $data = {};
+            while (<$in>) {
+                my ($prop, $value) = split(/:\s+/, $_, 2);
+                chomp($value);
+                # FIXME: decode $value (to allow newline)
+                push(@{ $data->{$prop} }, $value);
+            }
+            close($in)
+                or die "Failed to close file '$file' after reading: $!\n";
+            $self->{stat}{$name} = $stat;
+            $self->{data}{$name} = $data;
+        }
+        return $self->{data}{$name};
+    }
+    sub save {
+        my ($self, $name) = @_;
+        my $file    = "$self->{conf}{dir}/$name";
+        my $tmpfile = "$file---writing";
+        mkpath(main::dirname($tmpfile));
+        open(my $out, '>', $tmpfile)
+            or die "Failed to open file '$tmpfile' for writing: $!\n";
+        my $data = $self->{data}{$name};
+        foreach my $prop (sort keys %$data) {
+            foreach my $value (@{ $data->{$prop} }) {
+                # FIXME: encode $value (to allow newline)
+                say $out "$prop: $value";
+            }
+        }
+        close($out)
+            or die "Failed to close file '$tmpfile' after writing: $!\n";
+        rename($tmpfile, $file)
+            or die "Failed to rename file '$tmpfile' -> '$file' after writing: $!\n";
+        return $self;
+    }
+    # Return TRUE if target is a generated file (i.e. was built by fix), or
+    # FALSE if target was a file created by the user.
+    #
+    # Uses the 'generated' value from metadata, or if no such value exist,
+    # check whether or not file exist (if it does, it is assumed to be
+    # non-generated = createb by user). 'generated' is set to 'yes' or 'no',
+    # while the function internally returns perl TRUE / FALSE.
+    sub is_target_generated {
+        my ($self, $target) = @_;
+        my $generated = $self->get($target, "generated");
+        if ($generated eq "") {
+            $generated = -e $target ? "no" : "yes";
+            $self->set($target, { "generated" => $generated });
+        }
+        return ($generated eq "yes" ? TRUE : FALSE);
+    }
+    # Usage: updated_checksum($TARGET[, $FILE]);
+    #
+    # Returns checksum of file (= true), if it differs from what is stored,
+    # otherwise returns false.
+    #
+    # If $FILE is provided, then the checksum for $TARGET is used, but the file
+    # loaded and checksummed will be $FILE. Use this when you're doing the
+    # checksums on a tempfile that hasn't been renamed into place yet.
+    sub updated_checksum {
+        my ($self, $target, $file) = @_;
+        my $old_checksum = $self->get($target, "checksum");
+        my $new_checksum = checksum_file($file // $target);
+        return $old_checksum ne $new_checksum ? $new_checksum : "";
+    }
+    sub checksum_file {
+        my ($file) = @_;
+        my $str = main::read_file($file);
+        sha1_hex(encode_utf8($str));
+    }
+};
+
+sub load_file {
+    my ($file) = @_;
+    return {} if not -e $file;
+    open(my $in, '<', $file)
+        or die "failed to open file '$file' for reading: $!\n";
+    my $data = {};
+    foreach (<$in>) {
+        my ($prop, $value) = m#^ (.*?) :\s+ (.*) $#x;
+        # FIXME: decode $value (to allow newline)
+        push(@{ $data->{$prop} }, $value);
+    }
+    close($in)
+        or die "failed to close file '$file' after reading: $!\n";
+    return $data;
+}
+
+sub save_file {
+    my ($file, $data) = @_;
+    my $tmpfile = tmpfilename($file);
+    mkpath([ dirname($tmpfile) ]);
+    open(my $out, '>', $tmpfile)
+        or die "Failed to open file '$tmpfile' for writing: $!\n";
+    foreach my $name (sort keys %$data) {
+        foreach my $value (@{ $data->{$name} }) {
+            # FIXME: encode $value (to allow newline)
+            say $out "$name: $value";
+        }
+    }
+    close($out)
+        or die "Failed to close file '$tmpfile' after writing: $!\n";
+    rename($tmpfile, $file)
+        or die "Failed to rename '$tmpfile' after writing: $!\n";
+}
+
+sub run_buildscript {
+    my ($opt, $arg) = @_;
+    my %arg = %$arg;
+    my $outfile = $arg{outfile};
+    my $tmpfile = $arg{tmpfile};
+    my $script  = $arg{script};
+    my $target  = $arg{target};
+    my ($build_dir, $build_file) = split_path($script);
+
+    verb "$target: Running buildscript '$script'";
+    debug "$target: Fix basedir    : $opt{basedir}";
+    debug "$target: Script stdout  : $outfile";
+    debug "$target: Script tmpfile : $tmpfile";
+    debug "$target: Script basename: $build_file";
+    debug "$target: Script builddir: $build_dir";
+
+    # NOTE: $subdir starts with '/', for ease of concat. It is *not* an absolute path
+    $opt{basedir} =~ m#^/#
+        or die "$target: Basedir must be absolute path, not '$opt{basedir}'\n";
+
+    # path to buildfile, relative to basedir
+    (my $subdir = realpath($build_dir)) =~ s#^$opt{basedir}(/|$)##
+        or die "$target: Buildscript dir '$build_dir' is not subdir of basedir '$opt{basedir}'\n";
+    $subdir = "." if $subdir eq "";
+    debug "$target: Script subdir  : $subdir";
+    mkpath("$opt{confdir}/run/$subdir");       # create output temp dir
+
+    my @build_command = do {
+        # shell command
+        my @shell = (                          # shell command
+            "$opt{confdir}/bin/sh", "-e",      #   always use '-e'
+            do {                               #   --verbose / --xtrace
+                my (%optname, %use) = qw/verbose v xtrace x debug v/;
+                foreach (keys %optname) {
+                    $use{ "-$optname{$_}" } = 1 if $opt{$_};
+                }
+                sort keys %use;
+            },
+        );
+        debug "$target: Script shell   : " . join " ", @shell;
+
+        # buildscript
+        #
+        # We want to change the current dir for inside shell process without
+        # affecting this process, and without doing an extra fork. Also, we
+        # want $0 inside the buildscript to reflect the buildscript name so
+        # that any error messages from the shell makes sense to the user.
+        #
+        # FIXME: Shell quoting of $build_dir & $build_file (currently chokes on ')
+        my @cmd = $build_dir eq "."            # in current dir
+            ? ("./$build_file")                #   use 'sh FILE', otherwise
+                : ("-c",                       #   use 'sh -c "cd DIR; . ./FILE'
+                   "cd '$build_dir';. './$build_file'"
+               );
+        debug "$target: Script arg     : " . join " ", @cmd;
+
+        # args passed to buildscript
+
+        my $target_base = strip_file_extension($target); # filename without extension
+        # $1 target name, $2 target basename, $3 output tempfile
+        my @arg = ($target, $target_base, $tmpfile);
+        debug "$target: Script \$1      : " . $target;
+        debug "$target: Script \$2      : " . $target_base;
+        debug "$target: Script \$3      : " . $tmpfile;
+        (@shell, @cmd, @arg);
+    };
+    debug "$target: Script command : " . join " ", @build_command;
+
+    # FIXME: THESE ARE PROBABLY ALREADY DONE -- VERFIFY AND REMOVE
+    # FIXME: set $ENV{FIX_PARENT} here somewhere
+    # FIXME: set $ENV{FIX_LEVEL} here somewhere
+    # FIXME: re-set $ENV{FIX_BASEDIR} here somewhere
+
+    info $target;
+    my $exit_code;
+    {
+        local $ENV{FIX_PARENT} = "$target";
+        open my $oldout, ">&", "STDOUT"
+            or die "Failed to copy STDIN before running build script '$script': $!\n";
+        open STDOUT, ">", $outfile
+            or die "$target: Failed to redirect build script STDOUT to tempfile '$outfile': $!\n";
+        select STDOUT;
+        local $| = 1;                          # turn off buffering
+        $exit_code = system(@build_command);
+        close STDOUT;
+        open STDOUT, '>&', $oldout
+            or die "Failed to reconnect old STDIN after running build script '$script': $!\n";
+        close $oldout;
+    }
+    return $exit_code;
+}
+
+# Rename file/dir, atomically if possible. If any non-file object is moved
+# (symlink, dir etc.) then the destination object will (unavoidably) have a
+# brief moment of non-existance during the renaming.
+#
+# Return true on success, false on non-fatal failure (i.e. the old replaced
+# file could be moved out of the way, but not deleted properly) or die() on any
+# other failure.
+sub move_file {
+    my ($oldname, $newname) = @_;
+    my $trashname = "$newname.old";            # tmpfile
+    if (!-e $newname                           # if dest doesn't exist
+            or (-f $newname and ! -l $newname)) { #   or is just plain file
+        rename $oldname, $newname              #   do atomic rename
+            or die "Failed to rename '$oldname' -> '$newname': $!\n";
+        return TRUE;
+    }
+    # FIXME: mark as unbuilt
+    rename $newname, $trashname     # move old target aside
+        or die "Failed to rename '$newname' -> '$trashname': $!\n";
+    rename $oldname, $newname      # move built target into place
+        or die "Failed to rename '$oldname' -> '$newname': $!\n";
+    # FIXME: mark as built again
+
+    if (-d $newname and ! -l $newname) {       # delete old target
+        # FIXME: good options for "rmtree" function of the File::Path?
+        remove_tree $trashname or return FALSE;
+    } else {
+        unlink $trashname or return FALSE;
+    }
+    return TRUE;
+}
+
+# Process a target file that was created by user. These are not modified, but
+# we register if they've changed, store dependencies and checksums for them.
+sub process_usermade_target {
+    my ($opt, $target) = @_;
+    my ($temp, $keep) = @opt{ qw/store_session store_permanent/ };
+    my $parent = $opt{parent};
+    debug "$target: Is a file created by user";
+    if (my $checksum = $keep->updated_checksum($target)) {
+        $keep->set($target, {
+            "noexist"  => [],
+            "checksum" => $checksum });
+        $temp->set($target, { "modified" => YES });
+        $keep->add($parent, { "prereqs"  => $target }) unless is_mother;
+        # TODO: original doesn't die here -- should we?
+        die "$target: User-created file has changed\n";
+    } else {
+        $temp->set($target, { "modified" => NO });
+        $keep->add($parent, { "prereqs"  => $target }) unless is_mother;
+        info "$target: User-created file is unchanged\n";
+    }
+}
+
+# Process a target file that was generated by fix itself.
+sub process_generated_target {
+    my ($opt, $target) = @_;
+    my ($temp, $keep) = @opt{ qw/store_session store_permanent/ };
+    my $parent = $opt{parent};
+    debug "$target: Is a built file";
+
+    # Part 4: Build prereqs
+    # If there are no prerequisites then file must be new, since all generated
+    # files has at least one prerequisite (its buildscript).
+    my $modified = NO;
+    if (my @prereq = $keep->get($target, "prereqs")) {
+        # FIXME: fix_on_update() now supports loopy thingy -- remove loop here
+        foreach my $prereq (@prereq) {
+            debug "$target: Prereq: $prereq";
+            next if $temp->get($prereq, "modified");  # skip if already built
+            if (fix_on_update($opt, { parent => $target }, $prereq)) { # build prereq
+                info "$target: Prereq '$prereq' successfully built";
+            } else {
+                # NOTE: original continues processing here and builds every
+                # prereq, even if some fails
+                warn "$target: Failed to build prerequisite '$prereq'\n";
+            }
+            # if $prereq was changed, then we know $target will be as well
+            if ($modified eq NO and $temp->get($prereq, "modified") eq YES) {
+                $modified = YES;
+            }
+        }
+        verb "$target: Prerequsites are up-to-date";
+
+        # check files that are required to *not* exist
+        if (is_missing $keep->get($target, "prereqsnoexist")) {
+            $modified = YES;                   # FIXME: this is never saved (?)
+            verb "$target: Target and all prerequisites are up-to-date, skipping";
+            return TRUE;
+        } else {
+            verb "$target: Some non-exist prerequisites have been created";
+        }
+        verb "$target: Prerequisite file(s) have been modified, rebuilding target";
+    } else {
+        verb "$target: No previous prerequisites, rebuilding target";
+    }
+
+    # Part 5: Build buildscript
+    debug "$target: part 5";
+    my ($script, @noexist) = get_buildscript($target)
+        or die "$target: No buildscript found\n";
+
+    if ($modified eq YES) {
+        $keep->set($target, {
+            "prereqs"        => [],             # clear prereqs
+            "prereqsnoexist" => [] });          # clear non-existants
+        # say STDERR "OSCUHSORCEHSORECUH";
+        # exit;
+        debug "SOCRUOCHESCROEHUSRCOHU: $script @noexist";
+        # rebuild buildscript
+        if (fix_on_update($opt, { parent => $target }, $script)
+                and fix_on_create($opt, { parent=> $target }, @noexist)) {
+            info "$target: Buildscript '$script' successfully built\n";
+        } else {
+            die "$target: Failed to build buildscript '$script'\n";
+        }
+        debug "$target: Buildscript '$script' is modified, rebuilding target\n";
+    }
+
+    # Part 6: Rebuilding target
+    debug "$target: part 6";
+    my $tmpfile = "$opt{confdir}/run/$target.tmp";
+    my $outfile = "$opt{confdir}/run/$target.stdout";
+    # FIXME: Set parent here (?) --- THIS SHOULD BE FIXED
+    say STDERR "SCRIPT: $script";
+    my $exit_code = run_buildscript($opt, {
+        script  => $script,                    # script to run
+        target  => $target,                    # target to run it for
+        tmpfile => $tmpfile,                   # tmpfile name passed as $3
+        outfile => $outfile,                   # stdout of buildscript
+    });
+    my $file = -e $tmpfile                     # use user tempfile, if created
+        ? $tmpfile : $outfile;                 #   otherwise use STDOUT file
+    if ($exit_code == 0) {                     # on success (exit code == 0)
+        # FIXME: how to do checksumming if $file is a non-file?
+        if (my $checksum = $keep->updated_checksum($target, $file)) {
+            move_file($file, $target);
+            $keep->set($target, {
+                "noexist"  => [],
+                "checksum" => $checksum
+            });
+            $modified = YES;
+            info "$target: Rebuilt\n"
+        } else {
+            unlink $file;
+            $modified = NO;
+            info "$target: Rebuilt (but identical to old target)\n"
+        }
+    } else {                                    # on failure (exit code > 0)
+        unlink $file;
+        die "$target: Failed to run buildscript '$script': $!\n"
+            if $exit_code == -1;
+        die "$target: Buildscript '$script' died with signal " . ($exit_code & 127) . ", " .
+            (($exit_code & 128) ? 'with' : 'without') . " coredump\n"
+                if $exit_code & 127;
+        die "$target: Exit code " . ($exit_code >> 8) . "\n";
+    };
+    $keep->add($parent, { "prereqs"  => $target }) unless is_mother;
+    $keep->add($target, { "prereqs"  => $script });           # FIXME: really?
+    $temp->set($target, { "modified" => $modified });
+}
+
+
+# This creates a confdir in the current dir, or the dir specified using
+# B<--conf-dir> option, or B<$FIX_CONFDIR> environment variable.
+#
+# FIXME: Using --conf-dir causes fix to complain about non-existing dir
+sub fix_init {
+    my ($opt) = @_;
+    my $dir = $opt->{confdir} //
+        (defined($opt->{basedir})
+            ? "$opt->{basedir}/.$NAME"
+            : "./.$NAME");
+    die "Confdir '$dir' already exists\n" if -e $dir;
+    mkpath([ map { "$dir/$_" } qw/bin log run tmp/ ]);
+    my $bin_name  = realpath($0);              # this script's name
+    my $link_name = "$dir/bin/$NAME";
+    symlink $bin_name, $link_name
+        or die "Failed to create symlink '$link_name' -> '$bin_name'\n";
+    chomp(my $shell = `which ksh`);
+    symlink $shell, "$dir/bin/sh"
+        or die "Failed to create symlink '$dir/bin/sh' -> '$shell'\n";
+    return TRUE;
+}
+
+sub fix_on_force {
+    return "NYI";
+}
+
+# Usage: fix_on_update(\%OPT[, \%OPT2], @TARGET);
+#
+# Build @TARGET(s), registering them each as dependency for $OPT{parent}.
+# Return TRUE if all targets were successfully rebuilt, FALSE if one or more
+# targets failed.
+#
+# If a second hashref, %OPT2, is provided it contains overrides of options in
+# %OPT. It's mostly provided to simplify setting of parent explicitly when
+# invoking the command. E.g.:
+#
+#     fix_on_update($opt, { parent => "something" }, @target);
+#
+sub fix_on_update {
+    my ($opt, @target) = @_;                   # get target names
+    my %opt = (                                # options
+        %$opt,                                 #   given $opt
+        (ref($target[0]) eq "HASH"             #   overrides in 1st @target
+             ? %{ shift @target } : ()),       #     if hashref
+        level => $opt->{level} + 1,            #   increase level
+    );
+    debug "Parent : " . ( $opt{parent} eq "" ? "(no parent)" : $opt{parent});
+    debug "Targets: @target";
+    my $ok = TRUE;
+    foreach my $target (@target) {
+        eval {
+            _fix_on_update(\%opt, $target);
+            return TRUE;
+        } or do {
+            say STDERR "$@";
+            $ok = FALSE;
+        };
+    }
+    return $ok;
+}
+
+# Usage: fix_on_create($OPT, @TARGET);
+#
+# Build @TARGET(s), registering them each as dependency for $OPT{parent}.
+# Return TRUE if all targets were successfully rebuilt, FALSE if one or more
+# targets failed.
+sub fix_on_create {
+    my ($opt, @target) = @_;
+    debug "Parent : " . ( $opt{parent} eq "" ? "(no parent)" : $opt{parent});
+    debug "Targets: @target";
+    my $ok = TRUE;
+    foreach my $target (@target) {
+        eval {
+            my %opt = %opt;
+            $opt{level} += 1;
+            _fix_on_create($target);
+            return TRUE;
+        } or do {
+            say STDERR "$@";
+            $ok = FALSE;
+        };
+    }
+    return $ok;
+}
+
+sub _fix_on_create {
+    say 'on-create';
+}
+
+# FIXME: This should force rebuild of the first level of build
+sub _fix_force {
+    my ($opt, @target) = @_;
+    debug "NYI fix --force";
+    fix_on_update($opt, @target);
+}
+
+sub _fix_on_update {
+    my ($opt, $target) = @_;
+    my ($temp, $keep) = @opt{ qw/store_session store_permanent/ };
+    my $parent = $opt{parent};
+
+    # Part 2: Check if already built
+    if ($temp->get($target, "modified") eq NO) {
+        $keep->add($parent, { "prereqs" => $target }) unless is_mother;
+        debug "$target: Target already built in this run";
+        return TRUE;
+    }
+    # Part 3: Process file created by user (not generated by fix)
+    if ($keep->is_target_generated($target) eq FALSE) {
+        process_usermade_target($opt, $target);
+        return TRUE;
+    }
+    process_generated_target($opt, $target);
+}
+
+###############################################################################
+##                                                                           ##
+##  Initialization                                                           ##
+##                                                                           ##
+###############################################################################
+
+$SIG{__DIE__} = sub { die "$NAME: @_" };
+
+# FIXME: Check if another instance of fix is running, refuse to stat if so
+# (Use "$opt{confdir}/pid", store "$$ $0" in it.)
+
+set_path("conf-dir", $ENV{FIX_CONFDIR}, '$FIX_CONFDIR') if defined($ENV{FIX_CONFDIR});
+set_path("base-dir", $ENV{FIX_BASEDIR}, '$FIX_BASEDIR') if defined($ENV{FIX_BASEDIR});
+
+{
+    local $SIG{__WARN__} = sub { warn "$NAME: @_" };
+    use Getopt::Long qw(
+        :config posix_default bundling gnu_compat no_ignore_case permute
+    );
+    GetOptions(                            # info displayed by help()
+        "base-dir=s"=> \&set_path,       ### DIR set root dir of work tree
+        "init"      => sub {             ### create confdir in current dir
+            $opt{command} = "fix_init" },
+        "conf-dir=s"=> \&set_path,       ### DIR set config dir (default: '.fix')
+        "debug|D"   => sub {             ### enable debugging mode
+            $opt{debug} = $ENV{FIX_DEBUG} = 1 },
+        "force|f"   => sub {             ### NIY: forces rebuild (equivalent to plain 'redo')
+            $opt{command} = "fix_force" },
+        "help|h"    => \&help,           ### display this help and exit
+        "manpage|M" => \&manpage,        ### display program manpage and exit
+        "on-update" => sub {             ### (equivalent to 'redo-ifchange') (default)
+            $opt{command} = "fix_on_update" },
+        "on-create" => sub {             ### NIY: (equivalent to 'redo-ifcreate')
+            $opt{command} = "fix_on_create" },
+        "verbose|v" => sub {             ### print commands as they are read from .do files (variables intact)
+            $opt{verbose} = $ENV{FIX_VERBOSE} = 1 },
+        "version|V" => \&version,        ### output version information and exit
+        "xtrace|x"  => sub {             ### print commands as they are executed (variables expanded)
+            $opt{xtrace} = $ENV{FIX_XTRACE} = 1 },
+    ) or exit 255;
+}
+
+debug "Command: $opt{command}";
+if ($opt{command} eq "fix_init") {       # invoke --init here (if given)
+    fix_init(\%opt) or exit 1;
+    exit;
+}
+
+my $basedir = get_basedir;
+set_path('conf-dir', "$basedir/.$NAME", '$FIX_CONFDIR') unless defined($opt{confdir});
+set_path('base-dir',  $basedir,         '$FIX_BASEDIR') unless defined($opt{basedir});
+debug "Basedir: $opt{basedir}";
+debug "Confdir: $opt{confdir}";
+
+# make sure 'fix' command is 1st in $PATH
+# (used by buildscripts, if 'fix' was invoked without being in user's $PATH)
+if (is_mother) {                               # in mother process
+    my $path = "$opt{confdir}/bin";
+    if ($ENV{PATH} !~ m/^$path:/) {            #   if not already 1st in path
+        $ENV{PATH} = "$path:$ENV{PATH}";       #     add command's path to $PATH
+        debug "Path   : Added '$path' to beginning of \$PATH";
+    }
+    rmtree("$opt{confdir}/run");
+    mkpath("$opt{confdir}/run");
+}
+
+@ARGV = ("all") if not @ARGV;
+
+###############################################################################
+##                                                                           ##
+##  Main                                                                     ##
+##                                                                           ##
+###############################################################################
+
+%SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
+
+@opt{ qw/store_session store_permanent/ } = (
+    new Store({ dir => "$opt{confdir}/run" }), # persistent store
+    new Store({ dir => "$opt{confdir}/tmp" }), # session store
+);
+
+my $subref = \&{ $opt{command} };
+&{$subref}(\%opt, @ARGV);
+
+# FIXME: Erase "$opt{confdir}/pid" on exit
+
+__END__
+
+=head1 NAME
+
+fix - (Re-)build targets if dependencies has changed
+
+
+=head1 SYNOPSIS
+
+B<fix> [I<OPTION>]... [I<TARGET>]...
+
+
+=head1 DESCRIPTION
+
+B<fix> is short for C<fix> or or C<effects> (whichever you prefer). It fixes
+effects. Namely it effects (and affects) a build system. It is inspired by
+B<redo>, but has a couple of design choices made different than apenwarr's
+implementation.
+
+=over 2
+
+=item * The whole program (including docs) is one file, making it highly
+portable and easy to add to your own build tree (in my case that was the build
+system for Klingonska Akademien's web site, klingonska.org).
+
+=item * You can run it in any subdir under the build tree root (your rules will
+always run with the build tree root as the current dir). This is how B<git>
+works and I wanted my build tool and my versioning system to behave the same
+way.
+
+=item * B<redo> can only create I<files>, B<fix> can create directories or
+symlinks as well.
+
+=item * FUTURE: Creating file checksums that do not depend on exact content,
+but uses filters to disregard comments or other non-relevant stuff in sources.
+
+=back
+
+
+=head1 OPTIONS
+
+Mandatory arguments to long options are mandatory for short options too.
+
+
+=over 8
+
+=item B<--basedir>=I<PATH> (default: Dir in which B<FIX_CONFDIR> resides)
+
+Set the path to the working tree root. This can also be controlled by setting
+the B<FIX_BASEDIR> environment variable. It can be an absolute path or a path
+relative to the current working directory.
+
+This does not affect behavior of B<--confdir> (which will work as usual, i.e.
+if unspecified the first encountered B<.fix> dir above the current directory
+will be used).
+
+
+=item B<--confdir>=I<PATH> (default: F<.fix> dir in root of current work tree)
+
+Set the path to the F<.fix> build metadata directory. This can also be
+controlled by setting the B<FIX_CONFDIR> environment variable. It can be an
+absolute path or a path relative to the current working directory.
+
+Setting B<FIX_CONFDIR> will set B<FIX_BASEDIR> to current dir (unless
+B<FIX_BASEDIR> is also explicitly set by user).
+
+
+=item B<-D>, B<--debug>
+
+Cause extra debugging messages to be printed throughout B<fix>'s execution.
+This can also be enabled by setting the B<FIX_DEBUG> environment variable to
+anything but the empty string or zero.
+
+When using this option (or setting the B<FIX_DEBUG> variable) the B<FIX_DEBUG>
+variable will be set in all the invoked buildscripts (which is how B<fix> will
+know that its supposed to be verbose when invoked from inside one of those
+build scripts).
+
+
+=item B<-f>, B<--force>
+
+Force rebuilding of all target mentioned on command line, regardless of whether
+it's needed or not. Normally nothing is rebuild unless needed, so that if all
+dependencies of the targets given on the command line are unchanged, then
+C<fix> will do nothing.
+
+This is equivalent of plain C<redo>, without this option C<fix> is equivalent
+to the C<redo-ifchange> command.
+
+
+=item B<-h>, B<--help>
+
+Output brief command line help on standard output, then exit.
+
+
+=item B<--init>
+
+Create new confdir for build metadata storage. Unless otherwise specified the
+confdir will be created in the current directory.
+
+If B<--base-dir> (or B<$FIX_BASEDIR>) is given then the confdir will be created
+in that directory (so that using C<--base-dir=example> will cause a confdir
+called F<example/.fix> to be created).
+
+Finally, B<--conf-dir> (or B<$FIX_CONFDIR>) can be used to specify the I<exact>
+name of the confdir to be created (so that using C<--conf-dir=example/.fix>
+will cause a confdir called F<example/.fix> to be created). This alternative
+will override the two above.
+
+
+=item B<-M>, B<--manpage>
+
+Display program manpage and exit. This option extracts the Perl POD (Plain Old
+Documentation) documentation from the program and displays it using man(1).
+
+
+=item B<-v>, B<--verbose>
+
+Passes the option B<-v> to the shell when executing build scripts. This will
+usually cause each command line to be printed on standard error as it is read.
+
+Most shells will print the exact source line (e.g.. C<echo $3>) rather than the
+substituted value of variables (e.g.. B<echo mytarget.fix.tmp>). Useful for
+debugging.
+
+
+=item B<-V>, B<--version>
+
+Output version information on standard output, then exit.
+
+
+=item B<-x>, B<--xtrace>
+
+Passes the option B<-x> to the shell when executing build scripts. This will
+usually cause each command to be printed on standard error (preceded by a '+'
+sign) before it is executed.
+
+Most shells will print the substituted variables (e.g. C<echo
+mytarget.fix.tmp>) rather than the original source line (e.g. C<echo $3>).
+Useful for debugging.
+
+=back
+
+
+=head1 DISCUSSION
+
+=head2 Build Scripts
+
+For building to be atomic, build files should produce output by either
+
+=over 3
+
+=item a)
+
+writing to standard output (this is the preferred method), or
+
+=item b)
+
+writing to a tempfile (the name is determined by B<fix> and passed in as the
+third argument, B<$3>, to the build script). When using this method anything
+written to standard output will be ignored.
+
+=back
+
+Method B is required when generating anything but a standard file (i.e. when a
+build script generate a pipe, symlink or directory). Also note that target
+updating will only be atomic when generating a single file.
+
+
+=head1 EXIT STATUS
+
+Exit status will be:
+
+=over 4
+
+=item 0
+
+All targets and their dependencies were successfully built.
+
+=item 1
+
+Command failed. Usually this means than one or more tagets or dependencies
+failed to build, but it can also mean e.g. that a command like C<fix --init>
+failed to do its thing.
+
+=item 255
+
+Early error prevented even attempting to build. (E.g. parsing of command line
+options failed.)
+
+=back
+
+
+=head1 EXAMPLES
+
+
+=head1 ENVIRONMENT VARIABLES
+
+Various fix commands use the following environment variables.
+
+=over 6
+
+=item B<FIX_BASEDIR>
+
+Root path of the working tree. This can also be controlled by the B<--basedir>
+command line option. It can be an absolute path or a path relative to the
+current working directory.
+
+This does not affect behavior of B<--confdir> (which will work as usual, i.e.
+if unspecified the first encountered B<.fix> dir above the current directory
+will be used).
+
+
+=item B<FIX_CONFDIR>
+
+If the B<FIX_CONFDIR> environment variable is set then it specifies a path to
+use instead of the default F<.fix> for the build metadata directory. It can be
+an absolute path or relative path to current working directory. This can also
+be controlled by the B<--confdir> command line option.
+
+If B<FIX_CONFDIR> is specified, without B<FIX_BASEDIR> being set, then the
+current directory will be used as the base dir of the work tree.
+
+
+=item B<FIX_DEBUG>
+
+Cause extra debugging messages to be printed throughout B<fix>'s execution.
+This can also be enabled by using the B<--debug> option.
+
+When setting this variable (or using the B<--debug> option) the B<FIX_DEBUG>
+variable will be set in all the invoked buildscripts (which is how B<fix> will
+know that its supposed to be verbose when invoked from inside one of those
+build scripts).
+
+
+=item B<FIX_LEVEL>
+
+Incremented by one each time a build process is invoked (a dependency is
+built). This is chiefly used to indent the output messages the proper amount.
+(Analogous to B<SHLVL>.)
+
+
+=item B<FIX_PARENT>
+
+A second solution is to use an environment variable to store the current target
+being built; say, $REDOPARENT. Each time the build script for a target is
+executed by redo-ifchange, $REDOPARENT is set appropriately. One drawback with
+this approach is that it clutters the global environment namespace. Another is
+that it is also potentially unreliable—programs or build scripts could
+
+clear or change this variable.
+
+
+=item B<FIX_PID>
+
+The process id number of the mother process.
+
+=back
+
+=head1 FILES
+
+
+=head1 AUTHOR
+
+Written by Zrajm C Akfohg <zrajm@klingonska.org>, 2012.
+
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright 2012 Zrajm C Akfohg <zrajm@klingonska.org>.
+
+Distributed under Creative Commons Attribution-ShareAlike 3.0 Unported (CC
+BY-SA 3.0) <http://creativecommons.org/licenses/by-sa/3.0/>.
+
+This means that you may copy, sell and change the program in any way you like,
+as long as you still attribute it to this author, and release your modified
+version under the same license.
+
+
+=head1 SEE ALSO
+
+This build system is heavily inspired by D.J. Bernstein's B<redo>, and the many
+interpretations made thereof:
+
+    "Rebuilding target files when source files have changed"
+    <http://cr.yp.to/redo.html>
+    Daniel J. Bernstein, 2003 (date from archive.org)
+
+    "Purely top-down software rebuilding"
+    <http://www.grosskurth.ca/papers/mmath-thesis.pdf>
+    Alan Grosskurth, 2007
+
+    "redo: a top-down software build system"
+    <https://github.com/apenwarr/redo>
+    Avery Pennarun, 2010-2012
+
+=cut
+
+#[eof]

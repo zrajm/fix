@@ -1,11 +1,11 @@
 -*- org -*-
 
-* fix-test
-** TODO Test statefile content for ABORT.
-* fix
-** TODO Merge and rename 'fixitude' -> 'fix'.
+* Testing
+** TODO Test statefile content for ABORT
+* Main program
+** TODO Merge the good stuff from old 'fix' into current source
 ** TODO Runstate should be stored separately ('state/ABORT' should be there)
-** TODO Prettier output. Each target name should only be outputted once.
+** TODO Prettier output. Each target name should only be outputted once
 ** TODO Pass relevant args to buildscripts.
    Gup passes these:
    $1 - (absolute) path to a temporary file created for this target
@@ -75,5 +75,9 @@
    solves this problem.
 ** [[https://github.com/gfxmonk/gup][Gup - A better make, inspired by djb's redo.]] (by gfxmonk, on GitHub)
 * DONE
+** DONE Rename 'fixitude' -> 'fix'
+   CLOSED: [2014-01-10 Fri 12:45]
+   Keeping old 'fix' around under the name 'fix-old' until all interesting
+   stuff has been grabbed from it.
 ** DONE fix-test: Tests statefile contents.
    CLOSED: [2014-01-10 Fri 12:00]

@@ -16,70 +16,13 @@ $Data::Dumper::Terse    = 1;
 
 $ENV{FIX_CMD} = realpath(__FILE__);
 
-# TODO
-# ====
-#   * add()/set() should only save on actual change -- this should avoid
-#     rebuilding on cyclic dependencies
-#   * Implement fix_on_create
-#   * Abort/warn on missing buildscript
-#   * Read protect files in '.fix', just like git (i.e. 'chmod -w')
-#   * Instead of adding fix's whole path, should:
-#     o If currently running 'fix' is not found 1st in path
-#       + Unless ~/.fix/bin/fix exists and is a link to currently running fix
-#         * Create ~/.fix/bin/, and add symlink to the currently running binary.
-#     o Add ~/.fix/bin as 1st component in $PATH.
-#   * Fork and run parallel 'fix' for each argument
-#   * CSS style dependency. I.e. The HTML file requires the CSS to exist, but
-#     the HTML does not have to be rebuilt when the CSS changes.
-#   * Document $FIX_XTRACE, $FIX_DEBUG and $FIX_VERBOSE
-#   * Speed up determining whether file has changed
-#
-#     Git seems to be pretty clever at this. :) There is also a discussion on
-#     "racily clean entries" that is relevant to this context.
-#     [http://www.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt]
-#
-#     Note: not all members in `struct stat` obtained via `lstat(2)` are used
-#     for this comparison. For example, `st_atime` obviously is not useful.
-#     Currently, git compares the file type (regular files vs symbolic links)
-#     and executable bits (only for regular files) from `st_mode` member,
-#     `st_mtime` and `st_ctime` timestamps, `st_uid`, `st_gid`, `st_ino`, and
-#     `st_size` members.
-#
-#     lstat return values used:
-#          1 ino      inode number
-#          2 mode     file mode  (type and permissions)
-#          4 uid      numeric user ID of file's owner
-#          5 gid      numeric group ID of file's owner
-#          7 size     total size of file, in bytes
-#          9 mtime    last modify time in seconds since the epoch
-#         10 ctime    inode change time in seconds since the epoch (*)
-#
-#   * Parallel builds
-#         my $subref = \&{"$opt{command}"};
-#         foreach my $arg (@ARGV ? @ARGV : "all") {
-#             my $child_pid = fork();
-#             die "Failed to fork process" unless defined $child_pid;
-#             if ($child_pid == 0) {                 # child process
-#                 &{$subref}(\%opt, $arg);
-#                 exit;
-#             }
-#         }
-#         # FIXME: handle badness in children, exist status in $? after each wait()
-#         1 while (wait() != -1);
-#
 # Path Names
 # ==========
 # All pathnames are relative paths, always. Buildscripts are invoked with the
-# current directory set to the same dir as the build script. $FIX_BASEDIR is
+# current directory set to the same dir as the buildscript. $FIX_BASEDIR is
 # set to the root dir of the worktree within the buildscript. (I.e. you may run
 # "bin/tool" from the basedir using "$FIX_BASEDIR/bin/tool", or by setting path
 # in a higher target, e.g. "$PATH=$(readlink -f $FIX_BASEDIR)/bin:$PATH.)
-#
-#
-# Terminology
-# ===========
-# mother process ---- user-invoked proccess (as opposed to process called from
-#                     buildscript)
 #
 # Stored Values
 # =============
@@ -168,12 +111,6 @@ sub is_mother() {
     return $ENV{FIX_PID} == $$;
 }
 
-sub mother_pid {
-    # return mother pid
-    return $$ if is_mother;
-    return $ENV{FIX_PID};
-}
-
 # Get buildscript for $target. If $target = "TARGET.A.B", then the following
 # files will be tried (in order) and the first one existing will be returned,
 # down to (but not outside) $FIX_BASEDIR. Returns FALSE if no file could be
@@ -249,78 +186,6 @@ sub read_file {
     return <$in>;
 }
 
-# Convert POD into ANSI escape sequences for the terminal. Does not do
-# recursion. (But since E<...> is handled first, those are allowed inside both
-# B<...> and I<...>, and since C<...> is treated last, all other POD sequences
-# are allowed inside those.)
-sub pod2ansi {
-    my ($_) = @_;
-    return undef unless defined($_);
-    my %char = (quot => '"', amp => '&', lt => '<', gt => '>');
-    s#E<([^>]*)>#$char{lc $1}#g;     # HTML-like entity
-    s#B<([^>]*)>#\e[1m$1\e[0m#g;     # bold
-    s#[FI]<([^>]*)>#\e[4m$1\e[0m#g;  # italic / filename
-    s#C<([^>]*)>#"$1"#g;             # quoted code
-    return $_;
-}
-
-sub version {
-    print "$NAME (klingonska.org) $VERSION\n",
-        "Copyright (C) $YEAR Zrajm C Akfohg <zrajm\@klingonska.org>\n",
-        "License CC BY-SA 3.0: Creative Commons Attribution-ShareAlike 3.0 Unported\n",
-        "    <http://creativecommons.org/licenses/by-sa/3.0/>\n";
-    exit 0;
-}
-
-sub manpage {
-    exec 'pod2man "' . realpath($0) . '"|man -l -'
-        or die "Failed to exec 'pod2man'"
-}
-
-sub help {
-    my $_ = read_file(realpath($0));
-    my ($synopsis)    = m#^=head1 \s+ SYNOPSIS \s+ (.*)#mx;
-    my ($description) = m#^=head1 \s+ NAME \s+ [-\w]+ \s+-\s+ (.*)#mx;
-    print "Usage: " . pod2ansi($synopsis) . "\n",
-        ucfirst($description) . ".\n";
-    { # list --options (from comments) -- sort by longopt name
-        my @opt_doc = ();
-        my $opt_length = 0;
-        while (/^ \s*
-                (?: (['"])                  # start quote
-                    ([^\n'"=:|]*?)          #   long opt
-                    (?:\|([^\n'"=:]*))?     #   short opt
-                    (?:([:=])[^\n'"=]*)?    #   opt arg
-                    \1 [^#]*                # end quote
-                |.*?)?(?<!\#)\#\#\#\s+(.*)$/xmg) { # description
-            my $long  = $2 ? "--$2"  : "";
-            my $short = $3 ?  "-$3," : "";
-            my $arg   = $4;
-            my $desc  = $5;
-            if ($arg and $desc =~ s/([A-Z0-9]+)\s*//) {
-                $long .= $arg eq ":" ? "[=$1]" : "=$1";
-            }
-            push(@opt_doc, [ $short, $long, pod2ansi($desc) ]);
-            my $length = length($long);
-            $opt_length = $length if $length > $opt_length;
-        }
-        # length of longest option name
-        if (@opt_doc) {
-            print "\nOptions:\n", map {
-                sprintf "  %-3s %-${opt_length}s  %s\n", @$_
-            } @opt_doc;
-        }
-    }
-    print <<EOF;
-
-'fix' is a build to similar to 'redo'. However, default action ('fix') is
-equivalent to 'redo-ifchange', if you want the default 'redo' behaviour
-(rebuilding of the specified targets, regardless of whether their dependencias
-has changed) use 'fix --force'.
-EOF
-    exit 0;
-}
-
 # FIXME: clean up msg()
 sub msg {
     my ($loglevel, $message) = @_;
@@ -366,21 +231,6 @@ sub tmpfilename {
     # my @c = ("a".."z");
     # join("", map { $c[rand @c] } 1..5);
 }
-
-# # FIXME: use File::Path's "mkpath" here instead
-# sub mkdirs {
-#     my (@dir) = @_;
-#     foreach my $dir (@dir) {
-#         my ($_, @dir) = ($dir);
-#         until (-e $_) {
-#             push(@dir, $_);
-#             s#/[^/]*$## or die "Failed to go up dir from '$_' in '$dir'\n";
-#         }
-#         foreach (reverse @dir) {
-#             mkdir $_ or die "Failed to create dir '$_': $!\n";
-#         }
-#     }
-# }
 
 # FIXME: Uniqification could be better?
 # FIXME: Only save if anything actually changed
@@ -539,39 +389,39 @@ sub tmpfilename {
     }
 };
 
-sub load_file {
-    my ($file) = @_;
-    return {} if not -e $file;
-    open(my $in, '<', $file)
-        or die "failed to open file '$file' for reading: $!\n";
-    my $data = {};
-    foreach (<$in>) {
-        my ($prop, $value) = m#^ (.*?) :\s+ (.*) $#x;
-        # FIXME: decode $value (to allow newline)
-        push(@{ $data->{$prop} }, $value);
-    }
-    close($in)
-        or die "failed to close file '$file' after reading: $!\n";
-    return $data;
-}
+# sub load_file {
+#     my ($file) = @_;
+#     return {} if not -e $file;
+#     open(my $in, '<', $file)
+#         or die "failed to open file '$file' for reading: $!\n";
+#     my $data = {};
+#     foreach (<$in>) {
+#         my ($prop, $value) = m#^ (.*?) :\s+ (.*) $#x;
+#         # FIXME: decode $value (to allow newline)
+#         push(@{ $data->{$prop} }, $value);
+#     }
+#     close($in)
+#         or die "failed to close file '$file' after reading: $!\n";
+#     return $data;
+# }
 
-sub save_file {
-    my ($file, $data) = @_;
-    my $tmpfile = tmpfilename($file);
-    mkpath([ dirname($tmpfile) ]);
-    open(my $out, '>', $tmpfile)
-        or die "Failed to open file '$tmpfile' for writing: $!\n";
-    foreach my $name (sort keys %$data) {
-        foreach my $value (@{ $data->{$name} }) {
-            # FIXME: encode $value (to allow newline)
-            say $out "$name: $value";
-        }
-    }
-    close($out)
-        or die "Failed to close file '$tmpfile' after writing: $!\n";
-    rename($tmpfile, $file)
-        or die "Failed to rename '$tmpfile' after writing: $!\n";
-}
+# sub save_file {
+#     my ($file, $data) = @_;
+#     my $tmpfile = tmpfilename($file);
+#     mkpath([ dirname($tmpfile) ]);
+#     open(my $out, '>', $tmpfile)
+#         or die "Failed to open file '$tmpfile' for writing: $!\n";
+#     foreach my $name (sort keys %$data) {
+#         foreach my $value (@{ $data->{$name} }) {
+#             # FIXME: encode $value (to allow newline)
+#             say $out "$name: $value";
+#         }
+#     }
+#     close($out)
+#         or die "Failed to close file '$tmpfile' after writing: $!\n";
+#     rename($tmpfile, $file)
+#         or die "Failed to rename '$tmpfile' after writing: $!\n";
+# }
 
 sub run_buildscript {
     my ($opt, $arg) = @_;
@@ -850,10 +700,6 @@ sub fix_init {
     return TRUE;
 }
 
-sub fix_on_force {
-    return "NYI";
-}
-
 # Usage: fix_on_update(\%OPT[, \%OPT2], @TARGET);
 #
 # Build @TARGET(s), registering them each as dependency for $OPT{parent}.
@@ -917,13 +763,6 @@ sub _fix_on_create {
     say 'on-create';
 }
 
-# FIXME: This should force rebuild of the first level of build
-sub _fix_force {
-    my ($opt, @target) = @_;
-    debug "NYI fix --force";
-    fix_on_update($opt, @target);
-}
-
 sub _fix_on_update {
     my ($opt, $target) = @_;
     my ($temp, $keep) = @opt{ qw/store_session store_permanent/ };
@@ -971,15 +810,12 @@ set_path("base-dir", $ENV{FIX_BASEDIR}, '$FIX_BASEDIR') if defined($ENV{FIX_BASE
             $opt{debug} = $ENV{FIX_DEBUG} = 1 },
         "force|f"   => sub {             ### NIY: forces rebuild (equivalent to plain 'redo')
             $opt{command} = "fix_force" },
-        "help|h"    => \&help,           ### display this help and exit
-        "manpage|M" => \&manpage,        ### display program manpage and exit
         "on-update" => sub {             ### (equivalent to 'redo-ifchange') (default)
             $opt{command} = "fix_on_update" },
         "on-create" => sub {             ### NIY: (equivalent to 'redo-ifcreate')
             $opt{command} = "fix_on_create" },
         "verbose|v" => sub {             ### print commands as they are read from .do files (variables intact)
             $opt{verbose} = $ENV{FIX_VERBOSE} = 1 },
-        "version|V" => \&version,        ### output version information and exit
         "xtrace|x"  => sub {             ### print commands as they are executed (variables expanded)
             $opt{xtrace} = $ENV{FIX_XTRACE} = 1 },
     ) or exit 255;
@@ -1028,303 +864,5 @@ my $subref = \&{ $opt{command} };
 &{$subref}(\%opt, @ARGV);
 
 # FIXME: Erase "$opt{confdir}/pid" on exit
-
-__END__
-
-=head1 NAME
-
-fix - (Re-)build targets if dependencies has changed
-
-
-=head1 SYNOPSIS
-
-B<fix> [I<OPTION>]... [I<TARGET>]...
-
-
-=head1 DESCRIPTION
-
-B<fix> is short for C<fix> or or C<effects> (whichever you prefer). It fixes
-effects. Namely it effects (and affects) a build system. It is inspired by
-B<redo>, but has a couple of design choices made different than apenwarr's
-implementation.
-
-=over 2
-
-=item * The whole program (including docs) is one file, making it highly
-portable and easy to add to your own build tree (in my case that was the build
-system for Klingonska Akademien's web site, klingonska.org).
-
-=item * You can run it in any subdir under the build tree root (your rules will
-always run with the build tree root as the current dir). This is how B<git>
-works and I wanted my build tool and my versioning system to behave the same
-way.
-
-=item * B<redo> can only create I<files>, B<fix> can create directories or
-symlinks as well.
-
-=item * FUTURE: Creating file checksums that do not depend on exact content,
-but uses filters to disregard comments or other non-relevant stuff in sources.
-
-=back
-
-
-=head1 OPTIONS
-
-Mandatory arguments to long options are mandatory for short options too.
-
-
-=over 8
-
-=item B<--basedir>=I<PATH> (default: Dir in which B<FIX_CONFDIR> resides)
-
-Set the path to the working tree root. This can also be controlled by setting
-the B<FIX_BASEDIR> environment variable. It can be an absolute path or a path
-relative to the current working directory.
-
-This does not affect behavior of B<--confdir> (which will work as usual, i.e.
-if unspecified the first encountered B<.fix> dir above the current directory
-will be used).
-
-
-=item B<--confdir>=I<PATH> (default: F<.fix> dir in root of current work tree)
-
-Set the path to the F<.fix> build metadata directory. This can also be
-controlled by setting the B<FIX_CONFDIR> environment variable. It can be an
-absolute path or a path relative to the current working directory.
-
-Setting B<FIX_CONFDIR> will set B<FIX_BASEDIR> to current dir (unless
-B<FIX_BASEDIR> is also explicitly set by user).
-
-
-=item B<-D>, B<--debug>
-
-Cause extra debugging messages to be printed throughout B<fix>'s execution.
-This can also be enabled by setting the B<FIX_DEBUG> environment variable to
-anything but the empty string or zero.
-
-When using this option (or setting the B<FIX_DEBUG> variable) the B<FIX_DEBUG>
-variable will be set in all the invoked buildscripts (which is how B<fix> will
-know that its supposed to be verbose when invoked from inside one of those
-build scripts).
-
-
-=item B<-f>, B<--force>
-
-Force rebuilding of all target mentioned on command line, regardless of whether
-it's needed or not. Normally nothing is rebuild unless needed, so that if all
-dependencies of the targets given on the command line are unchanged, then
-C<fix> will do nothing.
-
-This is equivalent of plain C<redo>, without this option C<fix> is equivalent
-to the C<redo-ifchange> command.
-
-
-=item B<-h>, B<--help>
-
-Output brief command line help on standard output, then exit.
-
-
-=item B<--init>
-
-Create new confdir for build metadata storage. Unless otherwise specified the
-confdir will be created in the current directory.
-
-If B<--base-dir> (or B<$FIX_BASEDIR>) is given then the confdir will be created
-in that directory (so that using C<--base-dir=example> will cause a confdir
-called F<example/.fix> to be created).
-
-Finally, B<--conf-dir> (or B<$FIX_CONFDIR>) can be used to specify the I<exact>
-name of the confdir to be created (so that using C<--conf-dir=example/.fix>
-will cause a confdir called F<example/.fix> to be created). This alternative
-will override the two above.
-
-
-=item B<-M>, B<--manpage>
-
-Display program manpage and exit. This option extracts the Perl POD (Plain Old
-Documentation) documentation from the program and displays it using man(1).
-
-
-=item B<-v>, B<--verbose>
-
-Passes the option B<-v> to the shell when executing build scripts. This will
-usually cause each command line to be printed on standard error as it is read.
-
-Most shells will print the exact source line (e.g.. C<echo $3>) rather than the
-substituted value of variables (e.g.. B<echo mytarget.fix.tmp>). Useful for
-debugging.
-
-
-=item B<-V>, B<--version>
-
-Output version information on standard output, then exit.
-
-
-=item B<-x>, B<--xtrace>
-
-Passes the option B<-x> to the shell when executing build scripts. This will
-usually cause each command to be printed on standard error (preceded by a '+'
-sign) before it is executed.
-
-Most shells will print the substituted variables (e.g. C<echo
-mytarget.fix.tmp>) rather than the original source line (e.g. C<echo $3>).
-Useful for debugging.
-
-=back
-
-
-=head1 DISCUSSION
-
-=head2 Build Scripts
-
-For building to be atomic, build files should produce output by either
-
-=over 3
-
-=item a)
-
-writing to standard output (this is the preferred method), or
-
-=item b)
-
-writing to a tempfile (the name is determined by B<fix> and passed in as the
-third argument, B<$3>, to the build script). When using this method anything
-written to standard output will be ignored.
-
-=back
-
-Method B is required when generating anything but a standard file (i.e. when a
-build script generate a pipe, symlink or directory). Also note that target
-updating will only be atomic when generating a single file.
-
-
-=head1 EXIT STATUS
-
-Exit status will be:
-
-=over 4
-
-=item 0
-
-All targets and their dependencies were successfully built.
-
-=item 1
-
-Command failed. Usually this means than one or more tagets or dependencies
-failed to build, but it can also mean e.g. that a command like C<fix --init>
-failed to do its thing.
-
-=item 255
-
-Early error prevented even attempting to build. (E.g. parsing of command line
-options failed.)
-
-=back
-
-
-=head1 EXAMPLES
-
-
-=head1 ENVIRONMENT VARIABLES
-
-Various fix commands use the following environment variables.
-
-=over 6
-
-=item B<FIX_BASEDIR>
-
-Root path of the working tree. This can also be controlled by the B<--basedir>
-command line option. It can be an absolute path or a path relative to the
-current working directory.
-
-This does not affect behavior of B<--confdir> (which will work as usual, i.e.
-if unspecified the first encountered B<.fix> dir above the current directory
-will be used).
-
-
-=item B<FIX_CONFDIR>
-
-If the B<FIX_CONFDIR> environment variable is set then it specifies a path to
-use instead of the default F<.fix> for the build metadata directory. It can be
-an absolute path or relative path to current working directory. This can also
-be controlled by the B<--confdir> command line option.
-
-If B<FIX_CONFDIR> is specified, without B<FIX_BASEDIR> being set, then the
-current directory will be used as the base dir of the work tree.
-
-
-=item B<FIX_DEBUG>
-
-Cause extra debugging messages to be printed throughout B<fix>'s execution.
-This can also be enabled by using the B<--debug> option.
-
-When setting this variable (or using the B<--debug> option) the B<FIX_DEBUG>
-variable will be set in all the invoked buildscripts (which is how B<fix> will
-know that its supposed to be verbose when invoked from inside one of those
-build scripts).
-
-
-=item B<FIX_LEVEL>
-
-Incremented by one each time a build process is invoked (a dependency is
-built). This is chiefly used to indent the output messages the proper amount.
-(Analogous to B<SHLVL>.)
-
-
-=item B<FIX_PARENT>
-
-A second solution is to use an environment variable to store the current target
-being built; say, $REDOPARENT. Each time the build script for a target is
-executed by redo-ifchange, $REDOPARENT is set appropriately. One drawback with
-this approach is that it clutters the global environment namespace. Another is
-that it is also potentially unreliable—programs or build scripts could
-
-clear or change this variable.
-
-
-=item B<FIX_PID>
-
-The process id number of the mother process.
-
-=back
-
-=head1 FILES
-
-
-=head1 AUTHOR
-
-Written by Zrajm C Akfohg <zrajm@klingonska.org>, 2012.
-
-
-=head1 COPYRIGHT AND LICENSE
-
-Copyright 2012 Zrajm C Akfohg <zrajm@klingonska.org>.
-
-Distributed under Creative Commons Attribution-ShareAlike 3.0 Unported (CC
-BY-SA 3.0) <http://creativecommons.org/licenses/by-sa/3.0/>.
-
-This means that you may copy, sell and change the program in any way you like,
-as long as you still attribute it to this author, and release your modified
-version under the same license.
-
-
-=head1 SEE ALSO
-
-This build system is heavily inspired by D.J. Bernstein's B<redo>, and the many
-interpretations made thereof:
-
-    "Rebuilding target files when source files have changed"
-    <http://cr.yp.to/redo.html>
-    Daniel J. Bernstein, 2003 (date from archive.org)
-
-    "Purely top-down software rebuilding"
-    <http://www.grosskurth.ca/papers/mmath-thesis.pdf>
-    Alan Grosskurth, 2007
-
-    "redo: a top-down software build system"
-    <https://github.com/apenwarr/redo>
-    Avery Pennarun, 2010-2012
-
-=cut
 
 #[eof]

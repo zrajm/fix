@@ -145,8 +145,6 @@ my ($name) = $fix =~ m#([^/]+)$#;
 my $testdir = make_tempdir($name);
 chdir($testdir) or die "Failed to cd to '$testdir': $!,";
 
-if ($name eq 'fix') { system("$fix --init") }
-
 ###############################################################################
 ##                                                                           ##
 ##  Tests                                                                    ##
@@ -156,17 +154,29 @@ if ($name eq 'fix') { system("$fix --init") }
 my %c;                                         # Mnemonic: 'content'
 my $dir = ".$name/state";
 
+note "No argument given";
+{
+    my $r = system("$fix 2>/dev/null");
+
+    is  ($r >> 8,          254,         "Exit status");
+    ok  (! -e ".$name",                 "Statedir non-existing")
+}
+note "Bad command line option";
+{
+    my $r = system("$fix --BAD-OPTION 2>/dev/null");
+
+    is  ($r >> 8,          254,         "Exit status");
+    ok  (! -e ".$name",                 "Statedir non-existing")
+}
 note "Non-existing buildscript";
 {
-    my %a = fingerprints(qw/ 1.fix /);
-    my $r = system("$fix 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix /);
+    my $r = system("$fix NON-EXISTING-TARGET 2>/dev/null");
 
-    is  ($r >> 8,          2,           "Exit status");
-    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',              "Tempfile non-existing");
-    ok  (! -f '1',                      "Target non-existing");
-    ok  (! -e ".$name",                 "Statedir non-existing")
+    is  ($r >> 8,          254,              "Exit status");
+    ok  (! -f 'NON-EXISTING-TARGET.fix',     "Buildfile non-existing");
+    ok  (! -f 'NON-EXISTING-TARGET--fixing', "Tempfile non-existing");
+    ok  (! -f 'NON-EXISTING-TARGET',         "Target non-existing");
+    ok  (! -e ".$name",                      "Statedir non-existing")
 }
 note "Buildscript with exit status = 1";
 
@@ -298,7 +308,7 @@ note "Rerun after target was externally updated";
     my $r = system("$fix 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1 /);
 
-    is  ($r >> 8,          1,           "Exit status");
+    is  ($r >> 8,          253,         "Exit status");
     is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',              "Tempfile non-existing");
     ok  (  -f '1',                      "Target existing");
@@ -455,7 +465,6 @@ note "Rerun without change";
                                      "Statefile content: $_") for key %target;
 }
 note "Rerun after change of subtarget '2'";
-
 $source{'2.fix'} = nl('echo 22');
 write_file('2.fix', $source{'2.fix'});
 
@@ -509,7 +518,7 @@ note "Rerun after dependency target '1' externally modified";
     my $exit = system("$fix ab12 2>/dev/null");
     my %post = fingerprints(key %source, %target);
 
-    is  ($exit >> 8,    1,           "Exit status");
+    is  ($exit >> 8,    253,         "Exit status");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;

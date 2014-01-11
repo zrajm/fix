@@ -24,15 +24,112 @@ use vars qw($NAME $VERSION $YEAR);
 $VERSION = "0.3";
 $YEAR    = "2012-2014";
 ($NAME)  = __FILE__ =~ m#([^/]*)$#;            # last non-slash part of path
+sub TRUE  { 1 }
+sub FALSE { 0 }
 
 my %opt = (
-    shell       => '/bin/dash',
-    parent_name => $ENV{FIX_PARENT} // '',     # parent target (set when called by fix itself)
-    fix_dir     => ".$NAME",
-    level       => $ENV{FIX_LEVEL} += 1,       # child level (mother = 1)
-    debug       => $ENV{FIX_DEBUG} ? 1 : 0,    # -D/--debug $FIX_DEBUG
-    force       => $ENV{FIX_FORCE} ? 1 : 0,    # -f/--force $FIX_FORCE
+    debug   => $ENV{FIX_DEBUG} ? TRUE : FALSE, # -D/--debug $FIX_DEBUG
+    fix_dir => ".$NAME",
+    # force   => $ENV{FIX_FORCE} ? TRUE : FALSE, # -f/--force $FIX_FORCE
+    level   => $ENV{FIX_LEVEL} += 1,           # child level (mother = 1)
+    parent  => $ENV{FIX_PARENT} // '',         # parent target
+    pid     => $ENV{FIX_PID}    //= $$,        # PID of mother process
+    shell   => '/bin/dash',
+    xtrace  => $ENV{FIX_XTRACE}  // "" ne "",  # -x/--xtrace $FIX_XTRACE
+    verbose => $ENV{FIX_VERBOSE} // "" ne "",  # -v/--verbose $FIX_VERBOSE
 );
+
+###############################################################################
+##                                                                           ##
+##  Informational Functions                                                  ##
+##                                                                           ##
+###############################################################################
+
+sub version {
+    print "$NAME $VERSION\n",
+        "Written $YEAR by zrajm <zrajm\@klingonska.org>\n",
+        "License CC BY-SA 3.0: Creative Commons Attribution-Share Alike 3.0\n",
+        "    <http://creativecommons.org/licenses/by-sa/3.0/>\n";
+    exit;
+}
+
+sub pod2ansi {
+    my ($_) = @_;
+    return undef unless defined($_);
+    my %char = (quot => '"', amp => '&', lt => '<', gt => '>');
+    s#E<([^>]*)>#$char{lc $1}#g;     # HTML-like entity
+    s#B<([^>]*)>#\e[1m$1\e[0m#g;     # bold
+    s#[FI]<([^>]*)>#\e[4m$1\e[0m#g;  # italic / filename
+    s#C<([^>]*)>#"$1"#g;             # quoted code
+    return $_;
+}
+
+# usage(SOURCE, MSG) -- display usage information from SOURCE + display MSG
+sub usage {
+    my ($_, $msg) = @_;
+    #my $_ = read_file(realpath(__FILE__));
+    my $out;
+    $out .= m#^=head1 \s+ SYNOPSIS \s+ (.*)#mx
+        ? "Usage: " . pod2ansi($1) . "\n" : "";
+    $out .= m#^=head1 \s+ NAME \s+ [-\w]+ \s+-\s+ (.*)#mx ? "\u$1.\n" : "";
+    $out .= "\n" if $out;
+    { # list --options (from comments) -- sort by longopt name
+        my @opt_doc = ();
+        my $opt_length = 0;
+        while (/^ \s*
+                (?: (['"])                     # start quote
+                    ([^\n'"=:|]*?)             #   longopt
+                    (?:
+                           \|([^\n'"=|:]*?)    #   keep first shortopt
+                        (?:\| [^\n'"=|:]+)*    #     (ignore more shortopts)
+                    )?
+                    (?:\+|([:=])[^\n'"=]*)?    #   optarg
+                    \1 [^#]*                   # end quote
+                |.*?)?(?<!\#)\#\#\#\s+(.*)$/xmg) { # description
+            my $long  = $2 ? "--$2"  : "";
+            my $short = $3 ?  "-$3," : "";
+            my $arg   = $4;
+            my $desc  = $5;
+            # if option takes arg, and 1st word in description is uppercase,
+            # use that uppercase word in long description description
+            if ($arg and $desc =~ s/([A-Z0-9]+)\s*//) {
+                $long .= $arg eq ":" ? "[=$1]" : "=$1";
+            }
+            push(@opt_doc, [ $short, $long, pod2ansi($desc) ]);
+            my $length = length($long);
+            $opt_length = $length if $length > $opt_length;
+        }
+        # length of longest option name
+        if (@opt_doc) {
+            $out .= join "", "Options:\n", map {
+                sprintf "  %-3s %-${opt_length}s  %s\n", @$_
+            } @opt_doc;
+        }
+    }
+    print "$out\n" . pod2ansi($msg);
+    exit;
+}
+
+sub help {
+    usage(read_file(__FILE__), <<'EOF');
+EOF
+    exit;
+}
+
+sub man {
+    my $pid = open(STDOUT, '|-', qw/man -l -/);# filter STDOUT through man(1)
+    if (not defined $pid) {
+        die "Failed no run 'man': $!\n";
+    }
+    system('pod2man', __FILE__);               # output manpage on STDOUT
+    if ($? == -1) {                            # on exec FAILURE
+        kill 'TERM', $pid;                     #   kill man(1) child and die()
+        die "Failed to execute 'pod2man': $!\n";
+    };
+    close STDOUT;                              # don't make man(1) wait for more
+    wait();                                    # wait until user exits man(1)
+    exit;
+}
 
 ###############################################################################
 ##                                                                           ##
@@ -40,8 +137,6 @@ my %opt = (
 ##                                                                           ##
 ###############################################################################
 
-sub TRUE  { 1 }
-sub FALSE { 0 }
 sub SOURCE { 'source' }
 sub TARGET { 'target' }
 
@@ -121,27 +216,6 @@ sub write_file {
     return TRUE;
 }
 
-# Replace FILE2 with FILE1. If both files are identical (in permissions and
-# content), then the old FILE2 is kept as-is (and FILE1 is deleted).
-sub replace_file {
-    my ($file1, $file2) = @_;
-    if (not -f $file1) {
-        die "Tempfile '$file1' does not exist, cannot replace target '$file2'\n";
-    }
-    my ($stat1, $stat2) = map {
-        join('-', (lstat($_))[2, 4, 5, 7]);    # (permissions, uid, gid, size)
-    } ($file1, $file2);
-    # FIXME: Compare files in chunks (to use less RAM usage on big files)
-    if ($stat1 eq $stat2                       # files are the same
-            and read_file($file1) eq read_file($file2)) {
-        unlink $file1                          #   keep old file
-            or die "Failed to remove tempfile '$file1' identical to target '$file2': $!\n";
-        return 1;
-    }
-    rename $file1, $file2
-        or die "Failed to replace target '$file2' with tempfile '$file1': $!\n";
-}
-
 sub checksum_file {
     my ($file) = @_;
     return '' unless -f $file;
@@ -201,38 +275,37 @@ sub build_target {
     my ($level, $target) = @_;
     info($target);
     if (-f $target and has_changed($target)) {
-        set("ABORT/$target",           ABORT => $target);
-        set("ABORT/$opt{parent_name}", ABORT => $target)
-            if $opt{parent_name};
+        set("ABORT/$target",      ABORT => $target);
+        set("ABORT/$opt{parent}", ABORT => $target)
+            if $opt{parent};
         msg(ERROR, "$target: Target externally modified, aborting\n");
-        exit 1;
+        exit 253;
     }
-
-    my $buildscript = "$target.fix";
-    my $outfile     = "$target--fixing";
+    my ($buildscript, $outfile) = ("$target.fix", "$target--fixing");
     # clear dependency information (rebuilt each run)
     set($target,
         type => TARGET,
         deps => [[ $buildscript ]],
     );
-    my ($exit_code, $exit, $errno) = redir_stdout($outfile, sub {
+    my ($close, $exit, $errno) = redir_stdout($outfile, sub {
         local $ENV{FIX_PARENT} = $target;
         local $ENV{FIX_LEVEL}  = $level;
-
-        # FIXME: Should we allow #! in buildscripts?
-        open(my $shell, '|-', $opt{shell}, '-e')
+        my @arg = (
+            $opt{xtrace} ? '-x' : (),
+            $opt{debug}  ? '-v' : (),
+        );
+        open(my $shell, '|-', $opt{shell}, '-e', @arg)
             or die "Failed to execute shell '$opt{shell}': $!\n";
         print $shell read_file($buildscript);
 
         my $close = close($shell);
         return ($close, $?, $!);
     });
-
     # NOTE: outfile is kept on failure (so user may inspect it)
     #
     # - Except when a dependency completely failed to run (e.g. its output file
     #   was externally modified) in which case we remove the outfile.
-    $exit_code or do {
+    if (not $close) {
         $exit >>= 8;
         if ($errno != 0) {
             die "Failed to run buildscript '$buildscript': $errno\n";
@@ -241,14 +314,14 @@ sub build_target {
         if ($aborted ne '') {                  # a dependency failed to run
             unlink($outfile);                  #   erase outfile and
             set(                               #     and tell our parent that
-                "ABORT/$opt{parent_name}",     #     that we failed, too
+                "ABORT/$opt{parent}",          #     that we failed, too
                 ABORT => $aborted,
-            ) if $opt{parent_name};
+            ) if $opt{parent};
         } else {                               # a buildscript returned non-zero
             msg(ERROR, "$target: exit status $exit\n");
         }
         exit $exit;
-    };
+    }
 
     my $old_checksum = get($target, 'checksum');
     my $new_checksum = checksum_file($outfile);
@@ -436,44 +509,67 @@ sub update_targets {
 ###############################################################################
 
 # parse command line options
-use Getopt::Long qw(
-    :config posix_default bundling gnu_compat no_ignore_case permute
-);
-GetOptions(              # info displayed by help()
-    'debug|D'   => sub {             ### enable debugging mode
-        $opt{debug} = $ENV{FIX_DEBUG} = 1 },
-    'no-debug'   => sub {
-        $opt{debug} = $ENV{FIX_DEBUG} = 0 },
-    'force|f'   => sub {  ### force overwrite, even when target has changed
-        $opt{force} = $ENV{FIX_FORCE} = 1 },
-    'no-force'   => sub {  ### force overwrite, even when target has changed
-        $opt{force} = $ENV{FIX_FORCE} = 0 },
-    #'help|h',            ### display this help and exit
-    #'manpage|M',         ### display program manpage and exit
-    #'version|V',         ### output version information and exit
-) or exit 2;
+{
+    use Getopt::Long qw(
+        :config posix_default bundling gnu_compat no_ignore_case permute
+    );
 
-die "$NAME: No target specified\n\n" .
-    "Usage: $NAME [OPTION]... TARGET...\n" .
-    "Build the specified TARGET(s).\n"
-    unless @ARGV;
+    # Modify Getopt::Long's error messages:
+    #   'Option <OPT> requires an argument' and 'Unknown option: <OPT>',
+    #   should have "'--option'" or "'-o'" rather than just "option" or "o".
+    local $SIG{__WARN__} = sub {
+        my ($_) = @_;
+        s{(\boption[: ]+)(\S+)}{
+            my $x = length($2) == 1 ? '-' : '--';
+            "$1'$x$2'";
+        }ie;
+        warn "$NAME: $_";
+    };
+
+    GetOptions(
+        'debug|D'  => sub {       ### debug output + make build shells verbose
+            $opt{debug} = $ENV{FIX_DEBUG} = TRUE;
+        },
+        # 'force|f'  => sub {       ### overwrite manually edited files
+        #     $opt{force} = $ENV{FIX_FORCE} = TRUE;
+        # },
+        'help|h|?'  => \&help,    ### display this help and exit
+        'man|M'     => \&man,     ### display program manpage and exit
+        'verbose|v' => sub {      ### output status info while building
+            $opt{verbose} = $ENV{FIX_VERBOSE} = TRUE;
+        },
+        'version|V' => \&version, ### output version information and exit
+        'xtrace|x'  => sub {      ### use xtrace for build shells
+            $opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
+        },
+    ) or exit 254;
+}
+
+if (@ARGV == 0) {
+    msg(ERROR, "$NAME: No target specified\n" .
+            "Try '$NAME --help' for more information.\n");
+    exit 254;
+}
 
 %SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
 
 # die on missing buildscripts
 if (my @missing = grep { ! -f "$_.fix" } @ARGV) {
     warn join "", map { "No rule to make '$_'.\n" } @missing;
-    exit 2;
+    exit 254;
 }
 
 init_state($opt{fix_dir});
 
-if ($opt{parent_name} eq '') {                 # only mother process
+if ($opt{parent} ne '') {                      # CHILD PROCESSES
+    set($opt{parent}, add_deps => \@ARGV );    #   add targets as deps to parent
+} else {                                       # MOTHER PROCESS
+    delete_state('ABORT');                     #   delete runstate from previous
     $ENV{FIX_CMD} = realpath(__FILE__);
     # Add the currently running 'fix' command first in $PATH (which is
-    # inherited by all child processes). -- This makes sure that all build
-    # scripts that invoke 'fix' find it, even if 'fix' wasn't in the invoking
-    # user's $PATH to begin with.
+    # inherited by all child processes). -- This makes sure that all
+    # buildscripts that invoke 'fix' find it, even if 'fix' wasn't in the
+    # invoking user's $PATH to begin with.
     #
     # We achieve this by creating a '.fix/bin' directory, add a symlink to the
     # 'fix' command there, and tuck that directory name onto the beginning of
@@ -505,42 +601,569 @@ if ($opt{parent_name} eq '') {                 # only mother process
 ##                                                                           ##
 ###############################################################################
 
-# delete runstate from previous run
-if ($opt{parent_name}) {
-    delete_state('ABORT');
-    set($opt{parent_name}, add_deps => \@ARGV );
-}
-
 update_targets($opt{level}, @ARGV);
 
 __END__
 
-=head1 PRINCIPLES
+=head1 NAME
 
-=head2 About Target Files
+fix - Efficiently build (and rebuild) TARGET(s) based on dependencies
 
-When a target file is built B<fix> records a SHA1 sum of the generated file.
-Upon rebuilding the same target B<fix> uses this SHA1 sum to determine if it is
-okay to overwrite the previous file as follows:
+=head1 SYNOPSIS
+
+B<fix> [I<OPTION>]... I<TARGET>...
+
+=head1 DESCRIPTION
+
+B<Fix> is a build system. As such, it uses B<buildscripts> to generate output
+B<target>s (automatically keeping track said targets' dependencies), and when
+invoked it performs the minimal action required to make sure the specified
+targets are up-to-date, taking into account any changes in dependencies, or
+buildscripts since last invocation.
+
+If that sounds vague, it is simply because a build system can do B<so much> -
+it can be used to compile large software projects, generate HTML for a web page
+(e.g. using Markdown source code, and template pages), or just about anything
+else where you need to keep track of a long chain of dependencies, and B<update
+I<only> those parts of the project which currently I<need> updating>.
+
+=head1 OPTIONS
+
+=cut
+
+# Mandatory arguments for long options are mandatory for short options too.
+
+=over 8
+
+=cut
+
+# =item B<--basedir>=I<PATH> (default: Dir in which B<$FIX_CONFDIR> resides)
+#
+# Set the path to the working tree root. This can also be controlled by setting
+# the B<$FIX_BASEDIR> environment variable. It can be an absolute path or a path
+# relative to the current working directory.
+#
+# This does not affect behavior of B<--confdir> (which will work as usual, i.e.
+# if unspecified the first encountered B<.fix> dir above the current directory
+# will be used).
+
+# =item B<--confdir>=I<PATH> (default: F<.fix> dir in root of current work
+# tree)
+#
+# Set the path to the F<.fix> build metadata directory. This can also be
+# controlled by setting the B<$FIX_CONFDIR> environment variable. It can be an
+# absolute path or a path relative to the current working directory.
+#
+# Setting B<$FIX_CONFDIR> will set B<$FIX_BASEDIR> to current dir (unless
+# B<$FIX_BASEDIR> is also explicitly set by user).
+
+# =item B<-a>, B<--always>
+#
+# Assume that all dependencies are dirty, and rebuild B<everything>.
+
+# =item B<-c>, B<--clean>
+#
+# Remove all generated targets (except manually modified ones). Manually
+# modified targets are listed separately, so that you might take care of them.
+# If used with B<--force> files are clean regardless of whether or not they
+# have been updated.
+
+=item B<-D>, B<--debug>
+
+Enable debug mode. This makes B<fix> to print quite a lot of diagnostics
+messages throughout its run (more than B<--verbose>).
+
+This will also pass the option C<-v> to the shell of each buildscript. (This
+usually causes the shell to print each I<line> of the script before running it.
+The output usually I<unexpanded>; i.e. variables are shown by name, not by
+content.) Useful when debugging. See also B<--verbose>.
+
+This option can also be enabled by setting the environment variable
+B<$FIX_DEBUG> (to anything except empty or zero). Regardless of whether
+B<--debug> or B<$FIX_DEBUG> was used, this causes the B<$FIX_DEBUG> to be
+set inside all run buildscripts (which is how this setting is passed down to
+all child instances of B<fix> run from within those buildscripts).
+
+=cut
+
+# =item B<-f>, B<--force>
+#
+# Normally, if you have edited (or otherwise modified) a file that B<fix> is
+# trying to rebuild, you'll get an error and the build is interrupted. When you
+# use B<--force>, B<fix> will be a lot less careful, and will overwrite these
+# files instead. This is useful when you just don't care about these previous
+# files for some reason. (Maybe you're doing fully automated rebuilds on a
+# continuous integration server?)
+#
+# If you want to be careful about such cleanups, take a look at B<--clean> and
+# B<--list> instead.
+
+=item B<-h>, B<--help>
+
+Output a brief description of options etc on standard output, then exit.
+
+=cut
+
+# =item B<--init>
+#
+# Create new confdir for build metadata storage. Unless otherwise specified the
+# confdir will be created in the current directory.
+#
+# If B<--base-dir> (or B<$FIX_BASEDIR>) is given then the confdir will be created
+# in that directory (so that using C<--base-dir=example> will cause a confdir
+# called F<example/.fix> to be created).
+#
+# Finally, B<--conf-dir> (or B<$FIX_CONFDIR>) can be used to specify the I<exact>
+# name of the confdir to be created (so that using C<--conf-dir=example/.fix>
+# will cause a confdir called F<example/.fix> to be created). This alternative
+# will override the two above.
+
+=item B<-M>, B<--manpage>
+
+Display this manpage, then exit. This option extracts the Perl POD (Plain Old
+Documentation) documentation from the program and displays it using man(1).
+
+=cut
+
+=item B<-v>, B<--verbose>
+
+Enable verbose mode, causing B<fix> to print some diagnostics messages
+throughout its run (less than B<--debug>).
+
+This option can also be enabled by setting the environment variable
+B<$FIX_VERBOSE> (to anything except empty or zero). Regardless of whether
+B<--verbose> or B<$FIX_VERBOSE> was used, this causes the B<$FIX_VERBOSE> to be
+set inside all run buildscripts (which is how this setting is passed down to
+all child instances of B<fix> run from within those buildscripts).
+
+=cut
+
+=item B<-V>, B<--version>
+
+Output program version information on standard output, then exit.
+
+=cut
+
+=item B<-x>, B<--xtrace>
+
+Pass the option C<-x> to the shell of each buildscript. (This usually causes
+the shell to print, preceded by C<+ >, each I<command> of the script before
+running it. The output usually I<expanded>; i.e. variables are replaced by
+their content.) Useful when debugging. See also B<--verbose>.
+
+This option can also be enabled by setting the environment variable
+B<$FIX_XTRACE> (to anything but the empty string or zero). Regardless of
+whether B<--xtrace> or B<$FIX_XTRACE> was used, this causes the B<$FIX_XTRACE>
+to be set inside all run buildscripts (which is how this setting is passed down
+to all child instances of B<fix> run from within those buildscripts).
+
+=cut
+
+=back
+
+=head1 DISCUSSION
+
+=head2 Buildscripts
+
+For building to be atomic, build files should produce output by either
+
+=over 3
+
+=item a)
+
+writing to standard output (preferred method), or
+
+=item b)
+
+writing to a tempfile (the name is determined by B<fix> and passed in as the
+third argument, B<$3>, to the buildscript). When using this method anything
+written to standard output will be ignored.
+
+=back
+
+=cut
+
+# FIXME: Method B is required when generating anything but a standard file
+# (i.e. when a buildscript generate a pipe, symlink or directory). Also note
+# that target updating will only be atomic when generating a single file.
+
+=head1 EXIT STATUS
+
+B<NOTE: Any buildscript can terminate with exit status 253-255, in which case
+its return code is indistinguishable from the below cases!>
 
 =over 4
 
-=item B<Target file is non-existing or unmodified since last built>
+=item B<0>
 
-If a previously built target already exist but was written by B<fix> (and has
-not been modified since), B<fix> will do whatever it pleases with the file
-(delete it, overwrite it, whatever).
+All targets and their dependencies were successfully built. (This is the only
+exit status which is 100% reliable.)
 
-=item B<Target file has been modified since last built>
+=item B<E<gt>0>
 
-If a target file already exists but is unknown to B<fix>, or if the file is
-known but the content of the file has been modified in some way after B<fix>
-wrote it, then B<fix> will refuse to modify it and abort with an error message.
-(Use B<--force> to override this, and have B<fix> overwrite all target files.)
+Build failed. This usually means than one or more target failed to build. The
+exact exit status will be the same as the exit status of the failing
+buildscript.
 
-B<NOTE:> B<fix> never cares about file timestamps, but only the I<content>. (So
-if you modify the timestamp, will not influence B<fix>'s decision of whether or
-not to overwrite the file.)
+=item B<253>
+
+One or more targets were externally modified, and were not overwritten by
+B<fix>.
+
+=cut
+
+# (You run the command again with the option B<--force> to force the targets
+# overwritten).
+
+=item B<254>
+
+An early error occurred before even attempting to build. (Command line option
+parsing error, a non-existing target specified on the command line etc.)
+
+=item B<255>
+
+Some basic file operation failed, e.g. a file could not be renamed, standard
+output could not be redirected, a new shell could not be executed, or a
+statefile was found to contain unintelligible data etc.
+
+=back
+
+=head1 USAGE
+
+=cut
+
+# =head2 About Target Files
+#
+# When a target file is built B<fix> records a SHA1 sum of the generated file.
+# Upon rebuilding the same target B<fix> uses this SHA1 sum to determine if it
+# is okay to overwrite the previous file as follows:
+#
+# =over 4
+#
+# =item B<Target file is non-existing or unmodified since last built>
+#
+# If a previously built target already exist but was written by B<fix> (and has
+# not been modified since), B<fix> will do whatever it pleases with the file
+# (delete it, overwrite it, whatever).
+#
+# =item B<Target file has been modified since last built>
+#
+# If a target file already exists but is unknown to B<fix>, or if the file is
+# known but the content of the file has been modified in some way after B<fix>
+# wrote it, then B<fix> will refuse to modify it and abort with an error
+# message. (Use B<--force> to override this, and have B<fix> overwrite all
+# target files.)
+#
+# B<NOTE:> B<fix> never cares about file timestamps, but only the I<content>.
+# (So if you modify the timestamp, will not influence B<fix>'s decision of
+# whether or not to overwrite the file.)
+#
+# =back
+
+=head2 Tips on Debugging
+
+If you enable B<--xtrace> or B<--verbose> for an entire project, the output can
+be quite a mess. The trick is to re-invoke B<fix>, after your build has died
+with an error message, and build only the failing file using B<--xtrace> or
+B<--verbose>. Because the file has previously failed to build, B<fix> is
+guaranteed to try to rebuild it, and because B<fix> is bottom-up, the build is
+guaranteed to be exactly identical to whatever you would've gotten by building
+the entire tree of dependencies.
+
+=cut
+
+# =head1 DIAGNOSTICS
+#
+# [[ FIXME: The general rule of thumb is that errors printed to C<STDOUT> or
+# C<STDERR> and intended for the end user are documented in DIAGNOSTICS while
+# errors passed internal to the calling program and intended for other
+# programmers are documented in ERRORS. When documenting a function that sets
+# errno, a full list of the possible errno values should be given here. ]]
+
+# =head1 EXAMPLES
+#
+# FIXME: Should include some useful examples!
+
+=head1 ENVIRONMENT VARIABLES
+
+The following variables are exported by B<fix> and are available for use by the
+buildscripts. B<A buildscript should never change the content of these
+variables> - though in most cases (all but B<$FIX_PARENT>) it is fine to set these
+variables from the command line when invoking B<fix>.
+
+=over 6
+
+=item B<$FIX_CMD>
+
+Normally, you do not need to use this environment variable, since B<fix>, when
+invoked, always makes sure that that it's binary is first in B<$PATH>, but this
+variable contains the name, and full path, of the currently running B<fix>
+instance.
+
+You can use this as a command in your buildscripts, to recursively invoke
+B<fix>. A buildscript could, for example, look like this:
+
+    $FIX_CMD a b
+    cat a b | sed 's/^/>/'
+
+The first line invokes C<fix a b> (thereby declaring F<a> and F<b> to be
+dependencies of this script). The second line outputs the content of F<a> and
+F<b>, and adds a C<E<gt>> sign to the beginning of each line.
+
+If you started B<fix> by executing a symlink to B<fix>, rather than the actual
+B<fix> program, then the name of the symlink will be the name in this variable.
+
+=cut
+
+# =item B<$FIX_BASEDIR>
+#
+# FIXME: Not yet implemented
+#
+# Root path of the working tree. This can also be controlled by the
+# B<--basedir> command line option. It can be an absolute path or a path
+# relative to the current working directory.
+#
+# This does not affect behavior of B<--confdir> (which will work as usual, i.e.
+# if unspecified the first encountered B<.fix> dir above the current directory
+# will be used).
+
+# =item B<$FIX_CONFDIR>
+#
+# FIXME: Not yet implemented
+#
+# If the B<$FIX_CONFDIR> environment variable is set then it specifies a path to
+# use instead of the default F<.fix> for the build metadata directory. It can
+# be an absolute path or relative path to current working directory. This can
+# also be controlled by the B<--confdir> command line option.
+#
+# If B<$FIX_CONFDIR> is specified, without B<$FIX_BASEDIR> being set, then the
+# current directory will be used as the base dir of the work tree.
+
+=item B<$FIX_DEBUG>
+
+See B<--debug>.
+
+=item B<$FIX_LEVEL>
+
+Incremented by one each time a build process is invoked (a dependency is
+built). This is chiefly used to indent the output messages the proper amount.
+(Analogous to the shell's B<$SHLVL>.)
+
+=item B<$FIX_PARENT>
+
+The name of the parent target. All dependencies (i.e. all but the mother
+process) will have this variable set to the name of its parent target.
+
+=cut
+
+=item B<$FIX_PID>
+
+The process identification number of the mother process.
+
+=item B<$FIX_VERBOSE>
+
+See B<--verbose>.
+
+=item B<$FIX_XTRACE>
+
+See B<--xtrace>.
+
+=back
+
+=head1 FILES
+
+=head2 Buildscripts
+
+A buildscript is simply a small shell script, which outputs something to
+standard output.
+
+=cut
+
+# FIXME: Flesh this out
+
+# [[FIXME: All files used by the program or function, normally presented as a
+# list, and what it uses them for. File names should be enclosed in F<>.
+# It's particularly important to document files that will be potentially
+# modified. ]]
+
+# =head1 CAVEATS
+#
+# [[ FIXME: Things to take special care with, sometimes called WARNINGS. ]]
+
+# =head1 BUGS
+#
+# [[ FIXME: Things that are broken or just don't work quite right. ]]
+
+# =head1 RESTRICTIONS
+#
+# [[ FIXME: Bugs you don't plan to fix.  :-) ]]
+
+# =head1 NOTES
+#
+# [[ FIXME: Miscellaneous commentary. ]]
+
+=head1 GLOSSARY
+
+=over 4
+
+=item B<buildscript>
+
+A buildscript is a small shell script, whose name ends in C<.fix>. Each
+buildscript is responsible for producing one B<target>, and declaring its
+dependencies. The target as always called the same as the buildscript, but
+without the C<.fix> ending.
+
+=item B<build tree>
+
+A build tree is a B<target> plus all of its dependencies. It is B<fix>'s job to
+update a target's entire build tree, and make sure that both the target and all
+of its dependencies are up-to-date. - This means that all missing dependencies
+will be rebuilt, even if they are not directly mentioned on the command line.
+Don't worry, if a rebuilt target hasn't changed since its last build, it will
+not cause any of its parent targets to rebuild.
+
+=item B<dependency>
+
+A buildscript may declare any number of dependencies for its target (the
+buildscript itself always considered a dependency of its own target, too). If a
+dependency change then all targets depends on it will be considered B<dirty>,
+until they are rebuilt.
+
+=item B<dirty>
+
+A state of unupdatedness in a target or dependency. That a target is C<dirty>,
+then it means that content of that file disagrees with what B<fix> thinks it
+should be, and the file will be rebuilt next time you invoke B<fix> on it.
+
+=item B<mother process>
+
+This is the process started by the user. The B<mother process> in turn, spawn
+off subprocesses (one for each buildscript being run). The mother process is
+the only process for which B<$FIX_PARENT> is not set.
+
+In the ideal case, where the entire build tree is already up-to-date, the
+mother process is the only process started.
+
+=item B<parent>
+
+The opposite of a B<dependency>. If target F<a> depends on F<b>, then F<b> is
+the dependency of F<a>, and F<a> is the parent of F<b>.
+
+=item B<target>
+
+A target, or a target file, is a file generated by a B<buildscript>. A target
+can be a B<dependency> or a B<parent> (or both) of another target. Dependencies
+can be both other targets (which need to be declared), and B<buildscripts>
+(which are automatically figured out by B<fix>).
+
+=back
+
+=head1 AUTHOR
+
+Written by Zrajm C Akfohg <zrajm@klingonska.org>, 2012-2014.
+
+This program is distributed under a Creative Commons Attribution-ShareAlike 3.0
+license (CC BY-SA 3.0) [http://creativecommons.org/licenses/by-sa/3.0/].
+
+This means that you may copy, sell and change the program in any way you like,
+as long as you still give attribute it to this author, B<zrajm>, and release
+your version under the same license. - If you do this, zrajm would love to hear
+from you, though!
+
+=head1 HISTORY
+
+My main reasons for writing B<fix> is that I wanted:
+
+=over 2
+
+=item *
+
+Something small, self contained and fast - a single script file, easy move
+about. Test suite, docs, everything should be in one file, so that one can
+easily include it in any project (in my case for B<Klingonska Akademien>'s web
+site [http://klingonska.org]).
+
+=item *
+
+Few dependencies. Everything you need come pre-installed on a standard
+GNU/Linux system.
+
+=item *
+
+B<Git>-like behavior. As long as B<fix> is in your path, it works anywhere in
+your build tree, it will find its own statedir and generally Just Work[TM], so
+that you can write a thing like C<fix ../index.html> and it'll figure out what
+to do.
+
+=cut
+
+# [[ FIXME: Make sure this is true. -- You can run it in any subdir under the
+# build tree root (your rules will always run with the build tree root as the
+# current dir). This is how B<git> works and I wanted my build tool and my
+# versioning system to behave the same way. ]]
+
+=back
+
+=head1 SEE ALSO
+
+B<Fix> is heavily inspired by djb's B<redo>, which has been a source of
+inspiration for many others as well. I've tried to learn from all of the
+implementations I could find, so it's not more than fair that I try to list
+them here.
+
+List is in chronological order, and dates are the first date of activity I
+could find for each of the projects (date of first git commit, unless
+explicitly stated below).
+
+=over 4
+
+=item djb B<redo> (October 13, 2003)
+
+Daniel J. Bernstein's redo has never been released to the public, so all that
+exists of it (outside of djb's own computer) are a couple of web pages
+describing some of its properties, but nevertheless this has been enough to
+fire the imagination of several other (including me). C<Rebuilding target files
+when source files have changed> [http://cr.yp.to/redo.html].
+
+=item Grosskurth B<redo> (April 10, 2006)
+
+Alan Grosskurth's B<redo> is written in B<Bourne shell>, consists of 250 lines
+of code, and was part of his master's thesis C<Purely top-down software
+rebuilding> [http://grosskurth.ca/papers.html]. He also did a slide
+presentation before that, C<Reliable software rebuilding>
+[http://grosskurth.ca/talks.html]. (Date from slides.)
+
+=item B<tup> (February 14, 2008)
+
+Mike Shal's B<tup> is written in B<C>. It is a top-down building tool, but
+differs from most other B<redo> inspired systems in that it uses a single
+buildscript for all targets. He has written a paper on B<tup> called C<Build
+System Rules and Algorithms> [http://gittup.org/tup/]. Source available on
+GitHub [https://github.com/gittup/tup].
+
+=item Apenwarr B<redo> (November 12, 2010)
+
+Avery Pennarun's B<redo> is written in B<Python>, it is well documented and
+feature-rich, and implements parallel builds and some other of that fine stuff.
+Usually when I wanted to refresh my knowledge about some particular detail of
+B<redo> I go to Apenwarr's documentation. Source available on GitHub
+[https://github.com/apenwarr/redo].
+
+=item Jekor B<redo> (March 31, 2013)
+
+Chris Forno's B<redo> is written C<on-camera> in Haskell, videos of him writing
+it is available on YouTube [http://youtu.be/zZ_nI9E9g0I], and source is
+available on GitHub [https://github.com/jekor/redo]. It is written mostly as an
+introduction to programming in Haskell, and is not the most feature rich
+version of B<redo> out there, it is however instructive to listen to Jekor's
+reasoning while he's writing it.
+
+=item B<gup> (November 2, 2013)
+
+Tim Cuthbertson's B<gup> is written in B<Python>, and tries to solve the
+problem that B<redo> can be somewhat brittle at times, and fail to rebuild
+stuff that it ought to rebuild [http://gfxmonk.net/]. Source available on
+GitHub [https://github.com/gfxmonk/gup].
 
 =back
 

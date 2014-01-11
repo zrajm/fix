@@ -1,7 +1,6 @@
 -*- org -*-
 
 * Testing
-** TODO Test statefile content for ABORT
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
@@ -21,7 +20,7 @@
    $3 - name of a temporary file that will be renamed to the target filename
         atomically if your .do file returns a zero (success) exit code
    -----
-** TODO Checksum based dependencies
+** TODO Checksum-based dependencies
    You have the following files: 'a' which depends on 'b' which depends on 'c'.
 
    You make a change in 'c', and run 'fix b' -- thereby causing 'b' and 'c' to
@@ -83,6 +82,9 @@
    Described in POD (uncomment when implemented).
 ** TODO Add option '--plot'(?) to generate Graphviz file of build graph
    Option name '--plot' maybe?
+** TODO Add option '--save-stats' (for use when testing)
+   Each child should load and increment a counter, so that we, after a run, may
+   see how many buildscripts were executed.
 ** TODO Add option '--target'(?) to specify target directory
    Mention this in POD (under 'buildscript' in GLOSSARY), when implemented.
 
@@ -199,3 +201,5 @@
    CLOSED: [2014-01-11 Sat 11:12]
    Runstate is the state that is cleared when starting B<fix> (it is used for
    communication between the mother process and her children)
+** DONE Test runstate content for ABORT
+   CLOSED: [2014-01-11 Sat 14:06]

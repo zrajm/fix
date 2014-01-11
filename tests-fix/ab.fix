@@ -1,2 +1,0 @@
-$FIX_CMD a b
-head -n100 a b

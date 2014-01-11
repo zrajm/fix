@@ -68,7 +68,6 @@ sub pod2ansi {
 # usage(SOURCE, MSG) -- display usage information from SOURCE + display MSG
 sub usage {
     my ($_, $msg) = @_;
-    #my $_ = read_file(realpath(__FILE__));
     my $out;
     $out .= m#^=head1 \s+ SYNOPSIS \s+ (.*)#mx
         ? "Usage: " . pod2ansi($1) . "\n" : "";
@@ -220,9 +219,8 @@ sub build_target {
     my ($level, $target) = @_;
     info($target);
     if (-f $target and has_changed($Keep, $target)) {
-        $Run->set("$target",      ABORT => $target);
-        $Run->set("$opt{parent}", ABORT => $target)
-            if $opt{parent};
+        $Run->set($target,      ABORT => $target);
+        $Run->set($opt{parent}, ABORT => $target) if $opt{parent} ne '';
         msg(ERROR, "$target: Target externally modified, aborting\n");
         exit 253;
     }
@@ -261,7 +259,7 @@ sub build_target {
             $Run->set(                         #     and tell our parent that
                 $opt{parent},                  #     that we failed, too
                 ABORT => $aborted_target,
-            ) if $opt{parent};
+            ) if $opt{parent} ne '';
         } else {                               # a buildscript returned non-zero
             msg(ERROR, "$target: exit status $exit\n");
         }
@@ -299,7 +297,7 @@ sub info {
     say STDERR "\e[32m$NAME " . ("  " x ($opt{level} - 1)) . "\e[1m$msg\e[m";
 }
 # Display verbose msg in mother process, or all processes with --verbose/--debug
-sub verb { (!$opt{parent} or $opt{debug} or $opt{verbose}) and info @_ }
+sub verb { ($opt{parent} ne '' or $opt{debug} or $opt{verbose}) and info @_ }
 sub debug {
     return unless $opt{debug};
     chomp(my $msg = shift);
@@ -316,17 +314,16 @@ sub _die  { msg ERROR, @_; exit 255 }
 
 {
     package Store;
-    use File::Path qw/mkpath rmtree/;          # use 'mkpath' and 'rmtree'
     use Data::Dumper;
     $Data::Dumper::Indent   = 1;
     $Data::Dumper::Sortkeys = 1;
     $Data::Dumper::Terse    = 1;
 
+    # Statedir is created when writing file, rather than up front. (We'll need
+    # to create it then anyway, since filenames may contain any number of
+    # slashes.)
     sub new {
         my ($class, $dir) = @_;
-        if (not -d $dir) {
-            mkpath($dir) or die "Cannot create state dir '$dir'\n";
-        }
         return bless ({ dir => $dir, print => {}, state => {} });
     }
 
@@ -361,33 +358,36 @@ sub _die  { msg ERROR, @_; exit 255 }
         return <$in>;
     }
 
-    sub _write_file {
-        my ($file, @data) = @_;
-        my $tmpfile = "$file--writing";
-        my $out;
-        if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
-            if (-e $dir and not -d $dir) {
-                warn "Cannot create dir '$dir': File exists\n";
-                return undef;
-            }
-            unless (-d $dir or mkpath($dir)) {
-                warn "Cannot create dir '$dir'\n";
-                return undef;
-            }
-        }
-        open($out, ">:utf8", $tmpfile)
-            or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
-        print $out @data
-            or die "Cannot write to tempfile '$tmpfile': $!\n";
-        close($out)
-            or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
-        rename($tmpfile, $file)
-            or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
-    }
+    {
+        use File::Path qw/mkpath rmtree/;      # use 'mkpath' and 'rmtree'
 
-    sub delete {
-        my ($self) = @_;
-        rmtree($self->{dir});
+        sub _write_file {
+            my ($file, @data) = @_;
+            my $tmpfile = "$file--writing";
+            # create full path of file, before writing file
+            if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
+                die "Cannot create dir '$dir': File already exists\n"
+                    if -e $dir and not -d $dir;
+                unless (-d $dir or mkpath($dir)) {
+                    warn "Cannot create dir '$dir'\n";
+                    return undef;
+                }
+            }
+            open(my $out, ">:utf8", $tmpfile)
+                or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
+            print $out @data
+                or die "Cannot write to tempfile '$tmpfile': $!\n";
+            close($out)
+                or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
+            rename($tmpfile, $file)
+                or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
+        }
+
+        sub delete {
+            my ($self) = @_;
+            rmtree($self->{dir});
+            return $self;
+        }
     }
 
     # Rereads the state file every time, since subprocess may have updated it.
@@ -585,11 +585,12 @@ if (my @missing = grep { ! -f "$_.fix" } @ARGV) {
 ##                                                                           ##
 ###############################################################################
 
-$Keep = new Store("$opt{fix_dir}/state");
-$Run  = new Store("$opt{fix_dir}/ABORT");
+$Keep = new Store("$opt{fix_dir}/keep");
+$Run  = new Store("$opt{fix_dir}/run");
 
 if ($opt{parent} ne '') {                      # CHILD PROCESSES
-    $Keep->set($opt{parent}, add_deps => \@ARGV ); # add targets as deps to parent
+    $Keep->set($opt{parent},                   #   targets are deps to parent
+        add_deps => \@ARGV);
 } else {                                       # MOTHER PROCESS
     $Run->delete();                            #   delete previous runstate
     $ENV{FIX_CMD} = realpath(__FILE__);

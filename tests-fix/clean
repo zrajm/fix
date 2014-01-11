@@ -1,5 +1,0 @@
-#!/bin/dash
-
-rm -vf a b 1 2 12 ab ab12
-
-#[eof]

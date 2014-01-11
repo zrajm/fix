@@ -27,7 +27,6 @@ $YEAR    = "2012-2014";
 sub TRUE  { 1 }
 sub FALSE { 0 }
 
-my ($Keep, $Run);                              # global state
 my %opt = (
     debug   => $ENV{FIX_DEBUG} ? TRUE : FALSE, # -D/--debug $FIX_DEBUG
     fix_dir => ".$NAME",
@@ -36,8 +35,14 @@ my %opt = (
     parent  => $ENV{FIX_PARENT}  // '',        # parent target
     pid     => $ENV{FIX_PID}     //= $$,       # PID of mother process
     shell   => '/bin/dash',
+    stats   => $ENV{FIX_STATS}   // "" ne "",  # --stats $FIX_STATS
     xtrace  => $ENV{FIX_XTRACE}  // "" ne "",  # -x/--xtrace $FIX_XTRACE
     verbose => $ENV{FIX_VERBOSE} // "" ne "",  # -v/--verbose $FIX_VERBOSE
+);
+my ($Keep, $Run, $Stats) = (                   # state
+    new Store("$opt{fix_dir}/keep"),           #   keepstate
+    new Store("$opt{fix_dir}/run"),            #   runstate
+    new Store($opt{fix_dir}),                  #   for stats
 );
 
 ###############################################################################
@@ -153,6 +158,28 @@ sub read_file {
         or die "Cannot open file '$file' for reading: $!\n";
     local $/ = undef;
     return <$in>;
+}
+
+sub write_file {
+    my ($file, @data) = @_;
+    my $tmpfile = "$file--writing";
+    # create full path of file, before writing file
+    if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
+        die "Cannot create dir '$dir': File already exists\n"
+            if -e $dir and not -d $dir;
+        unless (-d $dir or mkpath($dir)) {
+            warn "Cannot create dir '$dir'\n";
+            return undef;
+        }
+    }
+    open(my $out, ">:utf8", $tmpfile)
+        or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
+    print $out @data
+        or die "Cannot write to tempfile '$tmpfile': $!\n";
+    close($out)
+        or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
+    rename($tmpfile, $file)
+        or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
 }
 
 sub rename_file {
@@ -383,9 +410,10 @@ sub _die  { msg ERROR, @_; exit 255 }
                 or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
         }
 
+        # Deletes named files. Give argument '' to delete entire storage.
         sub delete {
-            my ($self) = @_;
-            rmtree($self->{dir});
+            my ($self, @file) = @_;
+            rmtree("$self->{dir}/$_") foreach @file;
             return $self;
         }
     }
@@ -448,6 +476,8 @@ sub _die  { msg ERROR, @_; exit 255 }
             : $state->{ $field[0] } // '';
     }
 
+    # If a value is a coderef, then that will be invoked with the original
+    # value, and whatever it returns will be stored in its stead.
     sub set {
         my ($self, $file, %arg) = @_;
         return if $file eq '';
@@ -456,11 +486,13 @@ sub _die  { msg ERROR, @_; exit 255 }
             push @{ $state->{deps} }, \@{ delete $arg{add_deps} };
         }
         foreach my $field (keys %arg) {
-            $state->{$field} = $arg{$field};
+            $state->{$field} =
+                ref($arg{$field}) eq 'CODE'    # run callback
+                    ? $arg{$field}->($state->{$field}) # run callback
+                    : $arg{$field};            #   or use literal value
         }
         $self->save_state($file);
     }
-
 }
 
 # NB: $file must exist for has_changed() to give meaningful result
@@ -555,6 +587,9 @@ sub update_targets {
         # },
         'help|h|?'  => \&help,    ### display this help and exit
         'man|M'     => \&man,     ### display program manpage and exit
+        'stats'     => sub{       ##  save stats in .fix dir
+            $opt{stats} = $ENV{FIX_STATS} = TRUE;
+        },
         'verbose|v' => sub {      ### output status info while building
             $opt{verbose} = $ENV{FIX_VERBOSE} = TRUE;
         },
@@ -563,6 +598,19 @@ sub update_targets {
             $opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
     ) or exit 254;
+}
+
+if ($opt{stats}) {                             # write child counter
+    $Stats->delete('stats')                    #   mother deletes earlier stats
+        if $opt{parent} eq '';
+    $Stats->set('stats',                       #   count fix invocations
+        run_count   => sub { (shift() // 0) + 1 },
+        run_targets => sub {                   #   save args for each call
+            my ($x) = (shift() // []);
+            push(@$x, \@ARGV);
+            return $x;
+        },
+    );
 }
 
 if (@ARGV == 0) {
@@ -585,14 +633,11 @@ if (my @missing = grep { ! -f "$_.fix" } @ARGV) {
 ##                                                                           ##
 ###############################################################################
 
-$Keep = new Store("$opt{fix_dir}/keep");
-$Run  = new Store("$opt{fix_dir}/run");
-
 if ($opt{parent} ne '') {                      # CHILD PROCESSES
     $Keep->set($opt{parent},                   #   targets are deps to parent
         add_deps => \@ARGV);
 } else {                                       # MOTHER PROCESS
-    $Run->delete();                            #   delete previous runstate
+    $Run->delete('');                          #   delete previous runstate
     $ENV{FIX_CMD} = realpath(__FILE__);
     # Add the currently running 'fix' command first in $PATH (which is
     # inherited by all child processes). -- This makes sure that all

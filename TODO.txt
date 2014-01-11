@@ -1,10 +1,14 @@
 -*- org -*-
 
 * Testing
+** TODO Test all things added with '--stats'
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
 * Main program
+** TODO Option '--stats' should include buildscripts run
+** TODO Option '--stats' should include dependencies traversed
+   I.e. targets scanned.
 ** TODO Pass args to buildscripts
    NOTA BENE: When implemented, check all occurrences of $1, $2 and $3 in POD
    and make sure they're updated to reflect what is actually passed to the
@@ -82,9 +86,6 @@
    Described in POD (uncomment when implemented).
 ** TODO Add option '--plot'(?) to generate Graphviz file of build graph
    Option name '--plot' maybe?
-** TODO Add option '--save-stats' (for use when testing)
-   Each child should load and increment a counter, so that we, after a run, may
-   see how many buildscripts were executed.
 ** TODO Add option '--target'(?) to specify target directory
    Mention this in POD (under 'buildscript' in GLOSSARY), when implemented.
 
@@ -203,3 +204,9 @@
    communication between the mother process and her children)
 ** DONE Test runstate content for ABORT
    CLOSED: [2014-01-11 Sat 14:06]
+
+** DONE Add option '--stats' (for use when testing)
+   CLOSED: [2014-01-11 Sat 16:33]
+   Each child should load and increment a counter, so that we, after a complete
+   build run, may see inspect it to see how many times fix was executed in
+   order to build all dependencies.

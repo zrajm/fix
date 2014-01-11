@@ -63,7 +63,6 @@ sub read_file_fingerprint {
     return join("-", @stat ? @stat[1, 2, 4, 5, 7, 9, 10] : ());
 }
 
-
 # Return hash of filenames (as keys) and stat fingerprints (as values).
 sub fingerprints {
     my (@file) = @_;
@@ -127,6 +126,14 @@ sub abort {
     return Dumper \%x;
 }
 
+{
+    my $file = ".fix/stats";
+    sub execcount {
+        my $data = eval read_file($file);
+        return $data->{run_count};
+    }
+}
+
 ###############################################################################
 ##                                                                           ##
 ##  Init                                                                     ##
@@ -148,34 +155,38 @@ chdir($testdir) or die "Failed to cd to '$testdir': $!,";
 ###############################################################################
 
 my %c;                                         # Mnemonic: 'content'
-my $keep = ".$name/keep";                      # keepstate directory
-my $run  = ".$name/run";                       # runstate directory
+my $keep  = ".$name/keep";                     # keepstate directory
+my $run   = ".$name/run";                      # runstate directory
 
 note "No argument given";
 {
-    my $r = system("$fix 2>/dev/null");
+    note $fix;
+    my $r = system("$fix --stats 2>/dev/null");
 
-    is  ($r >> 8,          254,         "Exit status");
-    ok  (! -e ".$name",                 "Statedir non-existing")
+    is  ($r >> 8,      254, "Exit status");
+    ok  (! -e $keep,        "Keepstate dir non-existing");
+    is  (execcount(),    1, "Run count");
 }
 
 note "Bad command line option";
 {
-    my $r = system("$fix --BAD-OPTION 2>/dev/null");
+    my $r = system("$fix --stats --BAD-OPTION 2>/dev/null");
 
-    is  ($r >> 8,          254,         "Exit status");
-    ok  (! -e ".$name",                 "Statedir non-existing")
+    is  ($r >> 8,      254, "Exit status");
+    is  (execcount(),    1, "Run count");
+    ok  (! -e $keep,        "Keepstate dir non-existing");
 }
 
 note "Non-existing buildscript";
 {
-    my $r = system("$fix NON-EXISTING-TARGET 2>/dev/null");
+    my $r = system("$fix --stats NON-EXISTING-TARGET 2>/dev/null");
 
-    is  ($r >> 8,          254,              "Exit status");
+    is  ($r >> 8,           254,             "Exit status");
+    is  (execcount(),         1,             "Run count");
     ok  (! -f 'NON-EXISTING-TARGET.fix',     "Buildfile non-existing");
     ok  (! -f 'NON-EXISTING-TARGET--fixing', "Tempfile non-existing");
     ok  (! -f 'NON-EXISTING-TARGET',         "Target non-existing");
-    ok  (! -e ".$name",                      "Statedir non-existing")
+    ok  (! -e $keep,                         "Keepstate dir non-existing");
 }
 
 $c{'1.fix'} = nl('echo FIRST', 'exit 1', 'echo SECOND');
@@ -186,10 +197,11 @@ note "Buildscript with exit status = 1";
     delete_file('1--fixing');
 
     my %a = fingerprints(qw/ 1.fix 1--fixing /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1--fixing /);
 
     is  ($r >> 8,                1,               "Exit status");
+    is  (execcount(),            1,               "Run count");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (  -f '1--fixing',                        "Tempfile existing");
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
@@ -210,10 +222,11 @@ note "Buildscript with exit status = 2";
     delete_file('1--fixing');
 
     my %a = fingerprints(qw/ 1.fix 1--fixing /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1--fixing /);
 
     is  ($r >> 8,                2,               "Exit status");
+    is  (execcount(),            1,               "Run count");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (  -f '1--fixing',                        "Tempfile existing");
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
@@ -234,10 +247,11 @@ note "Buildscript with command returning false";
     delete_file('1--fixing');
 
     my %a = fingerprints(qw/ 1.fix 1--fixing /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1--fixing /);
 
     is  ($r >> 8,                1,               "Exit status");
+    is  (execcount(),            1,               "Run count");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (  -f '1--fixing',                        "Tempfile existing");
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
@@ -258,10 +272,11 @@ note "Buildscript with non-existing command";
     delete_file('1--fixing');
 
     my %a = fingerprints(qw/ 1.fix 1--fixing /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1--fixing /);
 
     is  ($r >> 8,                127,             "Exit status");
+    is  (execcount(),            1,               "Run count");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (-f '1--fixing',                          "Tempfile existing");
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
@@ -280,39 +295,41 @@ $c{'1'}     = nl('11');
 write_file('1.fix', $c{'1.fix'});
 {
     my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1 /);
 
-    is  ($r >> 8,          0,           "Exit status");
-    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',              "Tempfile non-existing");
-    ok  (  -f '1',                      "Target existing");
-    isnt($a{'1'},          $b{'1'},     "Target updated");
-    is  (read_file('1'),   $c{'1'},     "Target content");
-    ok  (! -e $run,                     "Runstate dir non-existing");
+    is  ($r >> 8,           0,           "Exit status");
+    is  (execcount(),       1,           "Run count");
+    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
+    ok  (! -f '1--fixing',               "Tempfile non-existing");
+    ok  (  -f '1',                       "Target existing");
+    isnt($a{'1'},           $b{'1'},     "Target updated");
+    is  (read_file('1'),    $c{'1'},     "Target content");
+    ok  (! -e $run,                      "Runstate dir non-existing");
     is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
-                                        "Keepstate content: 1");
+                                         "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
-                                        "Keepstate content: 1.fix");
+                                         "Keepstate content: 1.fix");
 }
 
 note "Rerun without changes";
 {
     my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1 /);
 
-    is  ($r >> 8,          0,           "Exit status");
-    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',              "Tempfile non-existing");
-    ok  (  -f '1',                      "Target existing");
-    is  ($a{'1'},          $b{'1'},     "Target unchanged");
-    is  (read_file('1'),   nl('11'),    "Target content");
-    ok  (! -e $run,                     "Runstate dir non-existing");
+    is  ($r >> 8,           0,           "Exit status");
+    is  (execcount(),       1,           "Run count");
+    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
+    ok  (! -f '1--fixing',               "Tempfile non-existing");
+    ok  (  -f '1',                       "Target existing");
+    is  ($a{'1'},           $b{'1'},     "Target unchanged");
+    is  (read_file('1'),    nl('11'),    "Target content");
+    ok  (! -e $run,                      "Runstate dir non-existing");
     is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
-                                        "Keepstate content: 1");
+                                         "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
-                                        "Keepstate content: 1.fix");
+                                         "Keepstate content: 1.fix");
 }
 
 note "Rerun after target was externally updated";
@@ -320,22 +337,23 @@ note "Rerun after target was externally updated";
     write_file('1', nl('XXX'));    # modify target file
 
     my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1 /);
 
-    is  ($r >> 8,          253,         "Exit status");
-    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',              "Tempfile non-existing");
-    ok  (  -f '1',                      "Target existing");
-    is  ($a{'1'},          $b{'1'},     "Target unchanged");
-    is  (read_file('1'),   nl('XXX'),   "Target content");
-    ok  (  -e $run,                     "Runstate dir existing");
+    is  ($r >> 8,           253,         "Exit status");
+    is  (execcount(),         1,         "Run count");
+    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
+    ok  (! -f '1--fixing',               "Tempfile non-existing");
+    ok  (  -f '1',                       "Target existing");
+    is  ($a{'1'},           $b{'1'},     "Target unchanged");
+    is  (read_file('1'),    nl('XXX'),   "Target content");
+    ok  (  -e $run,                      "Runstate dir existing");
     is  (read_file("$run/1"),      abort('1'),
-                                        "Runstate content: 1");
+                                         "Runstate content: 1");
     is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
-                                        "Keepstate content: 1");
+                                         "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
-                                        "Keepstate content: 1.fix");
+                                         "Keepstate content: 1.fix");
 }
 
 note "Rerun after target was deleted";
@@ -343,20 +361,21 @@ note "Rerun after target was deleted";
     delete_file('1');
 
     my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1 /);
 
-    is  ($r >> 8,          0,           "Exit status");
-    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',              "Tempfile non-existing");
-    ok  (  -f '1',                      "Target existing");
-    isnt($a{'1'},          $b{'1'},     "Target updated");
-    is  (read_file('1'),   nl('11'),    "Target content");
-    ok  (! -e $run,                     "Runstate dir non-existing");
+    is  ($r >> 8,           0,           "Exit status");
+    is  (execcount(),       1,           "Run count");
+    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
+    ok  (! -f '1--fixing',               "Tempfile non-existing");
+    ok  (  -f '1',                       "Target existing");
+    isnt($a{'1'},           $b{'1'},     "Target updated");
+    is  (read_file('1'),    nl('11'),    "Target content");
+    ok  (! -e $run,                      "Runstate dir non-existing");
     is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
-                                        "Keepstate content: 1");
+                                         "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
-                                        "Keepstate content: 1.fix");
+                                         "Keepstate content: 1.fix");
 }
 
 $c{'1.fix'} = nl('echo 11', '# COMMENT');
@@ -366,20 +385,21 @@ write_file('1.fix', $c{'1.fix'});
 note "Rerun after buildscript was changed, but give same output";
 {
     my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1 /);
 
-    is  ($r >> 8,          0,           "Exit status");
-    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',              "Tempfile non-existing");
-    ok  (  -f '1',                      "Target existing");
-    is  ($a{'1'},          $b{'1'},     "Target unchanged");
-    is  (read_file('1'),   nl('11'),    "Target content");
-    ok  (! -e $run,                     "Runstate dir non-existing");
+    is  ($r >> 8,           0,           "Exit status");
+    is  (execcount(),       1,           "Run count");
+    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
+    ok  (! -f '1--fixing',               "Tempfile non-existing");
+    ok  (  -f '1',                       "Target existing");
+    is  ($a{'1'},           $b{'1'},     "Target unchanged");
+    is  (read_file('1'),    nl('11'),    "Target content");
+    ok  (! -e $run,                      "Runstate dir non-existing");
     is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
-                                        "Keepstate content: 1");
+                                         "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
-                                        "Keepstate content: 1.fix");
+                                         "Keepstate content: 1.fix");
 }
 
 note "Rerun after buildscript was changed, and give new output";
@@ -388,20 +408,21 @@ $c{'1'}     = nl('1');
 write_file('1.fix', $c{'1.fix'});
 {
     my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix 1 2>/dev/null");
+    my $r = system("$fix --stats 1 2>/dev/null");
     my %b = fingerprints(qw/ 1.fix 1 /);
 
-    is  ($r >> 8,          0,           "Exit status");
-    is  ($a{'1.fix'},      $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',              "Tempfile non-existing");
-    ok  (  -f '1',                      "Target existing");
-    isnt($a{'1'},          $b{'1'},     "Target updated");
-    is  (read_file('1'),   nl('1'),     "Target content");
-    ok  (! -e $run,                     "Runstate dir non-existing");
+    is  ($r >> 8,           0,           "Exit status");
+    is  (execcount(),       1,           "Run count");
+    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
+    ok  (! -f '1--fixing',               "Tempfile non-existing");
+    ok  (  -f '1',                       "Target existing");
+    isnt($a{'1'},           $b{'1'},     "Target updated");
+    is  (read_file('1'),    nl('1'),     "Target content");
+    ok  (! -e $run,                      "Runstate dir non-existing");
     is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
-                                        "Keepstate content: 1");
+                                         "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
-                                        "Keepstate content: 1.fix");
+                                         "Keepstate content: 1.fix");
 }
 
 note "Buildscript creating target in subdir";
@@ -411,10 +432,11 @@ $c{'a/1'}     = nl('1');
 write_file('a/1.fix', $c{'1.fix'});
 {
     my %a = fingerprints(qw( a/1.fix a/1 ));
-    my $r = system("$fix a/1 2>/dev/null");
+    my $r = system("$fix --stats a/1 2>/dev/null");
     my %b = fingerprints(qw( a/1.fix a/1 ));
 
     is  ($r >> 8,            0,             "Exit status");
+    is  (execcount(),        1,             "Run count");
     is  ($a{'a/1.fix'},      $b{'a/1.fix'}, "Buildscript unchanged");
     ok  (! -f 'a/1--fixing',                "Tempfile non-existing");
     ok  (  -f 'a/1',                        "Target existing");
@@ -460,29 +482,33 @@ my %target_deps = (
 note "First run of buildscript with dependencies";
 {
     my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix ab12 2>/dev/null");
+    my $exit = system("$fix --stats ab12 2>/dev/null");
     my %post = fingerprints(key %source, %target);
 
-    is  ($exit >> 8,    0,           "Exit status");
-    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
-    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
-    ok  (  -f $_,                    "Target existing: $_")   for key %target;
-    isnt($pre{$_},      $post{$_},   "Target updated: $_")   for key %target;
-    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (! -e $run,                  "Runstate dir non-existing");
+    is  ($exit >> 8,        0,           "Exit status");
+    is  (execcount(),       4,           "Run count");
+    is  ($pre{$_},          $post{$_},   "Buildscript unchanged: $_")
+        for key %source;
+    ok  (! -f "$_--fixing",              "Tempfile non-existing: $_--fixing")
+        for key %target;
+    ok  (  -f $_,                        "Target existing: $_") for key %target;
+    isnt($pre{$_},          $post{$_},   "Target updated: $_")  for key %target;
+    is  (read_file($_),     $target{$_}, "Target content: $_")  for key %target;
+    ok  (! -e $run,                      "Runstate dir non-existing");
     is  (read_file("$keep/$_"), db(SOURCE, $source{$_}),
-                                     "Keepstate content: $_") for key %source;
+                                         "Keepstate content: $_") for key %source;
     is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                     "Keepstate content: $_") for key %target;
+                                         "Keepstate content: $_") for key %target;
 }
 
 note "Rerun without change";
 {
     my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix ab12 2>/dev/null");
+    my $exit = system("$fix --stats ab12 2>/dev/null");
     my %post = fingerprints(key %source, %target);
 
     is  ($exit >> 8,    0,           "Exit status");
+    is  (execcount(),   1,           "Run count");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
@@ -506,10 +532,11 @@ $target{ab12} = nl(qw/ab12 >ab >>a >>b >12 >>1 >>22 /);
 note "Rerun after change of subtarget '2'";
 {
     my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix ab12 2>/dev/null");
+    my $exit = system("$fix --stats ab12 2>/dev/null");
     my %post = fingerprints(key %source, %target);
 
     is  ($exit >> 8,    0,           "Exit status");
+    is  (execcount(),   3,           "Run count");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
@@ -523,20 +550,44 @@ note "Rerun after change of subtarget '2'";
                                      "Keepstate content: $_") for key %target;
 }
 
-note "Rerun after a dependency (target) has been deleted";
+note "Rerun after a dependency '12' was deleted";
 {
     delete_file('12');
 
     my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix ab12 2>/dev/null");
+    my $exit = system("$fix --stats ab12 2>/dev/null");
     my %post = fingerprints(key %source, %target);
 
     is  ($exit >> 8,    0,           "Exit status");
+    is  (execcount(),   2,           "Run count");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
     isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/12/;
     is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 1 2 ab ab12/;
+    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
+    ok  (! -e $run,                  "Runstate dir non-existing");
+    is  (read_file("$keep/$_"), db(SOURCE, $source{$_}),
+                                     "Keepstate content: $_") for key %source;
+    is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
+                                     "Keepstate content: $_") for key %target;
+}
+
+note "Rerun after a dependency '1' was deleted";
+{
+    delete_file('1');
+
+    my %pre  = fingerprints(key %source, %target);
+    my $exit = system("$fix --stats ab12 2>/dev/null");
+    my %post = fingerprints(key %source, %target);
+
+    is  ($exit >> 8,    0,           "Exit status");
+    is  (execcount(),   1,           "Run count");
+    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
+    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
+    ok  (  -f $_,                    "Target existing: $_")   for key %target;
+    isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/1/;
+    is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 2 ab 12 ab12/;
     is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
     ok  (! -e $run,                  "Runstate dir non-existing");
     is  (read_file("$keep/$_"), db(SOURCE, $source{$_}),
@@ -551,10 +602,11 @@ note "Rerun after dependency target '1' externally modified";
     write_file('1', $target{'1'});
 
     my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix ab12 2>/dev/null");
+    my $exit = system("$fix --stats ab12 2>/dev/null");
     my %post = fingerprints(key %source, %target);
 
     is  ($exit >> 8,    253,         "Exit status");
+    is  (execcount(),   1,           "Run count");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;

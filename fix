@@ -32,9 +32,9 @@ my %opt = (
     debug   => $ENV{FIX_DEBUG} ? TRUE : FALSE, # -D/--debug $FIX_DEBUG
     fix_dir => ".$NAME",
     # force   => $ENV{FIX_FORCE} ? TRUE : FALSE, # -f/--force $FIX_FORCE
-    level   => $ENV{FIX_LEVEL} += 1,           # child level (mother = 1)
-    parent  => $ENV{FIX_PARENT} // '',         # parent target
-    pid     => $ENV{FIX_PID}    //= $$,        # PID of mother process
+    level   => $ENV{FIX_LEVEL}   += 1,         # child level (mother = 1)
+    parent  => $ENV{FIX_PARENT}  // '',        # parent target
+    pid     => $ENV{FIX_PID}     //= $$,       # PID of mother process
     shell   => '/bin/dash',
     xtrace  => $ENV{FIX_XTRACE}  // "" ne "",  # -x/--xtrace $FIX_XTRACE
     verbose => $ENV{FIX_VERBOSE} // "" ne "",  # -v/--verbose $FIX_VERBOSE
@@ -119,13 +119,11 @@ EOF
 
 sub man {
     my $pid = open(STDOUT, '|-', qw/man -l -/);# filter STDOUT through man(1)
-    if (not defined $pid) {
-        die "Failed no run 'man': $!\n";
-    }
+    die "Cannot run 'man': $!\n" unless defined $pid;
     system('pod2man', __FILE__);               # output manpage on STDOUT
     if ($? == -1) {                            # on exec FAILURE
         kill 'TERM', $pid;                     #   kill man(1) child and die()
-        die "Failed to execute 'pod2man': $!\n";
+        die "Cannot execute 'pod2man': $!\n";
     };
     close STDOUT;                              # don't make man(1) wait for more
     wait();                                    # wait until user exits man(1)
@@ -153,14 +151,14 @@ sub DEBUG   { 0 }                              # plain
 sub read_file {
     my ($file) = @_;
     open(my $in, "<:utf8", $file)
-        or die "Failed to open file '$file' for reading: $!\n";
+        or die "Cannot open file '$file' for reading: $!\n";
     local $/ = undef;
     return <$in>;
 }
 
 sub rename_file {
     my ($file1, $file2) = @_;
-    rename($file1, $file2) or "Failed to rename '$file1' -> '$file2': $!\n";
+    rename($file1, $file2) or "Cannot rename '$file1' -> '$file2': $!\n";
 }
 
 sub checksum_file {
@@ -177,9 +175,9 @@ sub redirect_stdout {
     my ($file) = @_;
     my $prev = { flush => $|, handle => undef, file => $file };
     open($prev->{handle}, '>&', 'STDOUT')
-        or die "Failed to copy STDOUT before redirect to '$file': $!\n";
+        or die "Cannot copy old STDOUT before redirect to '$file': $!\n";
     open(STDOUT, '>', $file)
-        or die "Failed to redirect STDOUT to file '$file': $!\n";
+        or die "Cannot redirect STDOUT to file '$file': $!\n";
     select STDOUT;
     local $| = 1;                              # turn off buffering
     return $prev;
@@ -191,7 +189,7 @@ sub restore_stdout {
     my ($prev) = @_;
     close(STDOUT);
     open(STDOUT, '>&', $prev->{handle})
-        or die "Failed to restore STDOUT after redirect to file '$prev->{file}': $!\n";
+        or die "Cannot restore STDOUT after redirect to file '$prev->{file}': $!\n";
     close($prev->{handle});
     select STDOUT;
     local $| = $prev->{flush};                 # restore buffering
@@ -242,7 +240,7 @@ sub build_target {
             $opt{debug}  ? '-v' : (),
         );
         open(my $shell, '|-', $opt{shell}, '-e', @arg)
-            or die "Failed to execute shell '$opt{shell}': $!\n";
+            or die "Cannot execute shell '$opt{shell}': $!\n";
         print $shell read_file($buildscript);
 
         my $close = close($shell);
@@ -255,7 +253,7 @@ sub build_target {
     if (not $close) {
         $exit >>= 8;
         if ($errno != 0) {
-            die "Failed to run buildscript '$buildscript': $errno\n";
+            die "Cannot run buildscript '$buildscript': $errno\n";
         }
         my $aborted_target = $Run->get("$target", 'ABORT');
         if ($aborted_target ne '') {           # a dependency failed to run
@@ -327,7 +325,7 @@ sub _die  { msg ERROR, @_; exit 255 }
     sub new {
         my ($class, $dir) = @_;
         if (not -d $dir) {
-            mkpath($dir) or die "Failed to create state dir '$dir'\n";
+            mkpath($dir) or die "Cannot create state dir '$dir'\n";
         }
         return bless ({ dir => $dir, print => {}, state => {} });
     }
@@ -351,14 +349,14 @@ sub _die  { msg ERROR, @_; exit 255 }
     # February 2013. [https://rt.cpan.org/Public/Bug/Display.html?id=83356]
     sub _read_file_fingerprint {
         my ($file) = @_;
-        my @stat = lstat($file) or die "Failed to stat file '$file': $!\n";
+        my @stat = lstat($file) or die "Cannot stat file '$file': $!\n";
         return join("-", @stat[1, 2, 4, 5, 7, 9, 10]);
     }
 
     sub _read_file {
         my ($file) = @_;
         open(my $in, "<:utf8", $file)
-            or die "Failed to open file '$file' for reading: $!\n";
+            or die "Cannot open file '$file' for reading: $!\n";
         local $/ = undef;
         return <$in>;
     }
@@ -369,22 +367,22 @@ sub _die  { msg ERROR, @_; exit 255 }
         my $out;
         if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
             if (-e $dir and not -d $dir) {
-                warn "Failed to create dir '$dir': File exists\n";
+                warn "Cannot create dir '$dir': File exists\n";
                 return undef;
             }
             unless (-d $dir or mkpath($dir)) {
-                warn "Failed to create dir '$dir'\n";
+                warn "Cannot create dir '$dir'\n";
                 return undef;
             }
         }
         open($out, ">:utf8", $tmpfile)
-            or die "Failed to open tempfile '$tmpfile' for writing: $!\n";
+            or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
         print $out @data
-            or die "Failed to write to tempfile '$tmpfile': $!\n";
+            or die "Cannot write to tempfile '$tmpfile': $!\n";
         close($out)
-            or die "Failed to close tempfile '$tmpfile' after writing: $!\n";
+            or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
         rename($tmpfile, $file)
-            or die "Failed to rename tempfile '$tmpfile' -> '$file': $!\n";
+            or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
     }
 
     sub delete {
@@ -608,10 +606,10 @@ if ($opt{parent} ne '') {                      # CHILD PROCESSES
     if (not -l $link) {                        # if missing '.fix/bin/fix'
         if (not -d $bindir) {                  #   make sure '.fix/bin' exists
             mkpath($bindir)
-                or die "$NAME: Failed to create dir '$bindir'\n";
+                or die "$NAME: Cannot create dir '$bindir'\n";
         }
         symlink(realpath(__FILE__), $link)
-            or die "$NAME: Failed to create symlink '$link': $!\n";
+            or die "$NAME: Cannot create symlink '$link': $!\n";
     }
     my $full = realpath($bindir);
     # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).

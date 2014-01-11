@@ -152,6 +152,8 @@ sub INFO    { 3 }                              # green
 sub VERBOSE { 3 }                              # green
 sub DEBUG   { 0 }                              # plain
 
+sub is_child { $Opt{parent} ne '' }
+
 sub read_file {
     my ($file) = @_;
     open(my $in, "<:utf8", $file)
@@ -247,7 +249,7 @@ sub build_target {
     info($target);
     if (-f $target and has_changed($Keep, $target)) {
         $Run->set($target,      ABORT => $target);
-        $Run->set($Opt{parent}, ABORT => $target) if $Opt{parent} ne '';
+        $Run->set($Opt{parent}, ABORT => $target) if is_child();
         msg(ERROR, "$target: Target externally modified, aborting\n");
         exit 253;
     }
@@ -286,7 +288,7 @@ sub build_target {
             $Run->set(                         #     and tell our parent that
                 $Opt{parent},                  #     that we failed, too
                 ABORT => $aborted_target,
-            ) if $Opt{parent} ne '';
+            ) if is_child();
         } else {                               # a buildscript returned non-zero
             msg(ERROR, "$target: exit status $exit\n");
         }
@@ -324,7 +326,7 @@ sub info {
     say STDERR "\e[32m$NAME " . ("  " x ($Opt{level} - 1)) . "\e[1m$msg\e[m";
 }
 # Display verbose msg in mother process, or all processes with --verbose/--debug
-sub verb { ($Opt{parent} ne '' or $Opt{debug} or $Opt{verbose}) and info @_ }
+sub verb { (is_child() or $Opt{debug} or $Opt{verbose}) and info @_ }
 sub debug {
     return unless $Opt{debug};
     chomp(my $msg = shift);
@@ -601,8 +603,7 @@ sub update_targets {
 }
 
 if ($Opt{stats}) {                             # write child counter
-    $Stats->delete('stats')                    #   mother deletes earlier stats
-        if $Opt{parent} eq '';
+    $Stats->delete('stats') unless is_child(); #   mother deletes earlier stats
     $Stats->set('stats',                       #   count fix invocations
         run_count   => sub { (shift() // 0) + 1 },
         run_targets => sub {                   #   save args for each call
@@ -633,7 +634,7 @@ if (my @missing = grep { ! -f "$_.fix" } @ARGV) {
 ##                                                                           ##
 ###############################################################################
 
-if ($Opt{parent} ne '') {                      # CHILD PROCESSES
+if (is_child()) {                              # CHILD PROCESSES
     $Keep->set($Opt{parent},                   #   targets are deps to parent
         add_deps => \@ARGV);
 } else {                                       # MOTHER PROCESS

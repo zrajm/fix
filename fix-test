@@ -132,7 +132,21 @@ sub abort {
         my $data = eval read_file($file);
         return $data->{run_count};
     }
+
+    sub status {
+        my ($target) = @_;
+        my $x = eval read_file($file);
+        return $x->{"TARGET:$target"};
+    }
 }
+# for use with status()
+sub SAME_DEPS   { 'wont_rebuild' }
+sub WONT_OVERWR { 'wont_overwrite' }
+sub SHELL_FAIL  { 'shell_error' }
+sub BUILD_FAIL  { 'buildscript_error' }
+sub KEPT_PREV   { 'rebuilt_but_kept_previous' }
+sub REPL_ERASED { 'rebuilt_replaced_deleted' }
+sub NEW_CONTENT { 'rebuilt_new_content' }
 
 ###############################################################################
 ##                                                                           ##
@@ -212,6 +226,7 @@ note "Buildscript with exit status = 1";
                                                   "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                                   "Keepstate content: 1.fix");
+    is  (status('1'),            BUILD_FAIL,      "Build status: 1");
 }
 
 $c{'1.fix'} = nl('echo FIRST', 'exit 2', 'echo SECOND');
@@ -237,6 +252,7 @@ note "Buildscript with exit status = 2";
                                                   "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                                   "Keepstate content: 1.fix");
+    is  (status('1'),            BUILD_FAIL,      "Build status: 1");
 }
 
 $c{'1.fix'} = nl('echo FIRST', 'false', 'echo SECOND');
@@ -262,6 +278,7 @@ note "Buildscript with command returning false";
                                                   "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                                   "Keepstate content: 1.fix");
+    is  (status('1'),            BUILD_FAIL,      "Build status: 1");
 }
 
 $c{'1.fix'} = nl("NONEXISTING-SHELL-COMMAND");
@@ -287,12 +304,14 @@ note "Buildscript with non-existing command";
                                                   "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                                   "Keepstate content: 1.fix");
+    is  (status('1'),            BUILD_FAIL,      "Build status: 1");
 }
 
-note "First run of (working) buildscript";
 $c{'1.fix'} = nl('echo 11');
 $c{'1'}     = nl('11');
 write_file('1.fix', $c{'1.fix'});
+
+note "First run of (working) buildscript";
 {
     my %a = fingerprints(qw/ 1.fix 1 /);
     my $r = system("$fix --stats 1 2>/dev/null");
@@ -310,6 +329,7 @@ write_file('1.fix', $c{'1.fix'});
                                          "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
+    is  (status('1'),       NEW_CONTENT, "Build status: 1");
 }
 
 note "Rerun without changes";
@@ -330,6 +350,7 @@ note "Rerun without changes";
                                          "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
+    is  (status('1'),       SAME_DEPS,   "Build status: 1");
 }
 
 note "Rerun after target was externally updated";
@@ -354,6 +375,7 @@ note "Rerun after target was externally updated";
                                          "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
+    is  (status('1'),       WONT_OVERWR, "Build status: 1");
 }
 
 note "Rerun after target was deleted";
@@ -376,6 +398,7 @@ note "Rerun after target was deleted";
                                          "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
+    is  (status('1'),       REPL_ERASED, "Build status: 1");
 }
 
 $c{'1.fix'} = nl('echo 11', '# COMMENT');
@@ -400,6 +423,7 @@ note "Rerun after buildscript was changed, but give same output";
                                          "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
+    is  (status('1'),       KEPT_PREV,   "Build status: 1");
 }
 
 note "Rerun after buildscript was changed, and give new output";
@@ -423,13 +447,15 @@ write_file('1.fix', $c{'1.fix'});
                                          "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
+    is  (status('1'),       NEW_CONTENT, "Build status: 1");
 }
 
-note "Buildscript creating target in subdir";
 mkdir("a");
 $c{'a/1.fix'} = nl('echo 1');
 $c{'a/1'}     = nl('1');
 write_file('a/1.fix', $c{'1.fix'});
+
+note "Buildscript creating target in subdir";
 {
     my %a = fingerprints(qw( a/1.fix a/1 ));
     my $r = system("$fix --stats a/1 2>/dev/null");
@@ -447,6 +473,7 @@ write_file('a/1.fix', $c{'1.fix'});
                                              "Keepstate content: 1");
     is  (read_file("$keep/a/1.fix"), db(SOURCE, $c{'1.fix'}),
                                              "Keepstate content: 1.fix");
+    is  (status('a/1'),     NEW_CONTENT,     "Build status: 1");
 }
 
 # clear heretofore generated files
@@ -499,8 +526,9 @@ note "First run of buildscript with dependencies";
                                          "Keepstate content: $_") for key %source;
     is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                          "Keepstate content: $_") for key %target;
+    is  (status($_),        NEW_CONTENT, "Build status: $_")      for key %target;
 }
-
+exit;
 note "Rerun without change";
 {
     my %pre  = fingerprints(key %source, %target);
@@ -519,6 +547,7 @@ note "Rerun without change";
                                      "Keepstate content: $_") for key %source;
     is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
+    is  (status($_),    SAME_DEPS,   "Build status: $_")      for key %target;
 }
 
 $source{'2.fix'} = nl('echo 22');
@@ -548,6 +577,8 @@ note "Rerun after change of subtarget '2'";
                                      "Keepstate content: $_") for key %source;
     is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
+    is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 1 ab/;
+    is  (status($_),    NEW_CONTENT, "Build status: $_")  for qw/2 12 ab12/;
 }
 
 note "Rerun after a dependency '12' was deleted";
@@ -571,6 +602,8 @@ note "Rerun after a dependency '12' was deleted";
                                      "Keepstate content: $_") for key %source;
     is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
+    is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 1 2 ab ab12/;
+    is  (status($_),    REPL_ERASED, "Build status: $_")  for qw/12/;
 }
 
 note "Rerun after a dependency '1' was deleted";
@@ -594,6 +627,8 @@ note "Rerun after a dependency '1' was deleted";
                                      "Keepstate content: $_") for key %source;
     is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
+    is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 2 ab 12 ab12/;
+    is  (status($_),    REPL_ERASED, "Build status: $_")  for qw/1/;
 }
 
 note "Rerun after dependency target '1' externally modified";
@@ -622,6 +657,8 @@ note "Rerun after dependency target '1' externally modified";
                                      "Keepstate content: $_") for key %source;
     is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
+    is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 2 12 ab ab12/;
+    is  (status($_),    WONT_OVERWR, "Build status: $_")  for qw/1/;
 }
 
 END {

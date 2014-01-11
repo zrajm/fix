@@ -1,14 +1,10 @@
 -*- org -*-
 
 * Testing
-** TODO Test all things added with '--stats'
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
 * Main program
-** TODO Option '--stats' should include buildscripts run
-** TODO Option '--stats' should include dependencies traversed
-   I.e. targets scanned.
 ** TODO Pass args to buildscripts
    NOTA BENE: When implemented, check all occurrences of $1, $2 and $3 in POD
    and make sure they're updated to reflect what is actually passed to the
@@ -210,3 +206,7 @@
    Each child should load and increment a counter, so that we, after a complete
    build run, may see inspect it to see how many times fix was executed in
    order to build all dependencies.
+** DONE Write measures taken for each target with '--stats'
+   CLOSED: [2014-01-11 Sat 19:33]
+** DONE Test measures taken for each file with '--stats')
+   CLOSED: [2014-01-11 Sat 19:33]

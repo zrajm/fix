@@ -154,6 +154,12 @@ sub DEBUG   { 0 }                              # plain
 
 sub is_child { $Opt{parent} ne '' }
 
+sub did {
+    return unless $Opt{stats};
+    my ($name, $value) = @_;
+    $Stats->set('stats', "TARGET:$name", $value);
+}
+
 sub read_file {
     my ($file) = @_;
     open(my $in, "<:utf8", $file)
@@ -250,6 +256,7 @@ sub build_target {
     if (-f $target and has_changed($Keep, $target)) {
         $Run->set($target,      ABORT => $target);
         $Run->set($Opt{parent}, ABORT => $target) if is_child();
+        did($target, 'wont_overwrite');
         msg(ERROR, "$target: Target externally modified, aborting\n");
         exit 253;
     }
@@ -259,6 +266,7 @@ sub build_target {
         type => TARGET,
         deps => [[ $buildscript ]],
     );
+
     my ($close, $exit, $errno) = redir_stdout($outfile, sub {
         local $ENV{FIX_PARENT} = $target;
         local $ENV{FIX_LEVEL}  = $level;
@@ -280,6 +288,7 @@ sub build_target {
     if (not $close) {
         $exit >>= 8;
         if ($errno != 0) {
+            did($target, 'shell_error');
             die "Cannot run buildscript '$buildscript': $errno\n";
         }
         my $aborted_target = $Run->get("$target", 'ABORT');
@@ -292,6 +301,7 @@ sub build_target {
         } else {                               # a buildscript returned non-zero
             msg(ERROR, "$target: exit status $exit\n");
         }
+        did($target, 'buildscript_error');
         exit $exit;
     }
 
@@ -300,13 +310,16 @@ sub build_target {
     if ($new_checksum eq $old_checksum) {      # target unmodified
         if (-e $target) {                      #   if target exist
             unlink($outfile);
+            did($target, 'rebuilt_but_kept_previous');
         } else {                               #   if target was deleted
             rename_file($outfile, $target);
+            did($target, 'rebuilt_replaced_deleted');
         }
         return FALSE;
     }
     rename_file($outfile, $target);            # target modified
     $Keep->set($target, checksum => $new_checksum); # store new checksum
+    did($target, 'rebuilt_new_content');
     return TRUE;
 }
 
@@ -539,6 +552,8 @@ sub update_targets {
             if ($deps_changed or (not -e $target) or has_changed($Keep, $target)) {
                 build_target($level, $target)
                     and $changed = TRUE;
+            } else {
+                did($target, 'wont_rebuild');
             }
         } elsif ($type eq SOURCE) {            # buildscript
             if (has_changed($Keep, $target)) {

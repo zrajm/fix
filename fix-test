@@ -53,19 +53,16 @@ sub read_file {
     return <$in>;
 }
 
-# Return file fingerprint (or empty string if file doesn't exist).
+# Return stat fingerprint (or empty string if file doesn't exist).
 #
-# BORKEN! We use 'stat', not 'lstat' here (since the Time::HiRes version I have
-# doesn't support 'lstat') -- It was added to the module February 2013. :(
-# (See: https://rt.cpan.org/Public/Bug/Display.html?id=83356)
-{
-    #use Time::HiRes 'stat';
-    sub read_file_fingerprint {
-        my ($file) = @_;
-        my @stat = stat($file);
-        return join("-", @stat ? @stat[1, 2, 4, 5, 7, 9, 10] : ());
-    }
+# Note: We can't use Time::HiRes here, since it only supports lstat() since
+# February 2013. [https://rt.cpan.org/Public/Bug/Display.html?id=83356]
+sub read_file_fingerprint {
+    my ($file) = @_;
+    my @stat = lstat($file);
+    return join("-", @stat ? @stat[1, 2, 4, 5, 7, 9, 10] : ());
 }
+
 
 # Return hash of filenames (as keys) and stat fingerprints (as values).
 sub fingerprints {
@@ -99,16 +96,6 @@ sub sha1 {
     sha1_hex(encode_utf8($data));
 }
 
-sub statedata {
-    my %x = @_;
-    $x{deps} = [] unless exists $x{deps};
-    use Data::Dumper;
-    local $Data::Dumper::Indent   = 1;
-    local $Data::Dumper::Sortkeys = 1;
-    local $Data::Dumper::Terse    = 1;
-    return Dumper \%x;
-}
-
 # Return keys in hash, sorted by first by length, then alphabetically.
 sub key {
     my %x = @_;
@@ -119,10 +106,9 @@ sub SOURCE { 'source' }
 sub TARGET { 'target' }
 sub db {
     my ($type, $content, @deps) = @_;
-        my %x = (
-            deps => @deps ? \@deps : [],
-            type => $type,
-        );
+    my %x;
+    $x{type}     = $type;
+    $x{deps}     = \@deps         if @deps;
     $x{checksum} = sha1($content) if defined $content;
     use Data::Dumper;
     local $Data::Dumper::Indent   = 1;

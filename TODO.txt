@@ -34,6 +34,24 @@
    'a' should depend on 'b' + checksum of 'b', and 'b' should depend on 'c' +
    checksum of 'c', so that if file content changes, the file will be rebuilt,
    regardless of how the fix command was invoked.
+
+** TODO Is something corresponding to 'redo-ifcreate' necessary?
+** TODO Scan for alternate buildscripts (not just 'TARGET.fix')
+   Like redo fix should look for a number of build files. Which files should be
+   scanned? Here's what my previous attempt looked for:
+
+       TARGET.A.B.fix
+       default.A.B.fix
+       default.A.fix
+       default.fix
+       ../default.A.B.fix
+       ../default.A.fix
+       ../default.fix
+       ../../default.A.B.fix
+       ../../default.A.fix
+       ../../default.fix
+** TODO Use PID lockfile avoid double invocations
+** TODO Logging
 ** TODO Drop Data::Dumper dependency
    Statefiles should be written in simple attribute/value format, so that a
    file looking like this (what about file name parsing -- something that can
@@ -54,7 +72,6 @@
            ],
            'type' => 'target'
        }
-** TODO Runstate should be stored separately ('state/ABORT' should be there)
 ** TODO Prettier output output each target name just once
 ** TODO Add option '--always' to rebuild everything
    Described in POD (uncomment when implemented).
@@ -176,3 +193,7 @@
    CLOSED: [2014-01-11 Sat 06:55]
 ** DONE Merge documentation from old 'fix' into current source
    CLOSED: [2014-01-11 Sat 06:58]
+** DONE Separate runstate ('state/ABORT' should be there)
+   CLOSED: [2014-01-11 Sat 11:12]
+   Runstate is the state that is cleared when starting B<fix> (it is used for
+   communication between the mother process and her children)

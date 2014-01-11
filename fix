@@ -27,6 +27,7 @@ $YEAR    = "2012-2014";
 sub TRUE  { 1 }
 sub FALSE { 0 }
 
+my ($Keep, $Run);                              # global state
 my %opt = (
     debug   => $ENV{FIX_DEBUG} ? TRUE : FALSE, # -D/--debug $FIX_DEBUG
     fix_dir => ".$NAME",
@@ -149,27 +150,6 @@ sub INFO    { 3 }                              # green
 sub VERBOSE { 3 }                              # green
 sub DEBUG   { 0 }                              # plain
 
-# Read file stat fingerprint. If this is unchanged since a previous check, know
-# the file is unchanged. If fingerprint has changed, then we need to look at
-# the file content to determine whether that has changed or not. The following
-# lstat() properties are used:
-#
-#      1 ino      inode number
-#      2 mode     file mode (type and permissions)
-#      4 uid      numeric user ID of file's owner
-#      5 gid      numeric group ID of file's owner
-#      7 size     total size of file, in bytes
-#      9 mtime    last modify time in seconds since the epoch
-#     10 ctime    inode change time in seconds since the epoch (*)
-#
-# (See: http://www.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt)
-sub read_file_fingerprint {
-    my ($file) = @_;
-    my @stat = lstat($file)
-        or die "Failed to stat file '$file': $!\n";
-    return join("-", @stat[1, 2, 4, 5, 7, 9, 10]);
-}
-
 sub read_file {
     my ($file) = @_;
     open(my $in, "<:utf8", $file)
@@ -181,39 +161,6 @@ sub read_file {
 sub rename_file {
     my ($file1, $file2) = @_;
     rename($file1, $file2) or "Failed to rename '$file1' -> '$file2': $!\n";
-}
-
-sub write_file {
-    my ($outfile, @data) = @_;
-    my $tmpfile = "$outfile--writing";
-    my $out;
-    if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
-        if (-e $dir and not -d $dir) {
-            warn "$NAME: Failed to create dir '$dir': File exists\n";
-            return undef;
-        }
-        unless (-d $dir or mkpath($dir)) {
-            warn "$NAME: Failed to create dir '$dir'\n";
-            return undef;
-        }
-    }
-    unless (open $out, ">:utf8", $tmpfile) {
-        warn "$NAME: Failed to open tempfile '$tmpfile' for writing: $!\n";
-        return undef;
-    }
-    unless (print $out @data) {
-        warn "$NAME: Failed to write data to tempfile '$tmpfile': $!\n";
-        return undef;
-    }
-    unless (close $out) {
-        warn "$NAME: Failed to close tempfile '$tmpfile' after writing: $!\n";
-        return undef;
-    }
-    unless (rename($tmpfile, $outfile)) {
-        warn "$NAME: Failed rename tempfile '$tmpfile' -> '$outfile' after writing: $!\n";
-        return undef;
-    }
-    return TRUE;
 }
 
 sub checksum_file {
@@ -274,16 +221,16 @@ sub redir_stdout {
 sub build_target {
     my ($level, $target) = @_;
     info($target);
-    if (-f $target and has_changed($target)) {
-        set("ABORT/$target",      ABORT => $target);
-        set("ABORT/$opt{parent}", ABORT => $target)
+    if (-f $target and has_changed($Keep, $target)) {
+        $Run->set("$target",      ABORT => $target);
+        $Run->set("$opt{parent}", ABORT => $target)
             if $opt{parent};
         msg(ERROR, "$target: Target externally modified, aborting\n");
         exit 253;
     }
     my ($buildscript, $outfile) = ("$target.fix", "$target--fixing");
     # clear dependency information (rebuilt each run)
-    set($target,
+    $Keep->set($target,
         type => TARGET,
         deps => [[ $buildscript ]],
     );
@@ -310,12 +257,12 @@ sub build_target {
         if ($errno != 0) {
             die "Failed to run buildscript '$buildscript': $errno\n";
         }
-        my $aborted = get("ABORT/$target", 'ABORT');
-        if ($aborted ne '') {                  # a dependency failed to run
+        my $aborted_target = $Run->get("$target", 'ABORT');
+        if ($aborted_target ne '') {           # a dependency failed to run
             unlink($outfile);                  #   erase outfile and
-            set(                               #     and tell our parent that
-                "ABORT/$opt{parent}",          #     that we failed, too
-                ABORT => $aborted,
+            $Run->set(                         #     and tell our parent that
+                $opt{parent},                  #     that we failed, too
+                ABORT => $aborted_target,
             ) if $opt{parent};
         } else {                               # a buildscript returned non-zero
             msg(ERROR, "$target: exit status $exit\n");
@@ -323,7 +270,7 @@ sub build_target {
         exit $exit;
     }
 
-    my $old_checksum = get($target, 'checksum');
+    my $old_checksum = $Keep->get($target, 'checksum');
     my $new_checksum = checksum_file($outfile);
     if ($new_checksum eq $old_checksum) {      # target unmodified
         if (-e $target) {                      #   if target exist
@@ -334,7 +281,7 @@ sub build_target {
         return FALSE;
     }
     rename_file($outfile, $target);            # target modified
-    set($target, checksum => $new_checksum);   #   store new checksum
+    $Keep->set($target, checksum => $new_checksum); # store new checksum
     return TRUE;
 }
 
@@ -370,84 +317,159 @@ sub _die  { msg ERROR, @_; exit 255 }
 ###############################################################################
 
 {
-    my (%state, %print);
-    my $state_dir;
+    package Store;
+    use File::Path qw/mkpath rmtree/;          # use 'mkpath' and 'rmtree'
+    use Data::Dumper;
+    $Data::Dumper::Indent   = 1;
+    $Data::Dumper::Sortkeys = 1;
+    $Data::Dumper::Terse    = 1;
 
-    sub init_state {
-        my ($fix_dir) = @_;
-        $state_dir = "$fix_dir/state";
-        if (not -d $state_dir) {
-            mkpath($state_dir)
-                or die "$NAME: Failed to create state dir '$state_dir'\n";
+    sub new {
+        my ($class, $dir) = @_;
+        if (not -d $dir) {
+            mkpath($dir) or die "Failed to create state dir '$dir'\n";
         }
+        return bless ({ dir => $dir, print => {}, state => {} });
     }
 
-    sub delete_state {
+    # Read file stat fingerprint. If this is unchanged since a previous check,
+    # know the file is unchanged. If fingerprint has changed, then we need to
+    # look at the file content to determine whether that has changed or not.
+    # The following lstat() properties are used:
+    #
+    #      1 ino      inode number
+    #      2 mode     file mode (type and permissions)
+    #      4 uid      numeric user ID of file's owner
+    #      5 gid      numeric group ID of file's owner
+    #      7 size     total size of file, in bytes
+    #      9 mtime    last modify time in seconds since the epoch
+    #     10 ctime    inode change time in seconds since the epoch (*)
+    #
+    # [http://www.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt]
+    #
+    # Note: We can't use Time::HiRes here, since it only supports lstat() since
+    # February 2013. [https://rt.cpan.org/Public/Bug/Display.html?id=83356]
+    sub _read_file_fingerprint {
         my ($file) = @_;
-        my $full = "$state_dir/$file";
-        rmtree($full);
+        my @stat = lstat($file) or die "Failed to stat file '$file': $!\n";
+        return join("-", @stat[1, 2, 4, 5, 7, 9, 10]);
+    }
+
+    sub _read_file {
+        my ($file) = @_;
+        open(my $in, "<:utf8", $file)
+            or die "Failed to open file '$file' for reading: $!\n";
+        local $/ = undef;
+        return <$in>;
+    }
+
+    sub _write_file {
+        my ($file, @data) = @_;
+        my $tmpfile = "$file--writing";
+        my $out;
+        if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
+            if (-e $dir and not -d $dir) {
+                warn "Failed to create dir '$dir': File exists\n";
+                return undef;
+            }
+            unless (-d $dir or mkpath($dir)) {
+                warn "Failed to create dir '$dir'\n";
+                return undef;
+            }
+        }
+        open($out, ">:utf8", $tmpfile)
+            or die "Failed to open tempfile '$tmpfile' for writing: $!\n";
+        print $out @data
+            or die "Failed to write to tempfile '$tmpfile': $!\n";
+        close($out)
+            or die "Failed to close tempfile '$tmpfile' after writing: $!\n";
+        rename($tmpfile, $file)
+            or die "Failed to rename tempfile '$tmpfile' -> '$file': $!\n";
+    }
+
+    sub delete {
+        my ($self) = @_;
+        rmtree($self->{dir});
     }
 
     # Rereads the state file every time, since subprocess may have updated it.
     # FIXME: reread file only when it has been changed
     sub get_state {
-        my ($file) = @_;
-        my $full = "$state_dir/$file";
+        my ($self, $file) = @_;
+        my $full  = "$self->{dir}/$file";
+        my $state = $self->{state};
+        my $print = $self->{print};
         if (-f $full) {                        # state file exists
-            my $print = read_file_fingerprint($full);
-            if ($print ne ($print{$file} // '')) {
-                $print{$file} = $print;        #   read if modified
-                $state{$file} = eval read_file($full);
+            my $print2 = _read_file_fingerprint($full);
+            if ($print2 ne ($print->{$file} // '')) {
+                $print->{$file} = $print2;     #   read if modified
+                $state->{$file} = eval _read_file($full);
             }
-        } else {                               # no state file exists
-            $state{$file} = { deps => [] };
         }
-        return $state{$file};
+        $state->{$file}{deps} //= [];
+        return $state->{$file};
     }
 
     # sub load_state {
-    #     my ($file) = @_;
-    #     if (not exists $state{$file}) {
-    #         my $full = "$state_dir/$file";
-    #         $state{$file} = -f $full ? eval read_file($full) : {};
+    #     my ($self, $file) = @_;
+    #     my $state = $self->{state};
+    #     if (not exists $state->{$file}) {
+    #         my $full = "$self->{dir}/$file";
+    #         $state->{$file} = -f $full ? eval _read_file($full) : {};
     #     }
-    #     return $state{$file};
+    #     return $state->{$file};
     # }
 
+    # Return true if arrayref of empty array, or undef.
+    sub empty {
+        my ($_) = @_;
+        return 1 if (ref($_) eq 'ARRAY') and (@$_ == 0);
+        return 1 if $_ ~~ undef;
+        return 0;
+    }
+
     sub save_state {
-        my ($file) = @_;
-        my $full = "$state_dir/$file";
-        write_file($full, Dumper $state{$file});
-        $print{file} = read_file_fingerprint($full);
+        my ($self, $file) = @_;
+        my $full = "$self->{dir}/$file";
+        my %filtered = do {                    # remove empty arrayrefs
+            my $data = $self->{state}{$file};  #   and undefs
+            map {
+                empty($data->{$_}) ? () : ($_ => $data->{$_});
+            } keys %$data;
+        };
+        _write_file($full, Dumper(\%filtered));
+        # $self->{print}{file} = _read_file_fingerprint($full);
     }
-}
 
-sub get {
-    my ($file, @field) = @_;
-    my $state = get_state($file);
-    return wantarray()
-        ? map { $state->{$_} // '' } @field
-        : $state->{ $field[0] } // '';
-}
+    sub get {
+        my ($self, $file, @field) = @_;
+        die "get(): no field provided," if @field == 0;
+        my $state = $self->get_state($file);
+        return wantarray()
+            ? map { $state->{$_} // '' } @field
+            : $state->{ $field[0] } // '';
+    }
 
-sub set {
-    my ($file, %arg) = @_;
-    return if $file eq '';
-    my $state = get_state($file);
-    if (exists $arg{add_deps}) {
-        push @{ $state->{deps} }, \@{ delete $arg{add_deps} };
+    sub set {
+        my ($self, $file, %arg) = @_;
+        return if $file eq '';
+        my $state = $self->get_state($file);
+        if (exists $arg{add_deps}) {
+            push @{ $state->{deps} }, \@{ delete $arg{add_deps} };
+        }
+        foreach my $field (keys %arg) {
+            $state->{$field} = $arg{$field};
+        }
+        $self->save_state($file);
     }
-    foreach my $field (keys %arg) {
-        $state->{$field} = $arg{$field};
-    }
-    save_state($file);
+
 }
 
 # NB: $file must exist for has_changed() to give meaningful result
 sub has_changed {
-    my ($file) = @_;
-    my $checksum = get($file, 'checksum');
-    return checksum_file($file) eq $checksum ? FALSE : TRUE;
+    my ($self, $file) = @_;
+    my $checksum = $self->get($file, 'checksum');
+    return checksum_file($file) eq $checksum ? 0 : 1;
 }
 
 # update_targets($level, @target);
@@ -466,10 +488,10 @@ sub update_targets {
     local $opt{level} = $level;
     my $changed  = FALSE;
   TARGET: foreach my $target (@target) {
-        my ($type, $dep_clusters) = get($target, 'type', 'deps');
+        my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
         if ($type eq '') {                     # target is not known by fix
             my $buildscript = "$target.fix";
-            set($buildscript,
+            $Keep->set($buildscript,
                 checksum => checksum_file($buildscript),
                 type     => SOURCE,
             );
@@ -482,13 +504,13 @@ sub update_targets {
                 update_targets($level + 1, @$deps)
                     and $deps_changed = TRUE;
             }
-            if ($deps_changed or (not -e $target) or has_changed($target)) {
+            if ($deps_changed or (not -e $target) or has_changed($Keep, $target)) {
                 build_target($level, $target)
                     and $changed = TRUE;
             }
         } elsif ($type eq SOURCE) {            # buildscript
-            if (has_changed($target)) {
-                set($target,
+            if (has_changed($Keep, $target)) {
+                $Keep->set($target,
                     checksum => checksum_file($target),
                     type     => SOURCE,
                 );
@@ -559,12 +581,19 @@ if (my @missing = grep { ! -f "$_.fix" } @ARGV) {
     exit 254;
 }
 
-init_state($opt{fix_dir});
+###############################################################################
+##                                                                           ##
+##  Main                                                                     ##
+##                                                                           ##
+###############################################################################
+
+$Keep = new Store("$opt{fix_dir}/state");
+$Run  = new Store("$opt{fix_dir}/ABORT");
 
 if ($opt{parent} ne '') {                      # CHILD PROCESSES
-    set($opt{parent}, add_deps => \@ARGV );    #   add targets as deps to parent
+    $Keep->set($opt{parent}, add_deps => \@ARGV ); # add targets as deps to parent
 } else {                                       # MOTHER PROCESS
-    delete_state('ABORT');                     #   delete runstate from previous
+    $Run->delete();                            #   delete previous runstate
     $ENV{FIX_CMD} = realpath(__FILE__);
     # Add the currently running 'fix' command first in $PATH (which is
     # inherited by all child processes). -- This makes sure that all
@@ -594,12 +623,6 @@ if ($opt{parent} ne '') {                      # CHILD PROCESSES
     }
     $ENV{PATH} = "$full:$ENV{PATH}";           # add dir to path
 }
-
-###############################################################################
-##                                                                           ##
-##  Main                                                                     ##
-##                                                                           ##
-###############################################################################
 
 update_targets($opt{level}, @ARGV);
 

@@ -27,7 +27,7 @@ $YEAR    = "2012-2014";
 sub TRUE  { 1 }
 sub FALSE { 0 }
 
-my %opt = (
+my %Opt = (
     debug   => $ENV{FIX_DEBUG} ? TRUE : FALSE, # -D/--debug $FIX_DEBUG
     fix_dir => ".$NAME",
     # force   => $ENV{FIX_FORCE} ? TRUE : FALSE, # -f/--force $FIX_FORCE
@@ -40,9 +40,9 @@ my %opt = (
     verbose => $ENV{FIX_VERBOSE} // "" ne "",  # -v/--verbose $FIX_VERBOSE
 );
 my ($Keep, $Run, $Stats) = (                   # state
-    new Store("$opt{fix_dir}/keep"),           #   keepstate
-    new Store("$opt{fix_dir}/run"),            #   runstate
-    new Store($opt{fix_dir}),                  #   for stats
+    new Store("$Opt{fix_dir}/keep"),           #   keepstate
+    new Store("$Opt{fix_dir}/run"),            #   runstate
+    new Store($Opt{fix_dir}),                  #   for stats
 );
 
 ###############################################################################
@@ -247,7 +247,7 @@ sub build_target {
     info($target);
     if (-f $target and has_changed($Keep, $target)) {
         $Run->set($target,      ABORT => $target);
-        $Run->set($opt{parent}, ABORT => $target) if $opt{parent} ne '';
+        $Run->set($Opt{parent}, ABORT => $target) if $Opt{parent} ne '';
         msg(ERROR, "$target: Target externally modified, aborting\n");
         exit 253;
     }
@@ -261,11 +261,11 @@ sub build_target {
         local $ENV{FIX_PARENT} = $target;
         local $ENV{FIX_LEVEL}  = $level;
         my @arg = (
-            $opt{xtrace} ? '-x' : (),
-            $opt{debug}  ? '-v' : (),
+            $Opt{xtrace} ? '-x' : (),
+            $Opt{debug}  ? '-v' : (),
         );
-        open(my $shell, '|-', $opt{shell}, '-e', @arg)
-            or die "Cannot execute shell '$opt{shell}': $!\n";
+        open(my $shell, '|-', $Opt{shell}, '-e', @arg)
+            or die "Cannot execute shell '$Opt{shell}': $!\n";
         print $shell read_file($buildscript);
 
         my $close = close($shell);
@@ -284,9 +284,9 @@ sub build_target {
         if ($aborted_target ne '') {           # a dependency failed to run
             unlink($outfile);                  #   erase outfile and
             $Run->set(                         #     and tell our parent that
-                $opt{parent},                  #     that we failed, too
+                $Opt{parent},                  #     that we failed, too
                 ABORT => $aborted_target,
-            ) if $opt{parent} ne '';
+            ) if $Opt{parent} ne '';
         } else {                               # a buildscript returned non-zero
             msg(ERROR, "$target: exit status $exit\n");
         }
@@ -315,20 +315,20 @@ sub build_target {
         my ($loglevel, $message) = @_;
         die "msg(): missing loglevel" unless defined $ansi[$loglevel];
         chomp $message;
-        say STDERR "$ansi[$loglevel]$NAME " . ("  " x ($opt{level} - 1)) .
+        say STDERR "$ansi[$loglevel]$NAME " . ("  " x ($Opt{level} - 1)) .
             $ansi[BOLD] . $message . $ansi[PLAIN];
     }
 }
 sub info {
     chomp(my $msg = shift);
-    say STDERR "\e[32m$NAME " . ("  " x ($opt{level} - 1)) . "\e[1m$msg\e[m";
+    say STDERR "\e[32m$NAME " . ("  " x ($Opt{level} - 1)) . "\e[1m$msg\e[m";
 }
 # Display verbose msg in mother process, or all processes with --verbose/--debug
-sub verb { ($opt{parent} ne '' or $opt{debug} or $opt{verbose}) and info @_ }
+sub verb { ($Opt{parent} ne '' or $Opt{debug} or $Opt{verbose}) and info @_ }
 sub debug {
-    return unless $opt{debug};
+    return unless $Opt{debug};
     chomp(my $msg = shift);
-    say STDERR "$NAME " . ("  " x ($opt{level} - 1)) . $msg;
+    say STDERR "$NAME " . ("  " x ($Opt{level} - 1)) . $msg;
 }
 sub _warn { msg WARN, @_ }
 sub _die  { msg ERROR, @_; exit 255 }
@@ -515,7 +515,7 @@ sub has_changed {
 # dependencies was rebuilt.)
 sub update_targets {
     my ($level, @target) = @_;
-    local $opt{level} = $level;
+    local $Opt{level} = $level;
     my $changed  = FALSE;
   TARGET: foreach my $target (@target) {
         my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
@@ -580,29 +580,29 @@ sub update_targets {
 
     GetOptions(
         'debug|D'  => sub {       ### debug output + make build shells verbose
-            $opt{debug} = $ENV{FIX_DEBUG} = TRUE;
+            $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
         },
         # 'force|f'  => sub {       ### overwrite manually edited files
-        #     $opt{force} = $ENV{FIX_FORCE} = TRUE;
+        #     $Opt{force} = $ENV{FIX_FORCE} = TRUE;
         # },
         'help|h|?'  => \&help,    ### display this help and exit
         'man|M'     => \&man,     ### display program manpage and exit
         'stats'     => sub{       ##  save stats in .fix dir
-            $opt{stats} = $ENV{FIX_STATS} = TRUE;
+            $Opt{stats} = $ENV{FIX_STATS} = TRUE;
         },
         'verbose|v' => sub {      ### output status info while building
-            $opt{verbose} = $ENV{FIX_VERBOSE} = TRUE;
+            $Opt{verbose} = $ENV{FIX_VERBOSE} = TRUE;
         },
         'version|V' => \&version, ### output version information and exit
         'xtrace|x'  => sub {      ### use xtrace for build shells
-            $opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
+            $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
     ) or exit 254;
 }
 
-if ($opt{stats}) {                             # write child counter
+if ($Opt{stats}) {                             # write child counter
     $Stats->delete('stats')                    #   mother deletes earlier stats
-        if $opt{parent} eq '';
+        if $Opt{parent} eq '';
     $Stats->set('stats',                       #   count fix invocations
         run_count   => sub { (shift() // 0) + 1 },
         run_targets => sub {                   #   save args for each call
@@ -633,8 +633,8 @@ if (my @missing = grep { ! -f "$_.fix" } @ARGV) {
 ##                                                                           ##
 ###############################################################################
 
-if ($opt{parent} ne '') {                      # CHILD PROCESSES
-    $Keep->set($opt{parent},                   #   targets are deps to parent
+if ($Opt{parent} ne '') {                      # CHILD PROCESSES
+    $Keep->set($Opt{parent},                   #   targets are deps to parent
         add_deps => \@ARGV);
 } else {                                       # MOTHER PROCESS
     $Run->delete('');                          #   delete previous runstate
@@ -647,8 +647,8 @@ if ($opt{parent} ne '') {                      # CHILD PROCESSES
     # We achieve this by creating a '.fix/bin' directory, add a symlink to the
     # 'fix' command there, and tuck that directory name onto the beginning of
     # the $PATH environment variable that gets inherited by our children.
-    my $bindir = "$opt{fix_dir}/bin";
-    my $link   = "$opt{fix_dir}/bin/$NAME";    # name of link to create
+    my $bindir = "$Opt{fix_dir}/bin";
+    my $link   = "$Opt{fix_dir}/bin/$NAME";    # name of link to create
     if (not -l $link) {                        # if missing '.fix/bin/fix'
         if (not -d $bindir) {                  #   make sure '.fix/bin' exists
             mkpath($bindir)
@@ -668,7 +668,7 @@ if ($opt{parent} ne '') {                      # CHILD PROCESSES
     $ENV{PATH} = "$full:$ENV{PATH}";           # add dir to path
 }
 
-update_targets($opt{level}, @ARGV);
+update_targets($Opt{level}, @ARGV);
 
 __END__
 

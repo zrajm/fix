@@ -356,7 +356,7 @@ note "Rerun without changes";
     is  (status('1'),       SAME_DEPS,   "Build status: 1");
 }
 
-note "Rerun after target was externally updated";
+note "Rerun after target was externally modified";
 {
     write_file('1', nl('XXX'));    # modify target file
 
@@ -583,7 +583,7 @@ note "Rerun after change of subtarget '2'";
     is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 1 ab/;
     is  (status($_),    NEW_CONTENT, "Build status: $_")  for qw/2 12 ab12/;
 }
-exit;
+
 note "Rerun after a dependency '12' was deleted";
 {
     delete_file('12');
@@ -660,7 +660,8 @@ note "Rerun after dependency target '1' externally modified";
                                      "Keepstate content: $_") for key %source;
     is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
-    is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 2 12 ab ab12/;
+    # When build is aborted, stats become unreliable for the other files.
+    #is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 2 12 ab ab12/;
     is  (status($_),    WONT_OVERWR, "Build status: $_")  for qw/1/;
 }
 

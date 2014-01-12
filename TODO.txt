@@ -119,10 +119,18 @@
 ** TODO Allow buildscripts to write to tempfile directly
    I.e. if a buildscript wrote to standard output, write that to target; or if
    it wrote to the tempfile directly, write that.
+** TODO Abort more gracefully
+   Abort should not exit brutally (e.g. causing stats to be broken except for
+   the file causing the abort), but recurse gracefully back again.
+   build_target() and update_targets() should maybe have three return values?
+
+       1 = I did my stuff, and there were changes
+       0 = I did my stuff, nothing was changed
+      -1 = Something went wrong, KILL THIS BUILD NOW!
+
+   Means we could ditch the runstate as well (since its currently only used for
+   this).
 * Someday/maybe
-** TODO Child killing parent on abortive failure?
-   Could we perhaps just kill the mother process (or the child just above our
-   self, in cascade?) instead of having to muck about with ABORT state?
 ** TODO Stylesheet-type dependencies
    A HTML file requires that a CSS file *exists*, but the HTML does not need to
    be recompiled when the CSS changes.

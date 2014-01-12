@@ -71,14 +71,6 @@ sub fingerprints {
     } @file;
 }
 
-sub abspath {
-    my ($file) = @_;
-    my ($dirname, $basename) =
-        ($file =~ m#^(.*)/(.*)$# ? ($1, $2) : ('.', $file));
-    $dirname = realpath($dirname);
-    return $dirname . ($dirname =~ m#/$# ? '' : '/') . $basename;
-}
-
 sub make_tempdir {
     my ($name) = @_;
     my $tempdir = `mktemp -td $name-XXXXXX`;
@@ -154,10 +146,8 @@ sub NEW_CONTENT { 'rebuilt_new_content' }
 ##                                                                           ##
 ###############################################################################
 
-my $fix = abspath(__FILE__);
-$fix =~ s#-test.*?##;
-
-my ($name) = $fix =~ m#([^/]+)$#;
+my $name = 'fix';
+my $fix  = realpath(__FILE__ =~ s#[^/]+$#$name#r);
 
 # check if there is an 'exit' statement in this file
 my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;

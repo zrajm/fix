@@ -1,0 +1,19 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use 5.10.0;
+use Test::More;
+
+use Carp 'confess';
+$SIG{__DIE__} = \&Carp::confess;
+
+BEGIN {                                        # load 'fix' as a module
+    use Cwd qw/realpath/;
+    my $fix = realpath(__FILE__ =~ s{[^/]+$}{fix}r);
+    require $fix;
+    Module->import();
+}
+
+say $Local::Modulino::VERSION;
+
+#[eof]

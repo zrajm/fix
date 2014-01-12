@@ -1,4 +1,5 @@
 #!/usr/bin/perl
+package Local::Modulino; #[http://www.drdobbs.com/scripts-as-modules/184416165]
 use strict;
 use warnings;
 use encoding::warnings 'FATAL';
@@ -579,9 +580,11 @@ sub update_targets {
 ###############################################################################
 
 # parse command line options
-{
+sub getopts {
+    my @arg = @_;
     use Getopt::Long qw(
-        :config posix_default bundling gnu_compat no_ignore_case permute
+        GetOptionsFromArray :config
+        posix_default bundling gnu_compat no_ignore_case permute
     );
 
     # Modify Getopt::Long's error messages:
@@ -596,7 +599,7 @@ sub update_targets {
         warn "$NAME: $_";
     };
 
-    GetOptions(
+    GetOptionsFromArray(\@arg,
         'debug|D'  => sub {       ### debug output + make build shells verbose
             $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
         },
@@ -616,32 +619,25 @@ sub update_targets {
             $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
     ) or exit 254;
-}
 
-if ($Opt{stats}) {                             # write child counter
-    $Stats->delete('stats') unless is_child(); #   mother deletes earlier stats
-    $Stats->set('stats',                       #   count fix invocations
-        run_count   => sub { (shift() // 0) + 1 },
-        run_targets => sub {                   #   save args for each call
-            my ($x) = (shift() // []);
-            push(@$x, \@ARGV);
-            return $x;
-        },
-    );
-}
-
-if (@ARGV == 0) {
-    msg(ERROR, "$NAME: No target specified\n" .
+    if ($Opt{stats}) {                         # write child counter
+        $Stats->delete('stats')                #   mother deletes earlier stats
+            unless is_child();
+        $Stats->set('stats',                   #   count fix invocations
+            run_count   => sub { (shift() // 0) + 1 },
+            run_targets => sub {               #   save args for each call
+                my ($x) = (shift() // []);
+                push(@$x, \@arg);
+                return $x;
+            },
+        );
+    }
+    if (@arg == 0) {
+        msg(ERROR, "$NAME: No target specified\n" .
             "Try '$NAME --help' for more information.\n");
-    exit 254;
-}
-
-%SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
-
-# die on missing buildscripts
-if (my @missing = grep { ! -f "$_.fix" } @ARGV) {
-    warn join "", map { "No rule to make '$_'.\n" } @missing;
-    exit 254;
+        exit 254;
+    }
+    return @arg;
 }
 
 ###############################################################################
@@ -650,42 +646,56 @@ if (my @missing = grep { ! -f "$_.fix" } @ARGV) {
 ##                                                                           ##
 ###############################################################################
 
-if (is_child()) {                              # CHILD PROCESSES
-    $Keep->set($Opt{parent},                   #   targets are deps to parent
-        add_deps => \@ARGV);
-} else {                                       # MOTHER PROCESS
-    $Run->delete('');                          #   delete previous runstate
-    $ENV{FIX_CMD} = realpath(__FILE__);
-    # Add the currently running 'fix' command first in $PATH (which is
-    # inherited by all child processes). -- This makes sure that all
-    # buildscripts that invoke 'fix' find it, even if 'fix' wasn't in the
-    # invoking user's $PATH to begin with.
-    #
-    # We achieve this by creating a '.fix/bin' directory, add a symlink to the
-    # 'fix' command there, and tuck that directory name onto the beginning of
-    # the $PATH environment variable that gets inherited by our children.
-    my $bindir = "$Opt{fix_dir}/bin";
-    my $link   = "$Opt{fix_dir}/bin/$NAME";    # name of link to create
-    if (not -l $link) {                        # if missing '.fix/bin/fix'
-        if (not -d $bindir) {                  #   make sure '.fix/bin' exists
-            mkpath($bindir)
-                or die "$NAME: Cannot create dir '$bindir'\n";
-        }
-        symlink(realpath(__FILE__), $link)
-            or die "$NAME: Cannot create symlink '$link': $!\n";
-    }
-    my $full = realpath($bindir);
-    # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).
-    # Therefore the cwd cannot contain a colon (we could fix this this by
-    # having this stuff in /tmp, I guess).
-    if ($full =~ /:/) {                        # guard for stupid system bug
-        die "$NAME: Colon not allowed in current dir path ('" .
-            cwd() . "')\n";
-    }
-    $ENV{PATH} = "$full:$ENV{PATH}";           # add dir to path
-}
+__PACKAGE__->run(@ARGV) unless caller();
 
-update_targets($Opt{level}, @ARGV);
+sub run {
+    my ($class, @target) = @_;
+    @target = getopts(@target);
+
+    %SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
+
+    # die on missing buildscripts
+    if (my @missing = grep { ! -f "$_.fix" } @target) {
+        warn join "", map { "No rule to make '$_'.\n" } @missing;
+        exit 254;
+    }
+
+    if (is_child()) {                          # CHILD PROCESSES
+        $Keep->set($Opt{parent},               #   targets are deps to parent
+            add_deps => \@target);
+    } else {                                   # MOTHER PROCESS
+        $Run->delete('');                      #   delete previous runstate
+        $ENV{FIX_CMD} = realpath(__FILE__);
+        # Add the currently running 'fix' command first in $PATH (which is
+        # inherited by all child processes). -- This makes sure that all
+        # buildscripts that invoke 'fix' find it, even if 'fix' wasn't in the
+        # invoking user's $PATH to begin with.
+        #
+        # We achieve this by creating a '.fix/bin' directory, add a symlink to the
+        # 'fix' command there, and tuck that directory name onto the beginning of
+        # the $PATH environment variable that gets inherited by our children.
+        my $bindir = "$Opt{fix_dir}/bin";
+        my $link   = "$Opt{fix_dir}/bin/$NAME";# name of link to create
+        if (not -l $link) {                    # if missing '.fix/bin/fix'
+            if (not -d $bindir) {              #   make sure '.fix/bin' exists
+                mkpath($bindir)
+                    or die "$NAME: Cannot create dir '$bindir'\n";
+            }
+            symlink(realpath(__FILE__), $link)
+                or die "$NAME: Cannot create symlink '$link': $!\n";
+        }
+        my $full = realpath($bindir);
+        # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).
+        # Therefore the cwd cannot contain a colon (we could fix this this by
+        # having this stuff in /tmp, I guess).
+        if ($full =~ /:/) {                    # guard for stupid system bug
+            die "$NAME: Colon not allowed in current dir path ('" .
+                cwd() . "')\n";
+        }
+        $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
+    }
+    update_targets($Opt{level}, @target);
+}
 
 __END__
 

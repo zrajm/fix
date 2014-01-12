@@ -154,10 +154,11 @@ sub DEBUG   { 0 }                              # plain
 
 sub is_child { $Opt{parent} ne '' }
 
+# Set value for '--stats'. If value is already set, leave it as-is.
 sub did {
     return unless $Opt{stats};
     my ($name, $value) = @_;
-    $Stats->set('stats', "TARGET:$name", $value);
+    $Stats->set('stats', "TARGET:$name", sub { shift() // $value });
 }
 
 sub read_file {

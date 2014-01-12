@@ -159,6 +159,9 @@ $fix =~ s#-test.*?##;
 
 my ($name) = $fix =~ m#([^/]+)$#;
 
+# check if there is an 'exit' statement in this file
+my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;
+
 my $testdir = make_tempdir($name);
 chdir($testdir) or die "Failed to cd to '$testdir': $!,";
 
@@ -528,7 +531,7 @@ note "First run of buildscript with dependencies";
                                          "Keepstate content: $_") for key %target;
     is  (status($_),        NEW_CONTENT, "Build status: $_")      for key %target;
 }
-exit;
+
 note "Rerun without change";
 {
     my %pre  = fingerprints(key %source, %target);
@@ -580,7 +583,7 @@ note "Rerun after change of subtarget '2'";
     is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 1 ab/;
     is  (status($_),    NEW_CONTENT, "Build status: $_")  for qw/2 12 ab12/;
 }
-
+exit;
 note "Rerun after a dependency '12' was deleted";
 {
     delete_file('12');
@@ -663,6 +666,11 @@ note "Rerun after dependency target '1' externally modified";
 
 END {
     done_testing();
+    note
+        "================================================\n" .
+        " NOTA BENE! EXIT STATEMENT FOUND IN TESTSCRIPT!\n" .
+        "================================================\n"
+            if $exit_statement_in_test_script;
     note
         "Command: $name\n",
         "Tempdir: $testdir\n",

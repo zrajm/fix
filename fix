@@ -241,6 +241,88 @@ sub redir_stdout {
     return wantarray() ? @result : $result[0];
 }
 
+# Return substrings, or in scalar context, substring count.
+sub substrings {
+    my ($str, $substr) = @_;
+    my @match = $str =~ m/$substr/g;
+    return @match;
+}
+
+# FIXME: What *should* split_path('.') return?
+sub split_path {
+    my ($_) = @_;
+    my @x = (
+        m#^ (.*?) /+ ([^/]+) /* $#x
+            ? (($1 eq '' ? '/' : $1), $2)
+            : ('.', $_)
+    );
+    return wantarray() ? @x : $x[0];
+}
+
+# Clean up a path without looking at the file system.
+#
+# I've read somewhere (Where? Zsh docs? Can't find it now.) that there are
+# cases (involving symlinks) where a cleaned up path and the original path will
+# point to different places. But until I know better, I will use this anyway.
+sub cleanpath {
+    my ($path) = @_;
+    my @newpart;
+    foreach my $part (split m#/+#, $path) {
+        next if $part eq '.';                  # skip '.' components
+        if ($part eq '..') {                   # remove previous component
+            if (@newpart > 0                   #   unless at beginning
+                    and $newpart[-1] ne '..') {#     or preceded by '..'
+                pop @newpart;
+                next;
+            }
+        }
+        push(@newpart, $part);
+    }
+    my $newpath = join '/', @newpart;
+    return ($newpath eq '')                    # if path is '', then look at
+        ? (($path =~ m#^/#) ? '/' : '.')       #   original path to see if it
+        : $newpath;                            #   started with '/'
+}
+
+# Given the basename of a target return a list of possible buildscript
+# basenames. The following list will result from 'target.tar.gz' as input:
+#
+#     default.tar.gz.fix
+#     default.tar.fix
+#     default.fix
+#
+sub possible_buildfiles {
+    my ($file) = @_;
+    my @p = split m#\.+#, $file;
+    $p[0] = 'default';
+    map { join('.', @p[ 0 .. $_ ]) . ".fix" } reverse 0 .. $#p;
+}
+
+# Returns (relative) path of fixfile for the specified target, or empty string
+# if no fixfile could be found.
+#
+# If 'TARGET.fix' couldn't be found, this will look for each possible default
+# fixfile, first in the current directory, then in directory above that, etc.
+# until we reach root. (The last file looked at is '/default.fix' which is
+# probably a bit naive.)
+sub find_fixfile {
+    my ($target) = @_;
+    return "$target.fix" if -e "$target.fix";
+    my ($dir, $file) = split_path($target);
+    my @fixfile = possible_buildfiles($file);
+    use Cwd 'cwd';
+    my $max = substrings(cwd(), qr#[^/]+#);    # components in pwd (max depth)
+    my $dotdot = qr#\Q../\E#;                  # matcher for '../' in path
+    while (substrings($dir, $dotdot) < $max) { # while not at max depth
+        foreach (@fixfile) {                   #   try each fixfile
+            my $fixfile = "$dir/$_";
+            return $fixfile if -e $fixfile;
+        }
+        $dir = cleanpath "$dir/..";
+    }
+    return '';
+}
+
 # build_target($level, $target);
 #
 # Builds TARGET by executing its buildfile. Return TRUE if the content of

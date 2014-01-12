@@ -14,6 +14,118 @@ BEGIN {                                        # load 'fix' as a module
     Module->import();
 }
 
-say $Local::Modulino::VERSION;
+###############################################################################
+##                                                                           ##
+##  Functions                                                                ##
+##                                                                           ##
+###############################################################################
+
+# Return keys in hash, sorted by first by length, then alphabetically.
+sub key {
+    my %x = @_;
+    sort { length($a) <=> length($b) or $a cmp $b } keys %x;
+}
+
+sub read_file {
+    my ($file) = @_;
+    open(my $in, '<', $file)
+        or die "Failed to open file '$file' for reading: $!,";
+    local $/ = undef;
+    return <$in>;
+}
+
+###############################################################################
+##                                                                           ##
+##  Tests                                                                    ##
+##                                                                           ##
+###############################################################################
+
+note 'split_path()';
+# FIXME: What *should* split_path('.') return?
+my @test = (
+    [ qw( a/b/c     a/b     c ) ],
+    [ qw( a/b/c/    a/b     c ) ],
+    [ qw( a/b/c///  a/b     c ) ],
+    [ qw( a/b//c/   a/b     c ) ],
+    [ qw( a//b/c    a//b    c ) ],
+    [ qw( /a/b/c    /a/b    c ) ],
+    [ qw( a         .       a ) ],
+    [ qw( /a        /       a ) ],
+);
+# We run the function twice, because it looks prettier to report basenames and
+# dirnames separately in the output.
+foreach my $test (@test) {
+    my ($path, $expect_dir, undef) = @$test;
+    my ($dir_result, undef) = Local::Modulino::split_path($path);
+    is ($dir_result, $expect_dir, "Dirname: $path");
+}
+foreach my $test (@test) {
+    my ($path, undef, $expect_file) = @$test;
+    my (undef, $file_result) = Local::Modulino::split_path($path);
+    is ($file_result, $expect_file, "Basename: $path");
+}
+
+note 'default_buildfiles()';
+{
+    my %tests = (
+        'hej.a.b.c' => [
+            'default.a.b.c.fix',
+            'default.a.b.fix',
+            'default.a.fix',
+            'default.fix' ],
+        'a' => [
+            'default.fix' ],
+    );
+    for (key %tests) {
+        my $expect = $tests{$_};
+        is_deeply([ Local::Modulino::possible_buildfiles($_) ], $expect,
+                  "Files: $_");
+    }
+}
+
+note 'cleanpath()';
+{
+    my @test = (
+        './a'        => 'a',
+        '../a'       => '../a',
+        '../../a'    => '../../a',
+        '.'          => '.',
+        './.'        => '.',
+        './..'       => '..',
+        './'         => '.',                   # odd corner case
+        '/.'         => '/',                   # odd corner case
+        '/'          => '/',
+        '/a'         => '/a',
+        '/a/..'      => '/',
+        '/a/../..'   => '/',
+        '/a/b/../..' => '/',
+        'a'          => 'a',
+        'a/'         => 'a',
+        'a/../..'    => '..',
+        'a/../../..' => '../..',
+        'a/../b/c'   => 'b/c',
+        'a/../../c'  => '../c',
+        'a/./b'      => 'a/b',
+        'a//b'       => 'a/b',
+        'a/b'        => 'a/b',
+        'a/b/../..'  => '.',
+        'a/b/c/..'   => 'a/b',
+    );
+    while (@test) {
+        my ($_, $expect) = splice(@test, 0, 2);
+        is(Local::Modulino::cleanpath($_), $expect, "Path: $_");
+    }
+}
+
+END {
+    done_testing();
+    # check if there is an 'exit' statement in this file
+    my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;
+    note
+        "================================================\n" .
+        " NOTA BENE! EXIT STATEMENT FOUND IN TESTSCRIPT!\n" .
+        "================================================\n"
+            if $exit_statement_in_test_script;
+}
 
 #[eof]

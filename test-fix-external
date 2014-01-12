@@ -663,7 +663,6 @@ END {
         "================================================\n"
             if $exit_statement_in_test_script;
     note
-        "Command: $name\n",
         "Tempdir: $testdir\n",
 }
 

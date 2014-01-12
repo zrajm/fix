@@ -1,25 +1,44 @@
 -*- org -*-
 
 * Testing
+** TODO Add tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
 * Main program
+** TODO Find fix work tree based on '.fixrc'
+   Fix looks for '.fixrc' to know where the base of its work tree is. If no
+   work tree is found, use is advised to 'touch .fixrc' to fix this.
+** TODO Improve running of buildscripts
+   Change to the dir containing the buildscript before running it.
+** TODO Search for alternate buildscripts
+   If TARGET.fix isn't found, look for the other possible buildscript (in
+   current directory and beyond).
 ** TODO Pass args to buildscripts
+   Should pass (same as Gup, but with both filenames as relative paths):
+
+     $1 - (relative) path to a temporary output file
+     $2 - (relative) path to the target
+
+   If buildscript is in same directory as target, both $1 and $2 will be a
+   simple filenames (with no path components).
+
+   If buildscript is in a parent dir of the target, then that dirname will be
+   included in $1 and $2.
+
+   E.g. if you're building 'dir/target', and the buildscript invoked is
+   'default.fix' (one directory down from the target). Then $1 =
+   'dir/target-fixing', and $2 = 'dir/target'. (This is true even if you run
+   fix from inside 'dir', using 'fix target'; or even if you're inside
+   'dir/subdir' and run it using 'fix ../target'.)
+
    NOTA BENE: When implemented, check all occurrences of $1, $2 and $3 in POD
    and make sure they're updated to reflect what is actually passed to the
    buildscripts.
-
-   Gup passes these:
-   $1 - (absolute) path to a temporary file created for this target
-   $2 - (relative) path to the target, from $CWD
-
-   Redo passes these:
-   $1 - name of the target file
-   $2 - basename of the target, minus the extension, if any
-   $3 - name of a temporary file that will be renamed to the target filename
-        atomically if your .do file returns a zero (success) exit code
-   -----
+** TODO Relative paths should work
+   I.e. one should be able to run 'fix test', as well as 'fix ../test' or 'fix
+   HELLO/test' (where all those are referring to the same target 'test') with
+   the exact same result.
 ** TODO Checksum-based dependencies
    You have the following files: 'a' which depends on 'b' which depends on 'c'.
 
@@ -49,6 +68,10 @@
        ../../default.A.fix
        ../../default.fix
 ** TODO Use PID lockfile avoid double invocations
+** TODO '.fixrc' file in base directory
+   This should be a shell script which exports stuff. It will run always run
+   (with its $PWD in the base directory) before any buildscript is invoked, and
+   can be used to set up $PATH and similar stuffs.
 ** TODO Logging
 ** TODO Drop Data::Dumper dependency
    Statefiles should be written in simple attribute/value format, so that a
@@ -130,7 +153,49 @@
 
    Means we could ditch the runstate as well (since its currently only used for
    this).
+** TODO Set up and run apenwarr redo's test scripts
+** TODO Improve search for 'default.fix' files
+   Currently searches (a bit naively) all the way to the root of the
+   filesystem. The user should also be able to specify a specific directory for
+   buildfiles (giving one the option of completely separating them from the
+   source or build trees).
+
+   I want git-like behavior -- fix should find the base of its work tree, and
+   stay inside of that. (Optionally making use of variables FIX_WORK_TREE and
+   FIX_DIR, see 'man git' on how that should work.)
+
+   Invoking fix when $PWD is not inside a fix worktree should result in an
+   error (this is what git does, regardless of whether files on the command
+   line are inside a work tree or not). Git gives the following error when
+   you're outside the work tree:
+
+       fatal: Not a git repository (or any of the parent directories): .git
 * Someday/maybe
+** TODO Deletion of dead build targets?
+   Fix could delete dead targets. (Looking at their checksum to see whether or
+   not they have changed. If no change has been made, then fix generated and
+   "own" the target, and should be free to delete it.) Deleting of modified
+   targets would be acceptable using '--force'.
+
+   From "[[http://neilmitchell.blogspot.se/2012/02/four-interesting-build-tools.html][Four Interesting Build Tools]]" (by Neil Mitchell, February 2012):
+
+       Tup uses this: If a rule to build 'foo' is deleted from the rule list,
+       then Tup automatically deletes the file 'foo'. The problem of dead build
+       results is serious, resulting in builds succeeding that should have
+       failed, and that will fail as soon as a clean build is performed (to
+       reduce this risk, we suggest an overnight build which starts from
+       scratch). However, it is often useful to have build modes which generate
+       skeleton files which are then modified by the user -- deleting these
+       files would be most unwelcome. It would be easy to add support for
+       deleting dead build results to Shake, but we choose not to.
+** TODO Highlight test results
+   Piping the test output through the following "one-liner" makes output
+   prettier. This should be built into the test script.
+   |perl -e 'BEGIN{%x=(qw/not 31 ok 32/,"",0)};$r=m/^(not|ok|)/;print"\e[$x{$&}m$_\e[m"'
+** TODO Include tests in main program
+   Maybe use __DATA__ to store test script separately, and then pipe it through
+   Perl to use it? That way the parser won't have to process the test, unless
+   they're actually used.
 ** TODO Stylesheet-type dependencies
    A HTML file requires that a CSS file *exists*, but the HTML does not need to
    be recompiled when the CSS changes.
@@ -168,8 +233,8 @@
    those generated targets are taken for source files, and are (silently) not
    rebuilt. This is non-obvious, and requires manual intervention to fix. Gup
    solves this problem.
-** [[https://github.com/gfxmonk/gup][Gup - A better make, inspired by djb's redo.]] (by gfxmonk, on GitHub)
-** [[http://gfxmonk.net/][Announcing the gup build tool]] (by gfxmonk, own website, 2013-12-26)
+** [[https://github.com/gfxmonk/gup][Gup - A better make, inspired by djb's redo.]] (by Tim Cuthbertson, on GitHub)
+** [[http://gfxmonk.net/][Announcing the gup build tool]] (by Tim Cuthbertson, own website, 2013-12-26)
 ** [[https://github.com/gittup/tup][Tup on GitHub]] (by Mike Shal, on GitHub, 2009)
 ** [[http://gittup.org/tup/][Tup]] (by Mike Shal, own website)
 ** [[http://chadaustin.me/2010/06/scalable-build-systems-an-analysis-of-tup/][Scalable Build Systems: An Analysis of Tup]] (by Chad Austin, own website)

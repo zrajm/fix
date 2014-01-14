@@ -21,29 +21,21 @@ $Data::Dumper::Terse    = 1;
 ##                                                                           ##
 ###############################################################################
 
-use vars qw($NAME $VERSION $YEAR);
-$VERSION = "0.3";
-$YEAR    = "2012-2014";
-($NAME)  = __FILE__ =~ m#([^/]*)$#;            # last non-slash part of path
-sub TRUE  { 1 }
-sub FALSE { 0 }
-
-my %Opt = (
-    debug   => $ENV{FIX_DEBUG} ? TRUE : FALSE, # -D/--debug $FIX_DEBUG
-    fix_dir => ".$NAME",
-    # force   => $ENV{FIX_FORCE} ? TRUE : FALSE, # -f/--force $FIX_FORCE
-    level   => $ENV{FIX_LEVEL}   += 1,         # child level (mother = 1)
-    parent  => $ENV{FIX_PARENT}  // '',        # parent target
-    pid     => $ENV{FIX_PID}     //= $$,       # PID of mother process
-    shell   => '/bin/dash',
-    stats   => $ENV{FIX_STATS}   // "" ne "",  # --stats $FIX_STATS
-    xtrace  => $ENV{FIX_XTRACE}  // "" ne "",  # -x/--xtrace $FIX_XTRACE
-    verbose => $ENV{FIX_VERBOSE} // "" ne "",  # -v/--verbose $FIX_VERBOSE
-);
-my ($Keep, $Run, $Stats) = (                   # state
-    new Store("$Opt{fix_dir}/keep"),           #   keepstate
-    new Store("$Opt{fix_dir}/run"),            #   runstate
-    new Store($Opt{fix_dir}),                  #   for stats
+our $VERSION = "0.3";
+our $YEAR    = "2012-2014";
+our ($NAME)  = __FILE__ =~ m#([^/]*)$#;        # last non-slash part of path
+our ($Keep, $Run, $Stats);
+our %Opt = (
+    debug     => !!$ENV{FIX_DEBUG},            # -D/--debug $FIX_DEBUG
+    fix_dir   =>   ".$NAME",                   # '.fix' dir
+    # force   => !!$ENV{FIX_FORCE},            # -f/--force $FIX_FORCE
+    level     =>   $ENV{FIX_LEVEL}     += 1,   # child level (mother = 1)
+    parent    =>   $ENV{FIX_PARENT}    // '',  # parent target
+    pid       =>   $ENV{FIX_PID}       //= $$, # PID of mother process
+    shell     =>   '/bin/dash',
+    stats     => !!$ENV{FIX_STATS},            # --stats $FIX_STATS
+    xtrace    => !!$ENV{FIX_XTRACE},           # -x/--xtrace $FIX_XTRACE
+    verbose   => !!$ENV{FIX_VERBOSE},          # -v/--verbose $FIX_VERBOSE
 );
 
 ###############################################################################
@@ -140,6 +132,9 @@ sub man {
 ##  Functions                                                                ##
 ##                                                                           ##
 ###############################################################################
+
+sub TRUE  { 1 }
+sub FALSE { 0 }
 
 sub SOURCE { 'source' }
 sub TARGET { 'target' }
@@ -439,7 +434,7 @@ sub _die  { msg ERROR, @_; exit 255 }
 ###############################################################################
 
 {
-    package Store;
+    package Local::Store;
     use Data::Dumper;
     $Data::Dumper::Indent   = 1;
     $Data::Dumper::Sortkeys = 1;
@@ -495,8 +490,7 @@ sub _die  { msg ERROR, @_; exit 255 }
                 die "Cannot create dir '$dir': File already exists\n"
                     if -e $dir and not -d $dir;
                 unless (-d $dir or mkpath($dir)) {
-                    warn "Cannot create dir '$dir'\n";
-                    return undef;
+                    die "Cannot create dir '$dir'\n";
                 }
             }
             open(my $out, ">:utf8", $tmpfile)
@@ -519,7 +513,7 @@ sub _die  { msg ERROR, @_; exit 255 }
 
     # Rereads the state file every time, since subprocess may have updated it.
     # FIXME: reread file only when it has been changed
-    sub get_state {
+    sub _get_state {
         my ($self, $file) = @_;
         my $full  = "$self->{dir}/$file";
         my $state = $self->{state};
@@ -535,7 +529,7 @@ sub _die  { msg ERROR, @_; exit 255 }
         return $state->{$file};
     }
 
-    # sub load_state {
+    # sub _load_state {
     #     my ($self, $file) = @_;
     #     my $state = $self->{state};
     #     if (not exists $state->{$file}) {
@@ -546,30 +540,31 @@ sub _die  { msg ERROR, @_; exit 255 }
     # }
 
     # Return true if arrayref of empty array, or undef.
-    sub empty {
+    sub _empty {
         my ($_) = @_;
         return 1 if (ref($_) eq 'ARRAY') and (@$_ == 0);
         return 1 if $_ ~~ undef;
         return 0;
     }
 
-    sub save_state {
+    sub _save_state {
         my ($self, $file) = @_;
         my $full = "$self->{dir}/$file";
-        my %filtered = do {                    # remove empty arrayrefs
+        my $filtered = do {                    # remove empty arrayrefs
             my $data = $self->{state}{$file};  #   and undefs
-            map {
-                empty($data->{$_}) ? () : ($_ => $data->{$_});
+            my %x = map {
+                _empty($data->{$_}) ? () : ($_ => $data->{$_});
             } keys %$data;
+            \%x;
         };
-        _write_file($full, Dumper(\%filtered));
+        _write_file($full, Dumper($filtered));
         # $self->{print}{file} = _read_file_fingerprint($full);
     }
 
     sub get {
         my ($self, $file, @field) = @_;
-        die "get(): no field provided," if @field == 0;
-        my $state = $self->get_state($file);
+        die "get(): Missing arguments: No field names given," if @field == 0;
+        my $state = $self->_get_state($file);
         return wantarray()
             ? map { $state->{$_} // '' } @field
             : $state->{ $field[0] } // '';
@@ -580,7 +575,7 @@ sub _die  { msg ERROR, @_; exit 255 }
     sub set {
         my ($self, $file, %arg) = @_;
         return if $file eq '';
-        my $state = $self->get_state($file);
+        my $state = $self->_get_state($file);
         if (exists $arg{add_deps}) {
             push @{ $state->{deps} }, \@{ delete $arg{add_deps} };
         }
@@ -590,7 +585,7 @@ sub _die  { msg ERROR, @_; exit 255 }
                     ? $arg{$field}->($state->{$field}) # run callback
                     : $arg{$field};            #   or use literal value
         }
-        $self->save_state($file);
+        $self->_save_state($file);
     }
 }
 
@@ -701,7 +696,9 @@ sub getopts {
             $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
     ) or exit 254;
-
+    $Run   = new Local::Store("$Opt{fix_dir}/run");
+    $Stats = new Local::Store($Opt{fix_dir});
+    $Keep  = new Local::Store("$Opt{fix_dir}/keep");
     if ($Opt{stats}) {                         # write child counter
         $Stats->delete('stats')                #   mother deletes earlier stats
             unless is_child();
@@ -728,6 +725,7 @@ sub getopts {
 ##                                                                           ##
 ###############################################################################
 
+# run after all globals etc. has been set up properly
 __PACKAGE__->run(@ARGV) unless caller();
 
 sub run {
@@ -741,7 +739,6 @@ sub run {
         warn join "", map { "No rule to make '$_'.\n" } @missing;
         exit 254;
     }
-
     if (is_child()) {                          # CHILD PROCESSES
         $Keep->set($Opt{parent},               #   targets are deps to parent
             add_deps => \@target);

@@ -8,7 +8,6 @@ use utf8;
 use open ':utf8';
 binmode(STDOUT, ':utf8');
 
-use Cwd qw/cwd realpath/;
 use File::Path qw/mkpath rmtree/;              # use 'mkpath' and 'rmtree'
 use Data::Dumper;
 $Data::Dumper::Indent   = 1;
@@ -27,7 +26,7 @@ our ($NAME)  = __FILE__ =~ m#([^/]*)$#;        # last non-slash part of path
 our ($Keep, $Run, $Stats);
 our %Opt = (
     debug     => !!$ENV{FIX_DEBUG},            # -D/--debug $FIX_DEBUG
-    fix_cmd   =>   $ENV{FIX_CMD}       //= realpath(__FILE__),
+    fix_cmd   =>   $ENV{FIX_CMD}       //= Local::Paths::absolute(__FILE__),
     fix_dir   =>   ".$NAME",                   # '.fix' dir
     # force   => !!$ENV{FIX_FORCE},            # -f/--force $FIX_FORCE
     level     =>   $ENV{FIX_LEVEL}     += 1,   # child level (mother = 1)
@@ -292,6 +291,51 @@ sub man {
 
 ###############################################################################
 ##                                                                           ##
+##  Cwd Wrapper Module                                                       ##
+##                                                                           ##
+###############################################################################
+
+# Package used here to contain Cwd functions from leaking out into the 'main::'
+# namespace, where it would be very easy to accidentaly use it. We don't want
+# cwd()! It gives *physical* insteado of *logical* paths! (Bugs ohoy!) :(
+{
+    package Local::Paths;
+    use Cwd;
+
+    # Current working directory. Returns environment variable '$PWD' (= logical
+    # path) if available and falls back to returning Perl's cwd() if that
+    # fails.
+    sub current { $ENV{PWD} // Cwd::cwd() }
+
+    # Clean up a path without looking at the file system.
+    sub clean {
+        my ($path) = @_;
+        my @newpart;
+        foreach my $part (split m#/+#, $path) {
+            next if $part eq '.';              # skip '.' components
+            if ($part eq '..') {               # remove previous component
+                if (@newpart > 0               #   unless at beginning
+                        and $newpart[-1] ne '..') {# or preceded by '..'
+                    pop @newpart;
+                    next;
+                }
+            }
+            push(@newpart, $part);
+        }
+        my $newpath = join '/', @newpart;
+        return ($newpath eq '')                # if path is '', then look at
+            ? (($path =~ m#^/#) ? '/' : '.')   #   original path to see if it
+            : $newpath;                        #   started with '/'
+    }
+
+    sub absolute {
+        my ($_) = @_;
+        clean(m#^/# ? $_ : current() . "/$_");
+    }
+}
+
+###############################################################################
+##                                                                           ##
 ##  Functions                                                                ##
 ##                                                                           ##
 ###############################################################################
@@ -417,31 +461,6 @@ sub split_path {
     return wantarray() ? @x : $x[0];
 }
 
-# Clean up a path without looking at the file system.
-#
-# I've read somewhere (Where? Zsh docs? Can't find it now.) that there are
-# cases (involving symlinks) where a cleaned up path and the original path will
-# point to different places. But until I know better, I will use this anyway.
-sub cleanpath {
-    my ($path) = @_;
-    my @newpart;
-    foreach my $part (split m#/+#, $path) {
-        next if $part eq '.';                  # skip '.' components
-        if ($part eq '..') {                   # remove previous component
-            if (@newpart > 0                   #   unless at beginning
-                    and $newpart[-1] ne '..') {#     or preceded by '..'
-                pop @newpart;
-                next;
-            }
-        }
-        push(@newpart, $part);
-    }
-    my $newpath = join '/', @newpart;
-    return ($newpath eq '')                    # if path is '', then look at
-        ? (($path =~ m#^/#) ? '/' : '.')       #   original path to see if it
-        : $newpath;                            #   started with '/'
-}
-
 # Given the basename of a target return a list of possible buildscript
 # basenames. The following list will result from 'target.tar.gz' as input:
 #
@@ -468,15 +487,14 @@ sub find_fixfile {
     return "$target.fix" if -e "$target.fix";
     my ($dir, $file) = split_path($target);
     my @fixfile = possible_buildfiles($file);
-    use Cwd 'cwd';
-    my $max = substrings(cwd(), qr#[^/]+#);    # components in pwd (max depth)
+    my $max = substrings(Local::Paths::current(), qr#[^/]+#);# pwd path depth
     my $dotdot = qr#\Q../\E#;                  # matcher for '../' in path
     while (substrings($dir, $dotdot) < $max) { # while not at max depth
         foreach (@fixfile) {                   #   try each fixfile
             my $fixfile = "$dir/$_";
             return $fixfile if -e $fixfile;
         }
-        $dir = cleanpath "$dir/..";
+        $dir = Local::Paths::clean("$dir/..");
     }
     return '';
 }
@@ -763,13 +781,13 @@ sub run {
             symlink($Opt{fix_cmd}, $link)
                 or die "$NAME: Cannot create symlink '$link': $!\n";
         }
-        my $full = realpath($bindir);
+        my $full = Local::Paths::absolute($bindir);
         # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).
         # Therefore the cwd cannot contain a colon (we could fix this this by
         # having this stuff in /tmp, I guess).
         if ($full =~ /:/) {                    # guard for stupid system bug
             die "$NAME: Colon not allowed in current dir path ('" .
-                cwd() . "')\n";
+                Local::Paths::Current() . "')\n";
         }
         $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
     }

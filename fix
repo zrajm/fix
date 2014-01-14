@@ -130,6 +130,168 @@ sub man {
 
 ###############################################################################
 ##                                                                           ##
+##  State Storage Module                                                     ##
+##                                                                           ##
+###############################################################################
+
+{
+    package Local::Store;
+    use Data::Dumper;
+    $Data::Dumper::Indent   = 1;
+    $Data::Dumper::Sortkeys = 1;
+    $Data::Dumper::Terse    = 1;
+
+    # Statedir is created when writing file, rather than up front. (We'll need
+    # to create it then anyway, since filenames may contain any number of
+    # slashes.)
+    sub new {
+        my ($class, $dir) = @_;
+        return bless ({ dir => $dir, print => {}, state => {} });
+    }
+
+    # Read file stat fingerprint. If this is unchanged since a previous check,
+    # know the file is unchanged. If fingerprint has changed, then we need to
+    # look at the file content to determine whether that has changed or not.
+    # The following lstat() properties are used:
+    #
+    #      1 ino      inode number
+    #      2 mode     file mode (type and permissions)
+    #      4 uid      numeric user ID of file's owner
+    #      5 gid      numeric group ID of file's owner
+    #      7 size     total size of file, in bytes
+    #      9 mtime    last modify time in seconds since the epoch
+    #     10 ctime    inode change time in seconds since the epoch (*)
+    #
+    # [http://www.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt]
+    #
+    # Note: We can't use Time::HiRes here, since it only supports lstat() since
+    # February 2013. [https://rt.cpan.org/Public/Bug/Display.html?id=83356]
+    sub _read_file_fingerprint {
+        my ($file) = @_;
+        my @stat = lstat($file) or die "Cannot stat file '$file': $!\n";
+        return join("-", @stat[1, 2, 4, 5, 7, 9, 10]);
+    }
+
+    sub _read_file {
+        my ($file) = @_;
+        open(my $in, "<:utf8", $file)
+            or die "Cannot open file '$file' for reading: $!\n";
+        local $/ = undef;
+        return <$in>;
+    }
+
+    {
+        use File::Path qw/mkpath rmtree/;      # use 'mkpath' and 'rmtree'
+
+        sub _write_file {
+            my ($file, @data) = @_;
+            my $tmpfile = "$file--writing";
+            # create full path of file, before writing file
+            if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
+                die "Cannot create dir '$dir': File already exists\n"
+                    if -e $dir and not -d $dir;
+                unless (-d $dir or mkpath($dir)) {
+                    die "Cannot create dir '$dir'\n";
+                }
+            }
+            open(my $out, ">:utf8", $tmpfile)
+                or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
+            print $out @data
+                or die "Cannot write to tempfile '$tmpfile': $!\n";
+            close($out)
+                or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
+            rename($tmpfile, $file)
+                or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
+        }
+
+        # Deletes named files. Give argument '' to delete entire storage.
+        sub delete {
+            my ($self, @file) = @_;
+            rmtree("$self->{dir}/$_") foreach @file;
+            return $self;
+        }
+    }
+
+    # Rereads the state file every time, since subprocess may have updated it.
+    # FIXME: reread file only when it has been changed
+    sub _get_state {
+        my ($self, $file) = @_;
+        my $full  = "$self->{dir}/$file";
+        my $state = $self->{state};
+        my $print = $self->{print};
+        if (-f $full) {                        # state file exists
+            my $print2 = _read_file_fingerprint($full);
+            if ($print2 ne ($print->{$file} // '')) {
+                $print->{$file} = $print2;     #   read if modified
+                $state->{$file} = eval _read_file($full);
+            }
+        }
+        $state->{$file}{deps} //= [];
+        return $state->{$file};
+    }
+
+    # sub _load_state {
+    #     my ($self, $file) = @_;
+    #     my $state = $self->{state};
+    #     if (not exists $state->{$file}) {
+    #         my $full = "$self->{dir}/$file";
+    #         $state->{$file} = -f $full ? eval _read_file($full) : {};
+    #     }
+    #     return $state->{$file};
+    # }
+
+    # Return true if arrayref of empty array, or undef.
+    sub _empty {
+        my ($_) = @_;
+        return 1 if (ref($_) eq 'ARRAY') and (@$_ == 0);
+        return 1 if $_ ~~ undef;
+        return 0;
+    }
+
+    sub _save_state {
+        my ($self, $file) = @_;
+        my $full = "$self->{dir}/$file";
+        my $filtered = do {                    # remove empty arrayrefs
+            my $data = $self->{state}{$file};  #   and undefs
+            my %x = map {
+                _empty($data->{$_}) ? () : ($_ => $data->{$_});
+            } keys %$data;
+            \%x;
+        };
+        _write_file($full, Dumper($filtered));
+        # $self->{print}{file} = _read_file_fingerprint($full);
+    }
+
+    sub get {
+        my ($self, $file, @field) = @_;
+        die "get(): Missing arguments: No field names given," if @field == 0;
+        my $state = $self->_get_state($file);
+        return wantarray()
+            ? map { $state->{$_} // '' } @field
+            : $state->{ $field[0] } // '';
+    }
+
+    # If a value is a coderef, then that will be invoked with the original
+    # value, and whatever it returns will be stored in its stead.
+    sub set {
+        my ($self, $file, %arg) = @_;
+        return if $file eq '';
+        my $state = $self->_get_state($file);
+        if (exists $arg{add_deps}) {
+            push @{ $state->{deps} }, \@{ delete $arg{add_deps} };
+        }
+        foreach my $field (keys %arg) {
+            $state->{$field} =
+                ref($arg{$field}) eq 'CODE'    # run callback
+                    ? $arg{$field}->($state->{$field}) # run callback
+                    : $arg{$field};            #   or use literal value
+        }
+        $self->_save_state($file);
+    }
+}
+
+###############################################################################
+##                                                                           ##
 ##  Functions                                                                ##
 ##                                                                           ##
 ###############################################################################
@@ -427,168 +589,6 @@ sub debug {
 }
 sub _warn { msg WARN, @_ }
 sub _die  { msg ERROR, @_; exit 255 }
-
-###############################################################################
-##                                                                           ##
-##  State Storage                                                            ##
-##                                                                           ##
-###############################################################################
-
-{
-    package Local::Store;
-    use Data::Dumper;
-    $Data::Dumper::Indent   = 1;
-    $Data::Dumper::Sortkeys = 1;
-    $Data::Dumper::Terse    = 1;
-
-    # Statedir is created when writing file, rather than up front. (We'll need
-    # to create it then anyway, since filenames may contain any number of
-    # slashes.)
-    sub new {
-        my ($class, $dir) = @_;
-        return bless ({ dir => $dir, print => {}, state => {} });
-    }
-
-    # Read file stat fingerprint. If this is unchanged since a previous check,
-    # know the file is unchanged. If fingerprint has changed, then we need to
-    # look at the file content to determine whether that has changed or not.
-    # The following lstat() properties are used:
-    #
-    #      1 ino      inode number
-    #      2 mode     file mode (type and permissions)
-    #      4 uid      numeric user ID of file's owner
-    #      5 gid      numeric group ID of file's owner
-    #      7 size     total size of file, in bytes
-    #      9 mtime    last modify time in seconds since the epoch
-    #     10 ctime    inode change time in seconds since the epoch (*)
-    #
-    # [http://www.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt]
-    #
-    # Note: We can't use Time::HiRes here, since it only supports lstat() since
-    # February 2013. [https://rt.cpan.org/Public/Bug/Display.html?id=83356]
-    sub _read_file_fingerprint {
-        my ($file) = @_;
-        my @stat = lstat($file) or die "Cannot stat file '$file': $!\n";
-        return join("-", @stat[1, 2, 4, 5, 7, 9, 10]);
-    }
-
-    sub _read_file {
-        my ($file) = @_;
-        open(my $in, "<:utf8", $file)
-            or die "Cannot open file '$file' for reading: $!\n";
-        local $/ = undef;
-        return <$in>;
-    }
-
-    {
-        use File::Path qw/mkpath rmtree/;      # use 'mkpath' and 'rmtree'
-
-        sub _write_file {
-            my ($file, @data) = @_;
-            my $tmpfile = "$file--writing";
-            # create full path of file, before writing file
-            if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
-                die "Cannot create dir '$dir': File already exists\n"
-                    if -e $dir and not -d $dir;
-                unless (-d $dir or mkpath($dir)) {
-                    die "Cannot create dir '$dir'\n";
-                }
-            }
-            open(my $out, ">:utf8", $tmpfile)
-                or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
-            print $out @data
-                or die "Cannot write to tempfile '$tmpfile': $!\n";
-            close($out)
-                or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
-            rename($tmpfile, $file)
-                or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
-        }
-
-        # Deletes named files. Give argument '' to delete entire storage.
-        sub delete {
-            my ($self, @file) = @_;
-            rmtree("$self->{dir}/$_") foreach @file;
-            return $self;
-        }
-    }
-
-    # Rereads the state file every time, since subprocess may have updated it.
-    # FIXME: reread file only when it has been changed
-    sub _get_state {
-        my ($self, $file) = @_;
-        my $full  = "$self->{dir}/$file";
-        my $state = $self->{state};
-        my $print = $self->{print};
-        if (-f $full) {                        # state file exists
-            my $print2 = _read_file_fingerprint($full);
-            if ($print2 ne ($print->{$file} // '')) {
-                $print->{$file} = $print2;     #   read if modified
-                $state->{$file} = eval _read_file($full);
-            }
-        }
-        $state->{$file}{deps} //= [];
-        return $state->{$file};
-    }
-
-    # sub _load_state {
-    #     my ($self, $file) = @_;
-    #     my $state = $self->{state};
-    #     if (not exists $state->{$file}) {
-    #         my $full = "$self->{dir}/$file";
-    #         $state->{$file} = -f $full ? eval _read_file($full) : {};
-    #     }
-    #     return $state->{$file};
-    # }
-
-    # Return true if arrayref of empty array, or undef.
-    sub _empty {
-        my ($_) = @_;
-        return 1 if (ref($_) eq 'ARRAY') and (@$_ == 0);
-        return 1 if $_ ~~ undef;
-        return 0;
-    }
-
-    sub _save_state {
-        my ($self, $file) = @_;
-        my $full = "$self->{dir}/$file";
-        my $filtered = do {                    # remove empty arrayrefs
-            my $data = $self->{state}{$file};  #   and undefs
-            my %x = map {
-                _empty($data->{$_}) ? () : ($_ => $data->{$_});
-            } keys %$data;
-            \%x;
-        };
-        _write_file($full, Dumper($filtered));
-        # $self->{print}{file} = _read_file_fingerprint($full);
-    }
-
-    sub get {
-        my ($self, $file, @field) = @_;
-        die "get(): Missing arguments: No field names given," if @field == 0;
-        my $state = $self->_get_state($file);
-        return wantarray()
-            ? map { $state->{$_} // '' } @field
-            : $state->{ $field[0] } // '';
-    }
-
-    # If a value is a coderef, then that will be invoked with the original
-    # value, and whatever it returns will be stored in its stead.
-    sub set {
-        my ($self, $file, %arg) = @_;
-        return if $file eq '';
-        my $state = $self->_get_state($file);
-        if (exists $arg{add_deps}) {
-            push @{ $state->{deps} }, \@{ delete $arg{add_deps} };
-        }
-        foreach my $field (keys %arg) {
-            $state->{$field} =
-                ref($arg{$field}) eq 'CODE'    # run callback
-                    ? $arg{$field}->($state->{$field}) # run callback
-                    : $arg{$field};            #   or use literal value
-        }
-        $self->_save_state($file);
-    }
-}
 
 # NB: $file must exist for has_changed() to give meaningful result
 sub has_changed {

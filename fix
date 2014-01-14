@@ -27,6 +27,7 @@ our ($NAME)  = __FILE__ =~ m#([^/]*)$#;        # last non-slash part of path
 our ($Keep, $Run, $Stats);
 our %Opt = (
     debug     => !!$ENV{FIX_DEBUG},            # -D/--debug $FIX_DEBUG
+    fix_cmd   =>   $ENV{FIX_CMD}       //= realpath(__FILE__),
     fix_dir   =>   ".$NAME",                   # '.fix' dir
     # force   => !!$ENV{FIX_FORCE},            # -f/--force $FIX_FORCE
     level     =>   $ENV{FIX_LEVEL}     += 1,   # child level (mother = 1)
@@ -744,7 +745,6 @@ sub run {
             add_deps => \@target);
     } else {                                   # MOTHER PROCESS
         $Run->delete('');                      #   delete previous runstate
-        $ENV{FIX_CMD} = realpath(__FILE__);
         # Add the currently running 'fix' command first in $PATH (which is
         # inherited by all child processes). -- This makes sure that all
         # buildscripts that invoke 'fix' find it, even if 'fix' wasn't in the
@@ -760,7 +760,7 @@ sub run {
                 mkpath($bindir)
                     or die "$NAME: Cannot create dir '$bindir'\n";
             }
-            symlink(realpath(__FILE__), $link)
+            symlink($Opt{fix_cmd}, $link)
                 or die "$NAME: Cannot create symlink '$link': $!\n";
         }
         my $full = realpath($bindir);

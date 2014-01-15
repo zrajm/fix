@@ -694,7 +694,6 @@ sub getopts {
         }ie;
         warn "$NAME: $_";
     };
-
     GetOptionsFromArray(\@arg,
         'debug|D'  => sub {       ### debug output + make build shells verbose
             $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
@@ -715,6 +714,11 @@ sub getopts {
             $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
     ) or exit 254;
+    if (@arg == 0) {
+        warn "No target specified\n" .
+            "Try '$NAME --help' for more information.\n";
+        exit 254;
+    }
     $Run   = new Local::Store("$Opt{fix_dir}/run");
     $Stats = new Local::Store($Opt{fix_dir});
     $Keep  = new Local::Store("$Opt{fix_dir}/keep");
@@ -729,11 +733,6 @@ sub getopts {
                 return $x;
             },
         );
-    }
-    if (@arg == 0) {
-        msg(ERROR, "$NAME: No target specified\n" .
-            "Try '$NAME --help' for more information.\n");
-        exit 254;
     }
     return @arg;
 }

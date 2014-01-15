@@ -9,6 +9,11 @@ use File::Path 'rmtree';
 use Carp 'confess';
 $SIG{__DIE__} = \&Carp::confess;
 
+our $name = 'fix';
+our $keep  = ".$name/keep";                     # keepstate directory
+our $run   = ".$name/run";                      # runstate directory
+our $stats = ".$name/stats";
+
 ###############################################################################
 ##                                                                           ##
 ##  Functions                                                                ##
@@ -119,15 +124,14 @@ sub abort {
 }
 
 {
-    my $file = ".fix/stats";
     sub execcount {
-        my $data = eval read_file($file);
+        my $data = eval read_file($stats);
         return $data->{run_count};
     }
 
     sub status {
         my ($target) = @_;
-        my $x = eval read_file($file);
+        my $x = eval read_file($stats);
         return $x->{"TARGET:$target"};
     }
 }
@@ -146,7 +150,6 @@ sub NEW_CONTENT { 'rebuilt_new_content' }
 ##                                                                           ##
 ###############################################################################
 
-my $name = 'fix';
 my $fix  = realpath(__FILE__ =~ s#[^/]+$#$name#r);
 
 # check if there is an 'exit' statement in this file
@@ -162,8 +165,6 @@ chdir($testdir) or die "Failed to cd to '$testdir': $!,";
 ###############################################################################
 
 my %c;                                         # Mnemonic: 'content'
-my $keep  = ".$name/keep";                     # keepstate directory
-my $run   = ".$name/run";                      # runstate directory
 
 note "No argument given";
 {
@@ -171,8 +172,8 @@ note "No argument given";
     my $r = system("$fix --stats 2>/dev/null");
 
     is  ($r >> 8,      254, "Exit status");
+    ok  (! -e $stats,       "Statsfile non-existing");
     ok  (! -e $keep,        "Keepstate dir non-existing");
-    is  (execcount(),    1, "Run count");
 }
 
 note "Bad command line option";
@@ -180,7 +181,7 @@ note "Bad command line option";
     my $r = system("$fix --stats --BAD-OPTION 2>/dev/null");
 
     is  ($r >> 8,      254, "Exit status");
-    is  (execcount(),    1, "Run count");
+    ok  (! -e $stats,       "Statsfile non-existing");
     ok  (! -e $keep,        "Keepstate dir non-existing");
 }
 

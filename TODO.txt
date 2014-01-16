@@ -2,6 +2,9 @@
 
 * Testing
 ** TODO Add tests for file-oriented internal functions
+** TODO Test '.fix/stats' in same ways as runstate and keepstate
+** TODO Combine internal & external tests into one
+   (It's too easy to forget to run one of them before committing.)
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
@@ -9,6 +12,7 @@
 ** TODO Find fix work tree based on '.fixrc'
    Fix looks for '.fixrc' to know where the base of its work tree is. If no
    work tree is found, use is advised to 'touch .fixrc' to fix this.
+** TODO Refactor Local::Store
 ** TODO Improve running of buildscripts
    Change to the dir containing the buildscript before running it.
 ** TODO Search for alternate buildscripts
@@ -171,6 +175,16 @@
 
        fatal: Not a git repository (or any of the parent directories): .git
 * Someday/maybe
+** TODO Do depscans from work tree root dir?
+   Right now fix doesn't care which dir it is in (except when executing
+   buildscripts). But maybe we should do all dependency scanning while standing
+   in the root dir of the work tree, then cd'ing for each buildscript we
+   execute (cd'ing back to worktree root on recursive invocation). To much
+   overhead?
+
+   The benefit is that we can use paths relative to the work tree dir
+   internally, and do not have to rewrite/convert paths name before writing
+   them to state storage.
 ** TODO Deletion of dead build targets?
    Fix could delete dead targets. (Looking at their checksum to see whether or
    not they have changed. If no change has been made, then fix generated and
@@ -283,3 +297,6 @@
    CLOSED: [2014-01-11 Sat 19:33]
 ** DONE Test measures taken for each file with '--stats')
    CLOSED: [2014-01-11 Sat 19:33]
+** DONE Use absolute (logical) paths internally
+   CLOSED: [2014-01-16 Thu 14:55]
+   All state written should be relative to work_tree.

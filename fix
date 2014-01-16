@@ -142,9 +142,16 @@ sub man {
     $Data::Dumper::Sortkeys = 1;
     $Data::Dumper::Terse    = 1;
 
-    # Statedir is created when writing file, rather than up front. (We'll need
-    # to create it then anyway, since filenames may contain any number of
-    # slashes.)
+    # Usage: new Local::Store(dir => DIR, namefilter => CODEREF);
+    #
+    # DIR is the base of the directory tree used for storage. (It is created
+    # when set() is first called, not when new() is invoked.)
+    #
+    # NAMEFILTER is a coderef, and if specified, it will be used to modify the
+    # filename argument passed to get/set, before it is used. It will be called
+    # with a single filename as argument, and is expected to return a relative
+    # filename, without leading '..' components. (The name of the file
+    # read/written by the get/set command.)
     sub new {
         my ($class, %opt) = @_;
         my $self = bless({
@@ -244,6 +251,8 @@ sub man {
 
     # If a value is a coderef, then that will be invoked with the original
     # value, and whatever it returns will be stored in its stead.
+    #
+    # Will create directories (and subdirectories) as needed).
     sub set {
         my ($self, $file, %arg) = @_;
         return if $file eq '';
@@ -494,8 +503,8 @@ sub build_target {
     my ($level, $target) = @_;
     info(strip_worktree($target));
     if (-f $target and has_changed($Keep, $target)) {
-        $Run->set($target,      ABORT => $target);
-        $Run->set($Opt{parent}, ABORT => $target) if is_child();
+        $Run->set($target,      ABORT => strip_worktree($target));
+        $Run->set($Opt{parent}, ABORT => strip_worktree($target)) if is_child();
         did($target, 'wont_overwrite');
         msg(ERROR, "$target: Target externally modified, aborting\n");
         exit 253;
@@ -504,7 +513,7 @@ sub build_target {
     # clear dependency information (rebuilt each run)
     $Keep->set($target,
         type => TARGET,
-        deps => [[ $buildscript ]],
+        deps => [[ strip_worktree($buildscript) ]],
     );
 
     my ($close, $exit, $errno) = redir_stdout($outfile, sub {
@@ -531,7 +540,7 @@ sub build_target {
             did($target, 'shell_error');
             die "Cannot run buildscript '$buildscript': $errno\n";
         }
-        my $aborted_target = $Run->get("$target", 'ABORT');
+        my $aborted_target = $Run->get($target, 'ABORT');
         if ($aborted_target ne '') {           # a dependency failed to run
             unlink($outfile);                  #   erase outfile and
             $Run->set(                         #     and tell our parent that
@@ -624,7 +633,7 @@ sub update_targets {
             info(strip_worktree($target) . " (previously built)");
             my $deps_changed = FALSE;
             foreach my $deps (@$dep_clusters) {#   check deps
-                update_targets($level + 1, @$deps)
+                update_targets($level + 1, map { prefix_worktree($_) } @$deps)
                     and $deps_changed = TRUE;
             }
             if ($deps_changed or (not -e $target) or has_changed($Keep, $target)) {
@@ -717,9 +726,7 @@ sub getopts {
         $Stats->set('stats',                   #   count fix invocations
             run_count   => sub { (shift() // 0) + 1 },
             run_targets => sub {               #   save args for each call
-                my ($x) = (shift() // []);
-                push(@$x, \@arg);
-                return $x;
+                [ @{ shift() // [] }, \@arg ];
             },
         );
     }
@@ -750,7 +757,7 @@ sub run {
     }
     if (is_child()) {                          # CHILD PROCESSES
         $Keep->set($Opt{parent}, deps => sub { #   targets are deps to parent
-            [ @{ shift() // [] }, \@target ];
+            [ @{ shift() // [] }, [ map { strip_worktree($_) } @target ]];
         });
     } else {                                   # MOTHER PROCESS
         $Run->delete('');                      #   delete previous runstate

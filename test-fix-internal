@@ -83,7 +83,7 @@ note 'default_buildfiles()';
     }
 }
 
-note 'cleanpath()';
+note 'Local::Paths::clean()';
 {
     my @test = (
         './a'        => 'a',
@@ -113,7 +113,7 @@ note 'cleanpath()';
     );
     while (@test) {
         my ($_, $expect) = splice(@test, 0, 2);
-        is(Local::Modulino::cleanpath($_), $expect, "Path: $_");
+        is(Local::Paths::clean($_), $expect, "Path: $_");
     }
 }
 

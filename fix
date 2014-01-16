@@ -135,6 +135,7 @@ sub man {
 
 {
     package Local::Store;
+    use File::Path qw/mkpath rmtree/;          # use 'mkpath' and 'rmtree'
     use Data::Dumper;
     $Data::Dumper::Indent   = 1;
     $Data::Dumper::Sortkeys = 1;
@@ -179,45 +180,32 @@ sub man {
         return <$in>;
     }
 
-    {
-        use File::Path qw/mkpath rmtree/;      # use 'mkpath' and 'rmtree'
-
-        sub _write_file {
-            my ($file, @data) = @_;
-            my $tmpfile = "$file--writing";
-            # create full path of file, before writing file
-            if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
-                die "Cannot create dir '$dir': File already exists\n"
-                    if -e $dir and not -d $dir;
-                unless (-d $dir or mkpath($dir)) {
-                    die "Cannot create dir '$dir'\n";
-                }
+    sub _write_file {
+        my ($file, @data) = @_;
+        my $tmpfile = "$file--writing";
+        # create full path of file, before writing file
+        if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
+            die "Cannot create dir '$dir': File already exists\n"
+                if -e $dir and not -d $dir;
+            unless (-d $dir or mkpath($dir)) {
+                die "Cannot create dir '$dir'\n";
             }
-            open(my $out, ">:utf8", $tmpfile)
-                or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
-            print $out @data
-                or die "Cannot write to tempfile '$tmpfile': $!\n";
-            close($out)
-                or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
-            rename($tmpfile, $file)
-                or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
         }
-
-        # Deletes named files. Give argument '' to delete entire storage.
-        sub delete {
-            my ($self, @file) = @_;
-            rmtree("$self->{dir}/$_") foreach @file;
-            return $self;
-        }
+        open(my $out, ">:utf8", $tmpfile)
+            or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
+        print $out @data
+            or die "Cannot write to tempfile '$tmpfile': $!\n";
+        close($out)
+            or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
+        rename($tmpfile, $file)
+            or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
     }
 
-    # Rereads the state file every time, since subprocess may have updated it.
-    # FIXME: reread file only when it has been changed
-    sub _get_state {
+    # Reread state file if its stat fingerprint has changed last read/write.
+    sub _read_state {
         my ($self, $file) = @_;
-        my $full  = "$self->{dir}/$file";
-        my $state = $self->{state};
-        my $print = $self->{print};
+        my $full = "$self->{dir}/$file";
+        my ($state, $print) = @$self{ qw/ state print / };
         if (-f $full) {                        # state file exists
             my $print2 = _read_file_fingerprint($full);
             if ($print2 ne ($print->{$file} // '')) {
@@ -225,46 +213,21 @@ sub man {
                 $state->{$file} = eval _read_file($full);
             }
         }
-        $state->{$file}{deps} //= [];
-        return $state->{$file};
+        return $state->{$file} //= {};
     }
 
-    # sub _load_state {
-    #     my ($self, $file) = @_;
-    #     my $state = $self->{state};
-    #     if (not exists $state->{$file}) {
-    #         my $full = "$self->{dir}/$file";
-    #         $state->{$file} = -f $full ? eval _read_file($full) : {};
-    #     }
-    #     return $state->{$file};
-    # }
-
-    # Return true if arrayref of empty array, or undef.
-    sub _empty {
-        my ($_) = @_;
-        return 1 if (ref($_) eq 'ARRAY') and (@$_ == 0);
-        return 1 if $_ ~~ undef;
-        return 0;
-    }
-
-    sub _save_state {
+    sub _write_state {
         my ($self, $file) = @_;
         my $full = "$self->{dir}/$file";
-        my $filtered = do {                    # remove empty arrayrefs
-            my $data = $self->{state}{$file};  #   and undefs
-            my %x = map {
-                _empty($data->{$_}) ? () : ($_ => $data->{$_});
-            } keys %$data;
-            \%x;
-        };
-        _write_file($full, Dumper($filtered));
-        # $self->{print}{file} = _read_file_fingerprint($full);
+        my ($state, $print) = @$self{ qw/ state print / };
+        _write_file($full, Dumper($state->{$file}));
+        $print->{$file} = _read_file_fingerprint($full);
     }
 
     sub get {
         my ($self, $file, @field) = @_;
         die "get(): Missing arguments: No field names given," if @field == 0;
-        my $state = $self->_get_state($file);
+        my $state = $self->_read_state($file);
         return wantarray()
             ? map { $state->{$_} // '' } @field
             : $state->{ $field[0] } // '';
@@ -275,17 +238,21 @@ sub man {
     sub set {
         my ($self, $file, %arg) = @_;
         return if $file eq '';
-        my $state = $self->_get_state($file);
-        if (exists $arg{add_deps}) {
-            push @{ $state->{deps} }, \@{ delete $arg{add_deps} };
-        }
+        my $state = $self->_read_state($file);
         foreach my $field (keys %arg) {
             $state->{$field} =
                 ref($arg{$field}) eq 'CODE'    # run callback
                     ? $arg{$field}->($state->{$field}) # run callback
                     : $arg{$field};            #   or use literal value
         }
-        $self->_save_state($file);
+        $self->_write_state($file);
+    }
+
+    # Deletes named files. Give argument '' to delete entire storage.
+    sub delete {
+        my ($self, @file) = @_;
+        rmtree("$self->{dir}/$_") foreach @file;
+        return $self;
     }
 }
 
@@ -758,8 +725,9 @@ sub run {
         exit 254;
     }
     if (is_child()) {                          # CHILD PROCESSES
-        $Keep->set($Opt{parent},               #   targets are deps to parent
-            add_deps => \@target);
+        $Keep->set($Opt{parent}, deps => sub { #   targets are deps to parent
+            [ @{ shift() // [] }, \@target ];
+        });
     } else {                                   # MOTHER PROCESS
         $Run->delete('');                      #   delete previous runstate
         # Add the currently running 'fix' command first in $PATH (which is

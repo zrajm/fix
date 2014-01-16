@@ -28,6 +28,7 @@ our %Opt = (
     debug     => !!$ENV{FIX_DEBUG},            # -D/--debug $FIX_DEBUG
     fix_cmd   =>   $ENV{FIX_CMD}       //= Local::Paths::absolute(__FILE__),
     fix_dir   =>   ".$NAME",                   # '.fix' dir
+    work_tree =>   $ENV{FIX_WORK_TREE} //= Local::Paths::current(),
     # force   => !!$ENV{FIX_FORCE},            # -f/--force $FIX_FORCE
     level     =>   $ENV{FIX_LEVEL}     += 1,   # child level (mother = 1)
     parent    =>   $ENV{FIX_PARENT}    // '',  # parent target
@@ -145,8 +146,16 @@ sub man {
     # to create it then anyway, since filenames may contain any number of
     # slashes.)
     sub new {
-        my ($class, $dir) = @_;
-        return bless ({ dir => $dir, print => {}, state => {} });
+        my ($class, %opt) = @_;
+        my $self = bless({
+            dir        => $opt{dir},
+            namefilter => $opt{namefilter} // sub { shift() },
+            print      => {},
+            state      => {},
+        });
+        die "new Local::Store() 'namefilter' value must be coderef,"
+            if ref($self->{namefilter}) ne 'CODE';
+        return $self;
     }
 
     # Read file stat fingerprint. If this is unchanged since a previous check,
@@ -204,7 +213,7 @@ sub man {
     # Reread state file if its stat fingerprint has changed last read/write.
     sub _read_state {
         my ($self, $file) = @_;
-        my $full = "$self->{dir}/$file";
+        my $full = "$self->{dir}/" . $self->{namefilter}($file);
         my ($state, $print) = @$self{ qw/ state print / };
         if (-f $full) {                        # state file exists
             my $print2 = _read_file_fingerprint($full);
@@ -218,7 +227,7 @@ sub man {
 
     sub _write_state {
         my ($self, $file) = @_;
-        my $full = "$self->{dir}/$file";
+        my $full = "$self->{dir}/" . $self->{namefilter}($file);
         my ($state, $print) = @$self{ qw/ state print / };
         _write_file($full, Dumper($state->{$file}));
         $print->{$file} = _read_file_fingerprint($full);
@@ -323,6 +332,10 @@ sub VERBOSE { 3 }                              # green
 sub DEBUG   { 0 }                              # plain
 
 sub is_child { $Opt{parent} ne '' }
+
+# Strip off worktree path from a filename.
+sub  strip_worktree { shift =~ s#^\Q$Opt{work_tree}/##r }
+sub prefix_worktree { $Opt{work_tree} . '/' . shift() }
 
 # Set value for '--stats'. If value is already set, leave it as-is.
 sub did {
@@ -479,7 +492,7 @@ sub find_fixfile {
 # dependencies was rebuilt.)
 sub build_target {
     my ($level, $target) = @_;
-    info($target);
+    info(strip_worktree($target));
     if (-f $target and has_changed($Keep, $target)) {
         $Run->set($target,      ABORT => $target);
         $Run->set($Opt{parent}, ABORT => $target) if is_child();
@@ -608,7 +621,7 @@ sub update_targets {
             build_target($level, $target)      #   (all target has at least
                 and $changed = TRUE;           #   its own buildfile as dep)
         } elsif ($type eq TARGET) {            # file previously seen by fix
-            info "$target (previously built)";
+            info(strip_worktree($target) . " (previously built)");
             my $deps_changed = FALSE;
             foreach my $deps (@$dep_clusters) {#   check deps
                 update_targets($level + 1, @$deps)
@@ -686,9 +699,18 @@ sub getopts {
             "Try '$NAME --help' for more information.\n";
         exit 254;
     }
-    $Run   = new Local::Store("$Opt{fix_dir}/run");
-    $Stats = new Local::Store($Opt{fix_dir});
-    $Keep  = new Local::Store("$Opt{fix_dir}/keep");
+    $Run   = new Local::Store(
+        dir        => "$Opt{fix_dir}/run",
+        namefilter => \&strip_worktree,
+    );
+    $Stats = new Local::Store(
+        dir        => "$Opt{fix_dir}",
+        namefilter => \&strip_worktree,
+    );
+    $Keep  = new Local::Store(
+        dir        => "$Opt{fix_dir}/keep",
+        namefilter => \&strip_worktree,
+    );
     if ($Opt{stats}) {                         # write child counter
         $Stats->delete('stats')                #   mother deletes earlier stats
             unless is_child();
@@ -701,7 +723,7 @@ sub getopts {
             },
         );
     }
-    return @arg;
+    return map { Local::Paths::absolute($_) } @arg;
 }
 
 ###############################################################################
@@ -721,7 +743,9 @@ sub run {
 
     # die on missing buildscripts
     if (my @missing = grep { ! -f "$_.fix" } @target) {
-        warn join "", map { "No rule to make '$_'.\n" } @missing;
+        warn join "", map {
+            "No rule to make '" . strip_worktree($_) . "'.\n";
+        } @missing;
         exit 254;
     }
     if (is_child()) {                          # CHILD PROCESSES
@@ -1110,8 +1134,6 @@ built). This is chiefly used to indent the output messages the proper amount.
 
 The name of the parent target. All dependencies (i.e. all but the mother
 process) will have this variable set to the name of its parent target.
-
-=cut
 
 =item B<$FIX_PID>
 

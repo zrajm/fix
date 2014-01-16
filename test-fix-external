@@ -105,7 +105,11 @@ sub keepstate {
     my ($type, $content, @deps) = @_;
     my %x;
     $x{type}     = $type;
-    $x{deps}     = \@deps         if @deps;
+    # FIXME: Temporary until output is relative to 'work_tree', then revert
+    $x{deps}     = [
+        map { [ map { "$ENV{PWD}/$_" } @$_ ] } @deps
+    ] if @deps;
+    #$x{deps}     = [ @deps ] if @deps;
     $x{checksum} = sha1($content) if defined $content;
     use Data::Dumper;
     local $Data::Dumper::Indent   = 1;
@@ -122,11 +126,12 @@ sub BUILD_FAIL  { 'buildscript_error' }
 sub KEPT_PREV   { 'rebuilt_but_kept_previous' }
 sub REPL_ERASED { 'rebuilt_replaced_deleted' }
 sub NEW_CONTENT { 'rebuilt_new_content' }
-sub ABORT       { 1 }
 sub runstate {
-    my ($build_status, $abort_status) = @_;
+    my ($build_status, $abort_status, $abort_target) = @_;
     my %x;
-    $x{ABORT}        = '1'           if defined($abort_status);
+    # FIXME: Temporary until output is relative to 'work_tree', then revert
+    $x{ABORT}        = "$ENV{PWD}/$abort_target" if defined($abort_status);
+    #$x{ABORT}        = $abort_target if defined($abort_status);
     $x{build_status} = $build_status if defined($build_status);
     use Data::Dumper;
     local $Data::Dumper::Indent   = 1;
@@ -142,7 +147,7 @@ sub execcount {
 
 ###############################################################################
 ##                                                                           ##
-##  Init                                                                     ##
+##  Initialization                                                           ##
 ##                                                                           ##
 ###############################################################################
 
@@ -153,6 +158,7 @@ my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;
 
 my $testdir = make_tempdir($name);
 chdir($testdir) or die "Failed to cd to '$testdir': $!,";
+$ENV{PWD} = $testdir;
 
 ###############################################################################
 ##                                                                           ##
@@ -374,7 +380,7 @@ note "Rerun after target was externally modified";
     is  ($a{'1'},           $b{'1'},     "Target unchanged");
     is  (read_file('1'),    nl('XXX'),   "Target content");
     ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(WONT_OVERWR, ABORT),
+    is  (read_file("$run/1"), runstate(WONT_OVERWR, ABORT => '1'),
                                          "Runstate content: 1");
     ok  (  -e $keep,                     "Keepstate dir existing");
     is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
@@ -677,7 +683,7 @@ note "Rerun after dependency target '1' externally modified";
 } {
     # $target{'1'} == 'XXX' above, but in state we're expecting to see old values
     ok  (  -e $run,                  "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate(WONT_OVERWR, ABORT),
+    is  (read_file("$run/$_"), runstate(WONT_OVERWR, ABORT => $_),
                                      "Runstate content: $_") for qw/1/;
     # When build is aborted, stats become unreliable for the other files.
     # is  (read_file("$run/$_"), runstate(SAME_DEPS),

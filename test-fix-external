@@ -98,9 +98,10 @@ sub key {
     sort { length($a) <=> length($b) or $a cmp $b } keys %x;
 }
 
+# for use with keepstate()
 sub SOURCE { 'source' }
 sub TARGET { 'target' }
-sub db {
+sub keepstate {
     my ($type, $content, @deps) = @_;
     my %x;
     $x{type}     = $type;
@@ -113,28 +114,6 @@ sub db {
     return Dumper \%x;
 }
 
-sub abort {
-    my ($file) = @_;
-    my %x = (ABORT => $file);
-    use Data::Dumper;
-    local $Data::Dumper::Indent   = 1;
-    local $Data::Dumper::Sortkeys = 1;
-    local $Data::Dumper::Terse    = 1;
-    return Dumper \%x;
-}
-
-{
-    sub execcount {
-        my $data = eval read_file($stats);
-        return $data->{run_count};
-    }
-
-    sub status {
-        my ($target) = @_;
-        my $x = eval read_file($stats);
-        return $x->{"TARGET:$target"};
-    }
-}
 # for use with status()
 sub SAME_DEPS   { 'wont_rebuild' }
 sub WONT_OVERWR { 'wont_overwrite' }
@@ -143,6 +122,23 @@ sub BUILD_FAIL  { 'buildscript_error' }
 sub KEPT_PREV   { 'rebuilt_but_kept_previous' }
 sub REPL_ERASED { 'rebuilt_replaced_deleted' }
 sub NEW_CONTENT { 'rebuilt_new_content' }
+sub ABORT       { 1 }
+sub runstate {
+    my ($build_status, $abort_status) = @_;
+    my %x;
+    $x{ABORT}        = '1'           if defined($abort_status);
+    $x{build_status} = $build_status if defined($build_status);
+    use Data::Dumper;
+    local $Data::Dumper::Indent   = 1;
+    local $Data::Dumper::Sortkeys = 1;
+    local $Data::Dumper::Terse    = 1;
+    return Dumper \%x;
+}
+
+sub execcount {
+    my $data = eval read_file($stats);
+    return $data->{run_count};
+}
 
 ###############################################################################
 ##                                                                           ##
@@ -173,6 +169,7 @@ note "No argument given";
 
     is  ($r >> 8,      254, "Exit status");
     ok  (! -e $stats,       "Statsfile non-existing");
+    ok  (! -e $run,         "Runstate dir non-existing");
     ok  (! -e $keep,        "Keepstate dir non-existing");
 }
 
@@ -182,6 +179,7 @@ note "Bad command line option";
 
     is  ($r >> 8,      254, "Exit status");
     ok  (! -e $stats,       "Statsfile non-existing");
+    ok  (! -e $run,         "Runstate dir non-existing");
     ok  (! -e $keep,        "Keepstate dir non-existing");
 }
 
@@ -194,6 +192,7 @@ note "Non-existing buildscript";
     ok  (! -f 'NON-EXISTING-TARGET.fix',     "Buildfile non-existing");
     ok  (! -f 'NON-EXISTING-TARGET--fixing', "Tempfile non-existing");
     ok  (! -f 'NON-EXISTING-TARGET',         "Target non-existing");
+    ok  (! -e $run,                          "Runstate dir non-existing");
     ok  (! -e $keep,                         "Keepstate dir non-existing");
 }
 
@@ -215,12 +214,14 @@ note "Buildscript with exit status = 1";
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
     is  (read_file('1--fixing'), nl('FIRST'),     "Tempfile content");
     ok  (! -f '1',                                "Target non-existing");
-    ok  (! -e $run,                               "Runstate dir non-existing");
-    is  (read_file("$keep/1"),     db(TARGET, undef, [ '1.fix' ]),
+    ok  (  -e $run,                               "Runstate dir existing");
+    is  (read_file("$run/1"), runstate(BUILD_FAIL),
+                                                  "Runstate content: 1");
+    ok  (  -e $keep,                              "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, undef, [ '1.fix' ]),
                                                   "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                                   "Keepstate content: 1.fix");
-    is  (status('1'),            BUILD_FAIL,      "Build status: 1");
 }
 
 $c{'1.fix'} = nl('echo FIRST', 'exit 2', 'echo SECOND');
@@ -241,12 +242,14 @@ note "Buildscript with exit status = 2";
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
     is  (read_file('1--fixing'), nl('FIRST'),     "Tempfile content");
     ok  (! -f '1',                                "Target non-existing");
-    ok  (! -e $run,                               "Runstate dir non-existing");
-    is  (read_file("$keep/1"),     db(TARGET, undef, [ '1.fix' ]),
+    ok  (  -e $run,                               "Runstate dir existing");
+    is  (read_file("$run/1"), runstate(BUILD_FAIL),
+                                                  "Runstate content: 1");
+    ok  (  -e $keep,                              "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, undef, [ '1.fix' ]),
                                                   "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                                   "Keepstate content: 1.fix");
-    is  (status('1'),            BUILD_FAIL,      "Build status: 1");
 }
 
 $c{'1.fix'} = nl('echo FIRST', 'false', 'echo SECOND');
@@ -267,12 +270,14 @@ note "Buildscript with command returning false";
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
     is  (read_file('1--fixing'), nl('FIRST'),     "Tempfile content");
     ok  (! -f '1',                                "Target non-existing");
-    ok  (! -e $run,                               "Runstate dir non-existing");
-    is  (read_file("$keep/1"),     db(TARGET, undef, [ '1.fix' ]),
+    ok  (  -e $run,                               "Runstate dir existing");
+    is  (read_file("$run/1"), runstate(BUILD_FAIL),
+                                                  "Runstate content: 1");
+    ok  (  -e $keep,                              "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, undef, [ '1.fix' ]),
                                                   "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                                   "Keepstate content: 1.fix");
-    is  (status('1'),            BUILD_FAIL,      "Build status: 1");
 }
 
 $c{'1.fix'} = nl("NONEXISTING-SHELL-COMMAND");
@@ -293,12 +298,14 @@ note "Buildscript with non-existing command";
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
     is  (read_file('1--fixing'), '',              "Tempfile content");
     ok  (! -f '1',                                "Target non-existing");
-    ok  (! -e $run,                               "Runstate dir non-existing");
-    is  (read_file("$keep/1"),     db(TARGET, undef, [ '1.fix' ]),
+    ok  (  -e $run,                               "Runstate dir existing");
+    is  (read_file("$run/1"), runstate(BUILD_FAIL),
+                                                  "Runstate content: 1");
+    ok  (  -e $keep,                              "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, undef, [ '1.fix' ]),
                                                   "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                                   "Keepstate content: 1.fix");
-    is  (status('1'),            BUILD_FAIL,      "Build status: 1");
 }
 
 $c{'1.fix'} = nl('echo 11');
@@ -318,12 +325,14 @@ note "First run of (working) buildscript";
     ok  (  -f '1',                       "Target existing");
     isnt($a{'1'},           $b{'1'},     "Target updated");
     is  (read_file('1'),    $c{'1'},     "Target content");
-    ok  (! -e $run,                      "Runstate dir non-existing");
-    is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/1"), runstate(NEW_CONTENT),
+                                                  "Runstate content: 1");
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
                                          "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
-    is  (status('1'),       NEW_CONTENT, "Build status: 1");
 }
 
 note "Rerun without changes";
@@ -339,12 +348,14 @@ note "Rerun without changes";
     ok  (  -f '1',                       "Target existing");
     is  ($a{'1'},           $b{'1'},     "Target unchanged");
     is  (read_file('1'),    nl('11'),    "Target content");
-    ok  (! -e $run,                      "Runstate dir non-existing");
-    is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/1"), runstate(SAME_DEPS),
+                                                  "Runstate content: 1");
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
                                          "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
-    is  (status('1'),       SAME_DEPS,   "Build status: 1");
 }
 
 note "Rerun after target was externally modified";
@@ -363,13 +374,13 @@ note "Rerun after target was externally modified";
     is  ($a{'1'},           $b{'1'},     "Target unchanged");
     is  (read_file('1'),    nl('XXX'),   "Target content");
     ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1"),      abort('1'),
+    is  (read_file("$run/1"), runstate(WONT_OVERWR, ABORT),
                                          "Runstate content: 1");
-    is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
                                          "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
-    is  (status('1'),       WONT_OVERWR, "Build status: 1");
 }
 
 note "Rerun after target was deleted";
@@ -387,12 +398,14 @@ note "Rerun after target was deleted";
     ok  (  -f '1',                       "Target existing");
     isnt($a{'1'},           $b{'1'},     "Target updated");
     is  (read_file('1'),    nl('11'),    "Target content");
-    ok  (! -e $run,                      "Runstate dir non-existing");
-    is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/1"), runstate(REPL_ERASED),
+                                         "Runstate content: 1");
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
                                          "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
-    is  (status('1'),       REPL_ERASED, "Build status: 1");
 }
 
 $c{'1.fix'} = nl('echo 11', '# COMMENT');
@@ -412,12 +425,14 @@ note "Rerun after buildscript was changed, but give same output";
     ok  (  -f '1',                       "Target existing");
     is  ($a{'1'},           $b{'1'},     "Target unchanged");
     is  (read_file('1'),    nl('11'),    "Target content");
-    ok  (! -e $run,                      "Runstate dir non-existing");
-    is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/1"), runstate(KEPT_PREV),
+                                         "Runstate content: 1");
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
                                          "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
-    is  (status('1'),       KEPT_PREV,   "Build status: 1");
 }
 
 note "Rerun after buildscript was changed, and give new output";
@@ -436,12 +451,14 @@ write_file('1.fix', $c{'1.fix'});
     ok  (  -f '1',                       "Target existing");
     isnt($a{'1'},           $b{'1'},     "Target updated");
     is  (read_file('1'),    nl('1'),     "Target content");
-    ok  (! -e $run,                      "Runstate dir non-existing");
-    is  (read_file("$keep/1"),     db(TARGET, $c{'1'}, [ '1.fix' ]),
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/1"), runstate(NEW_CONTENT),
+                                         "Runstate content: 1");
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
                                          "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                          "Keepstate content: 1.fix");
-    is  (status('1'),       NEW_CONTENT, "Build status: 1");
 }
 
 mkdir("a");
@@ -462,12 +479,14 @@ note "Buildscript creating target in subdir";
     ok  (  -f 'a/1',                        "Target existing");
     isnt($a{'a/1'},          $b{'a/1'},     "Target updated");
     is  (read_file('a/1'),   nl('1'),       "Target content");
-    ok  (! -e $run,                          "Runstate dir non-existing");
-    is  (read_file("$keep/a/1"),     db(TARGET, $c{'1'}, [ 'a/1.fix' ]),
+    ok  (  -e $run,                         "Runstate dir existing");
+    is  (read_file("$run/a/1"), runstate(NEW_CONTENT),
+                                            "Runstate content: 1");
+    ok  (  -e $keep,                        "Keepstate dir existing");
+    is  (read_file("$keep/a/1"), keepstate(TARGET, $c{'1'}, [ 'a/1.fix' ]),
                                              "Keepstate content: 1");
-    is  (read_file("$keep/a/1.fix"), db(SOURCE, $c{'1.fix'}),
+    is  (read_file("$keep/a/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                              "Keepstate content: 1.fix");
-    is  (status('a/1'),     NEW_CONTENT,     "Build status: 1");
 }
 
 # clear heretofore generated files
@@ -515,12 +534,14 @@ note "First run of buildscript with dependencies";
     ok  (  -f $_,                        "Target existing: $_") for key %target;
     isnt($pre{$_},          $post{$_},   "Target updated: $_")  for key %target;
     is  (read_file($_),     $target{$_}, "Target content: $_")  for key %target;
-    ok  (! -e $run,                      "Runstate dir non-existing");
-    is  (read_file("$keep/$_"), db(SOURCE, $source{$_}),
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate(NEW_CONTENT),
+                                         "Runstate content: $_") for key %target;
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
                                          "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                          "Keepstate content: $_") for key %target;
-    is  (status($_),        NEW_CONTENT, "Build status: $_")      for key %target;
 }
 
 note "Rerun without change";
@@ -536,12 +557,14 @@ note "Rerun without change";
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
     is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for key %target;
     is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (! -e $run,                  "Runstate dir non-existing");
-    is  (read_file("$keep/$_"), db(SOURCE, $source{$_}),
+    ok  (  -e $run,                  "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate(SAME_DEPS),
+                                     "Runstate content: $_") for key %target;
+    ok  (  -e $keep,                 "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
                                      "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
-    is  (status($_),    SAME_DEPS,   "Build status: $_")      for key %target;
 }
 
 $source{'2.fix'} = nl('echo 22');
@@ -566,13 +589,16 @@ note "Rerun after change of subtarget '2'";
     isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/2 12 ab12/;
     is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 1 ab/;
     is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (! -e $run,                  "Runstate dir non-existing");
-    is  (read_file("$keep/$_"), db(SOURCE, $source{$_}),
+    ok  (  -e $run,                  "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate(SAME_DEPS),
+                                     "Runstate content: $_") for qw/a b 1 ab/;
+    is  (read_file("$run/$_"), runstate(NEW_CONTENT),
+                                     "Runstate content: $_") for qw/2 12 ab12/;
+    ok  (  -e $keep,                 "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
                                      "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
-    is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 1 ab/;
-    is  (status($_),    NEW_CONTENT, "Build status: $_")  for qw/2 12 ab12/;
 }
 
 note "Rerun after a dependency '12' was deleted";
@@ -591,13 +617,16 @@ note "Rerun after a dependency '12' was deleted";
     isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/12/;
     is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 1 2 ab ab12/;
     is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (! -e $run,                  "Runstate dir non-existing");
-    is  (read_file("$keep/$_"), db(SOURCE, $source{$_}),
+    ok  (  -e $run,                  "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate(SAME_DEPS),
+                                     "Runstate content: $_") for qw/a b 1 2 ab ab12/;
+    is  (read_file("$run/$_"), runstate(REPL_ERASED),
+                                     "Runstate content: $_") for qw/12/;
+    ok  (  -e $keep,                 "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
                                      "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
-    is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 1 2 ab ab12/;
-    is  (status($_),    REPL_ERASED, "Build status: $_")  for qw/12/;
 }
 
 note "Rerun after a dependency '1' was deleted";
@@ -616,13 +645,16 @@ note "Rerun after a dependency '1' was deleted";
     isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/1/;
     is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 2 ab 12 ab12/;
     is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (! -e $run,                  "Runstate dir non-existing");
-    is  (read_file("$keep/$_"), db(SOURCE, $source{$_}),
+    ok  (  -e $run,                  "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate(SAME_DEPS),
+                                     "Runstate content: $_") for qw/a b 2 ab 12 ab12/;
+    is  (read_file("$run/$_"), runstate(REPL_ERASED),
+                                     "Runstate content: $_") for qw/1/;
+    ok  (  -e $keep,                 "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
                                      "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
                                      "Keepstate content: $_") for key %target;
-    is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 2 ab 12 ab12/;
-    is  (status($_),    REPL_ERASED, "Build status: $_")  for qw/1/;
 }
 
 note "Rerun after dependency target '1' externally modified";
@@ -645,15 +677,16 @@ note "Rerun after dependency target '1' externally modified";
 } {
     # $target{'1'} == 'XXX' above, but in state we're expecting to see old values
     ok  (  -e $run,                  "Runstate dir existing");
-    is  (read_file("$run/1"),   abort('1'),
-                                     "Runstate content: 1");
-    is  (read_file("$keep/$_"), db(SOURCE, $source{$_}),
-                                     "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), db(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                     "Keepstate content: $_") for key %target;
+    is  (read_file("$run/$_"), runstate(WONT_OVERWR, ABORT),
+                                     "Runstate content: $_") for qw/1/;
     # When build is aborted, stats become unreliable for the other files.
-    #is  (status($_),    SAME_DEPS,   "Build status: $_")  for qw/a b 2 12 ab ab12/;
-    is  (status($_),    WONT_OVERWR, "Build status: $_")  for qw/1/;
+    # is  (read_file("$run/$_"), runstate(SAME_DEPS),
+    #                                  "Runstate content: $_") for qw/a b 2 12 ab ab12/;
+    ok  (  -e $keep,                 "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
+                                     "Keepstate content: $_") for key %source;
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
+                                     "Keepstate content: $_") for key %target;
 }
 
 END {

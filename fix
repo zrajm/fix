@@ -361,7 +361,7 @@ sub is_child { $Opt{parent} ne '' }
 sub did {
     return unless $Opt{stats};
     my ($name, $value) = @_;
-    $Stats->set('stats', "TARGET:$name", sub { shift() // $value });
+    $Run->set($name, build_status => sub { shift() // $value });
 }
 
 sub read_file {
@@ -698,7 +698,7 @@ sub getopts {
         'debug|D'  => sub {       ### debug output + make build shells verbose
             $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
         },
-        # 'force|f'  => sub {       ### overwrite manually edited files
+        # 'force|f'  => sub {       ## overwrite manually edited files
         #     $Opt{force} = $ENV{FIX_FORCE} = TRUE;
         # },
         'help|h|?'  => \&help,    ### display this help and exit
@@ -913,7 +913,12 @@ Output a brief description of options etc on standard output, then exit.
 Display this manpage, then exit. This option extracts the Perl POD (Plain Old
 Documentation) documentation from the program and displays it using man(1).
 
-=cut
+=item B<--stats>
+
+Write some global build statistics to F<.fix/stats>, and also add
+'build_status' information for each processed file in the runstate directory
+(F<.fix/run/>). This is primarily intended for testing, and should not normally
+be used. (For brevity this option is not included in the B<--help> info.)
 
 =item B<-v>, B<--verbose>
 
@@ -926,13 +931,9 @@ B<--verbose> or B<$FIX_VERBOSE> was used, this causes the B<$FIX_VERBOSE> to be
 set inside all run buildscripts (which is how this setting is passed down to
 all child instances of B<fix> run from within those buildscripts).
 
-=cut
-
 =item B<-V>, B<--version>
 
 Output program version information on standard output, then exit.
-
-=cut
 
 =item B<-x>, B<--xtrace>
 
@@ -946,8 +947,6 @@ B<$FIX_XTRACE> (to anything but the empty string or zero). Regardless of
 whether B<--xtrace> or B<$FIX_XTRACE> was used, this causes the B<$FIX_XTRACE>
 to be set inside all run buildscripts (which is how this setting is passed down
 to all child instances of B<fix> run from within those buildscripts).
-
-=cut
 
 =back
 

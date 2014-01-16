@@ -2,22 +2,17 @@
 
 * Testing
 ** TODO Add tests for file-oriented internal functions
-** TODO Test '.fix/stats' in same ways as runstate and keepstate
+** TODO Test '.fix/stats' in same way as runstate and keepstate
 ** TODO Combine internal & external tests into one
    (It's too easy to forget to run one of them before committing.)
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
+** TODO Test error messages
 * Main program
-** TODO Find fix work tree based on '.fixrc'
-   Fix looks for '.fixrc' to know where the base of its work tree is. If no
-   work tree is found, use is advised to 'touch .fixrc' to fix this.
-** TODO Refactor Local::Store
-** TODO Improve running of buildscripts
-   Change to the dir containing the buildscript before running it.
-** TODO Search for alternate buildscripts
-   If TARGET.fix isn't found, look for the other possible buildscript (in
-   current directory and beyond).
+** TODO Fail on invoking fix with target outside current worktree
+   Git says the following when you try to do this:
+   fatal: '..' is outside repository
 ** TODO Pass args to buildscripts
    Should pass (same as Gup, but with both filenames as relative paths):
 
@@ -39,10 +34,21 @@
    NOTA BENE: When implemented, check all occurrences of $1, $2 and $3 in POD
    and make sure they're updated to reflect what is actually passed to the
    buildscripts.
-** TODO Relative paths should work
-   I.e. one should be able to run 'fix test', as well as 'fix ../test' or 'fix
-   HELLO/test' (where all those are referring to the same target 'test') with
-   the exact same result.
+** TODO Scan for alternate buildscripts (not just 'TARGET.fix')
+   If TARGET.fix isn't found, look for other possible buildscripts (in current
+   directory and beyond). Look for these:
+
+       TARGET.A.B.fix
+       default.A.B.fix
+       default.A.fix
+       default.fix
+       ../default.A.B.fix
+       ../default.A.fix
+       ../default.fix
+       ../../default.A.B.fix
+       ../../default.A.fix
+       ../../default.fix
+** TODO Refactor Local::Store
 ** TODO Checksum-based dependencies
    You have the following files: 'a' which depends on 'b' which depends on 'c'.
 
@@ -57,22 +63,8 @@
    regardless of how the fix command was invoked.
 
 ** TODO Is something corresponding to 'redo-ifcreate' necessary?
-** TODO Scan for alternate buildscripts (not just 'TARGET.fix')
-   Like redo fix should look for a number of build files. Which files should be
-   scanned? Here's what my previous attempt looked for:
-
-       TARGET.A.B.fix
-       default.A.B.fix
-       default.A.fix
-       default.fix
-       ../default.A.B.fix
-       ../default.A.fix
-       ../default.fix
-       ../../default.A.B.fix
-       ../../default.A.fix
-       ../../default.fix
 ** TODO Use PID lockfile avoid double invocations
-** TODO '.fixrc' file in base directory
+** TODO Source config file '.fixrc' before running build
    This should be a shell script which exports stuff. It will run always run
    (with its $PWD in the base directory) before any buildscript is invoked, and
    can be used to set up $PATH and similar stuffs.
@@ -120,7 +112,7 @@
 ** TODO Add option '--watch'(?) to monitor and rebuild on changes
    Option name '--watch' or '--auto' maybe? Would use inotifywait to look for
    changes and rebuild, whenever something is written.
-** TODO write protected statefiles
+** TODO Write protected statefiles
    As in git, all statefiles should be chmodded '-w' to prevent accidental
    deletion.
 ** TODO Clean rebuilds when statedir was deleted.
@@ -133,7 +125,7 @@
    If the newly generated target looks the same, just update the state, and
    keep the old target.
 ** TODO Don't overwrite externally modified tempfiles
-   E.i. refuse to do it, if it already exists, and wasn't produced by fixitude
+   I.e. refuse to do it, if it already exists, and wasn't produced by fixitude
    itself)
 ** TODO Parallel builds
    Fork and run parallel 'fix' for each argument given.
@@ -167,13 +159,10 @@
    I want git-like behavior -- fix should find the base of its work tree, and
    stay inside of that. (Optionally making use of variables FIX_WORK_TREE and
    FIX_DIR, see 'man git' on how that should work.)
-
-   Invoking fix when $PWD is not inside a fix worktree should result in an
-   error (this is what git does, regardless of whether files on the command
-   line are inside a work tree or not). Git gives the following error when
-   you're outside the work tree:
-
-       fatal: Not a git repository (or any of the parent directories): .git
+** TODO Error messages should display filename relative to PWD
+   Not relative to work_tree.
+** TODO Display progress using relative paths
+   Relative to the user's PWD, not work_tree, or anything else.
 * Someday/maybe
 ** TODO Do depscans from work tree root dir?
    Right now fix doesn't care which dir it is in (except when executing
@@ -300,3 +289,24 @@
 ** DONE Use absolute (logical) paths internally
    CLOSED: [2014-01-16 Thu 14:55]
    All state written should be relative to work_tree.
+** DONE Relative paths should work
+   CLOSED: [2014-01-16 Thu 15:50]
+   I.e. one should be able to run 'fix test', as well as 'fix ../test' or 'fix
+   HELLO/test' (where all those are referring to the same target 'test') with
+   the exact same result.
+** DONE Find fix work tree based on '.fixrc'
+   CLOSED: [2014-01-16 Thu 15:51]
+   Fix looks for '.fixrc' to know where the base of its work tree is. If no
+   work tree is found, use is advised to 'touch .fixrc' to fix this.
+
+   Invoking fix when $PWD is not inside a fix worktree should result in an
+   error (this is what git does, regardless of whether files on the command
+   line are inside a work tree or not). Git gives the following error when
+   you're outside the work tree:
+
+       fatal: Not a git repository (or any of the parent directories): .git
+** DONE Tests for targets in parent dir, and subdir
+   CLOSED: [2014-01-16 Thu 20:26]
+** DONE Change dir before running a buildscript
+   CLOSED: [2014-01-16 Thu 20:33]
+   Change to the dir containing the buildscript before running it.

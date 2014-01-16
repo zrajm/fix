@@ -162,6 +162,19 @@ $ENV{PWD} = $testdir;
 
 my %c;                                         # Mnemonic: 'content'
 
+note "No '.fixrc'";
+{
+    note $fix;
+    my $r = system("$fix --stats 2>/dev/null");
+
+    is  ($r >> 8,      254, "Exit status");
+    ok  (! -e $stats,       "Statsfile non-existing");
+    ok  (! -e $run,         "Runstate dir non-existing");
+    ok  (! -e $keep,        "Keepstate dir non-existing");
+}
+
+write_file('.fixrc' => '');
+
 note "No argument given";
 {
     note $fix;
@@ -682,6 +695,71 @@ note "Rerun after dependency target '1' externally modified";
     # When build is aborted, stats become unreliable for the other files.
     # is  (read_file("$run/$_"), runstate(SAME_DEPS),
     #                                  "Runstate content: $_") for qw/a b 2 12 ab ab12/;
+    ok  (  -e $keep,                 "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
+                                     "Keepstate content: $_") for key %source;
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
+                                     "Keepstate content: $_") for key %target;
+}
+
+note "Building target in parent dir: fix --stats ../ab12";
+{
+    delete_file('1');
+
+    my %pre  = fingerprints(key %source, %target);
+    mkdir('abc') and chdir('abc') or die "failed to chdir to 'abc',";
+    my $exit = system("$fix --stats ../ab12 2>/dev/null");
+    chdir('..') or die "failed to chdir back from 'abc',";
+    my %post = fingerprints(key %source, %target);
+
+    is  ($exit >> 8,    0,           "Exit status");
+    is  (execcount(),   1,           "Run count");
+    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
+    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
+    ok  (  -f $_,                    "Target existing: $_")   for key %target;
+    isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/1/;
+    is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 2 ab 12 ab12/;
+    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
+    ok  (  -e $run,                  "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate(SAME_DEPS),
+                                     "Runstate content: $_") for qw/a b 2 ab 12 ab12/;
+    is  (read_file("$run/$_"), runstate(REPL_ERASED),
+                                     "Runstate content: $_") for qw/1/;
+    ok  (  -e $keep,                 "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
+                                     "Keepstate content: $_") for key %source;
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
+                                     "Keepstate content: $_") for key %target;
+}
+
+# rewrite filenames to include subdir name
+%source = map { ("abc/$_" => $source{$_}) } keys %source;
+%target = map { ("abc/$_" => $target{$_}) } keys %target;
+%target_deps = map {
+    my $value = [ map { [ map { "abc/$_" } @$_ ] } @{ $target_deps{$_} } ];
+    ("abc/$_" => $value);
+} keys %target_deps;
+write_file(%source);
+
+note "Building target in parent dir: fix --stats abc/ab12";
+{
+    delete_file('1');
+
+    my %pre  = fingerprints(key %source, %target);
+    my $exit = system("$fix --stats abc/ab12 2>/dev/null");
+    my %post = fingerprints(key %source, %target);
+
+    is  ($exit >> 8,    0,           "Exit status");
+    is  (execcount(),   4,           "Run count");
+    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
+    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
+    ok  (  -f $_,                    "Target existing: $_")   for key %target;
+    isnt($pre{$_},      $post{$_},   "Target updated: $_")    for key %target;
+    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
+    ok  (! -e "abc/.fix",            "Statedir non-existing in subdir");
+    ok  (  -e $run,                  "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate(NEW_CONTENT),
+                                     "Runstate content: $_") for key %target;
     ok  (  -e $keep,                 "Keepstate dir existing");
     is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
                                      "Keepstate content: $_") for key %source;

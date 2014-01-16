@@ -27,8 +27,8 @@ our ($Keep, $Run, $Stats);
 our %Opt = (
     debug     => !!$ENV{FIX_DEBUG},            # -D/--debug $FIX_DEBUG
     fix_cmd   =>   $ENV{FIX_CMD}       //= Local::Paths::absolute(__FILE__),
-    fix_dir   =>   ".$NAME",                   # '.fix' dir
-    work_tree =>   $ENV{FIX_WORK_TREE} //= Local::Paths::current(),
+    fix_dir   =>   $ENV{FIX_DIR}       // '',  # '.fix' dir
+    work_tree =>   $ENV{FIX_WORK_TREE} // '',  # worktree root
     # force   => !!$ENV{FIX_FORCE},            # -f/--force $FIX_FORCE
     level     =>   $ENV{FIX_LEVEL}     += 1,   # child level (mother = 1)
     parent    =>   $ENV{FIX_PARENT}    // '',  # parent target
@@ -292,6 +292,14 @@ sub man {
     # fails.
     sub current { $ENV{PWD} // Cwd::cwd() }
 
+    BEGIN {
+        *CORE::GLOBAL::chdir = sub {
+            my $dir = absolute(shift());
+            return 1 if $dir eq $ENV{PWD};
+            CORE::chdir($dir) and $ENV{PWD} = $dir;
+        };
+    }
+
     # Clean up a path without looking at the file system.
     sub clean {
         my ($path) = @_;
@@ -316,6 +324,24 @@ sub man {
     sub absolute {
         my ($_) = @_;
         clean(m#^/# ? $_ : current() . "/$_");
+    }
+
+    # Searches for each of the named files, first in DIR, then the dir above
+    # that, etc. all the way up to the specified TOPDIR. Return name of found
+    # file, or empty string on failure.
+    sub find_above {
+        my ($dir, $topdir, @file) = @_;
+        ($dir, $topdir) = (absolute($dir), absolute($topdir));
+        die "Start dir '$dir' must be inside top dir '$topdir'\n"
+            unless $topdir eq '/' or $dir =~ m#^\Q$topdir\E($|/)#;
+        while ($dir ne $topdir) {
+            foreach (@file) {                  # look for each file
+                my $file = "$dir/$_";
+                return $file if -e $file;
+            }
+            $dir = clean("$dir/..");
+        }
+        return '';
     }
 }
 
@@ -500,22 +526,27 @@ sub find_fixfile {
 # [e.g. a comment was added to it] or if a deleted target with unmodified
 # dependencies was rebuilt.)
 sub build_target {
-    my ($level, $target) = @_;
+    my ($level, $buildscript, $target) = @_;
+    debug("Building target: $target\n");
     info(strip_worktree($target));
     if (-f $target and has_changed($Keep, $target)) {
         $Run->set($target,      ABORT => strip_worktree($target));
         $Run->set($Opt{parent}, ABORT => strip_worktree($target)) if is_child();
         did($target, 'wont_overwrite');
-        msg(ERROR, "$target: Target externally modified, aborting\n");
+        msg(ERROR, strip_worktree($target) . ": Target externally modified, " .
+            "aborting\n");
         exit 253;
     }
-    my ($buildscript, $outfile) = ("$target.fix", "$target--fixing");
     # clear dependency information (rebuilt each run)
     $Keep->set($target,
         type => TARGET,
         deps => [[ strip_worktree($buildscript) ]],
     );
 
+    my $builddir = split_path($buildscript);
+    chdir($builddir) or die "Cannot cd to buildscript dir '$builddir': $!\n";
+
+    my $outfile = "$target--fixing";
     my ($close, $exit, $errno) = redir_stdout($outfile, sub {
         local $ENV{FIX_PARENT} = $target;
         local $ENV{FIX_LEVEL}  = $level;
@@ -523,13 +554,11 @@ sub build_target {
             $Opt{xtrace} ? '-x' : (),
             $Opt{debug}  ? '-v' : (),
         );
-        open(my $shell, '|-', $Opt{shell}, '-e', @arg)
+        open(my $shell, '|-', $Opt{shell}, '-e', @arg, $buildscript)
             or die "Cannot execute shell '$Opt{shell}': $!\n";
-        print $shell read_file($buildscript);
-
-        my $close = close($shell);
-        return ($close, $?, $!);
+        return (close($shell), $?, $!);
     });
+
     # NOTE: outfile is kept on failure (so user may inspect it)
     #
     # - Except when a dependency completely failed to run (e.g. its output file
@@ -548,7 +577,7 @@ sub build_target {
                 ABORT => $aborted_target,
             ) if is_child();
         } else {                               # a buildscript returned non-zero
-            msg(ERROR, "$target: exit status $exit\n");
+            msg(ERROR, strip_worktree($target) . ": exit status $exit\n");
         }
         did($target, 'buildscript_error');
         exit $exit;
@@ -620,15 +649,32 @@ sub update_targets {
     local $Opt{level} = $level;
     my $changed  = FALSE;
   TARGET: foreach my $target (@target) {
+        debug("Updating target: $target\n");
         my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
+        # buildscript source
+        if ($type eq SOURCE) {                 # buildscript source
+            if (has_changed($Keep, $target)) {
+                $Keep->set($target,
+                    checksum => checksum_file($target),
+                    type     => SOURCE,
+                );
+                $changed = TRUE;
+            }
+            next TARGET;
+        }
+        my $buildscript = "$target.fix";       # target's buildscript
+        if (not -f $buildscript) {
+            msg(ERROR, "No rule to make target '" .
+                strip_worktree($target) . "'\n");
+            exit 254;
+        }
         if ($type eq '') {                     # target is not known by fix
-            my $buildscript = "$target.fix";
             $Keep->set($buildscript,
                 checksum => checksum_file($buildscript),
                 type     => SOURCE,
             );
-            build_target($level, $target)      #   (all target has at least
-                and $changed = TRUE;           #   its own buildfile as dep)
+            build_target($level, $buildscript, $target)
+                and $changed = TRUE;
         } elsif ($type eq TARGET) {            # file previously seen by fix
             info(strip_worktree($target) . " (previously built)");
             my $deps_changed = FALSE;
@@ -637,22 +683,11 @@ sub update_targets {
                     and $deps_changed = TRUE;
             }
             if ($deps_changed or (not -e $target) or has_changed($Keep, $target)) {
-                build_target($level, $target)
+                build_target($level, $buildscript, $target)
                     and $changed = TRUE;
             } else {
                 did($target, 'wont_rebuild');
             }
-        } elsif ($type eq SOURCE) {            # buildscript
-            if (has_changed($Keep, $target)) {
-                $Keep->set($target,
-                    checksum => checksum_file($target),
-                    type     => SOURCE,
-                );
-                $changed = TRUE;
-            }
-        } else {
-            die "ERROR: Corrupt fix state\n" .
-                "Field 'type' for file '$target' must be 'target' or 'source'\n";
         }
     }
     return $changed;
@@ -703,6 +738,18 @@ sub getopts {
             $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
     ) or exit 254;
+    if ($Opt{fix_dir} eq '') {
+        my $rcfile = Local::Paths::find_above('.', '/', '.fixrc') or do {
+            warn "Current dir not in a fix worktree\n" .
+                "(Use 'touch .fixrc' where you want your worktree root.)\n";
+            exit 254;
+        };
+        my $dir = split_path($rcfile);
+        # These are absolute (logical, not physical) paths. They are inherited
+        # by buildscripts, which may (or may not) run in other directories.
+        $Opt{work_tree} = $ENV{FIX_WORK_TREE} =  $dir;
+        $Opt{fix_dir}   = $ENV{FIX_DIR}       = "$dir/.fix";
+    }
     if (@arg == 0) {
         warn "No target specified\n" .
             "Try '$NAME --help' for more information.\n";
@@ -748,13 +795,6 @@ sub run {
 
     %SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
 
-    # die on missing buildscripts
-    if (my @missing = grep { ! -f "$_.fix" } @target) {
-        warn join "", map {
-            "No rule to make '" . strip_worktree($_) . "'.\n";
-        } @missing;
-        exit 254;
-    }
     if (is_child()) {                          # CHILD PROCESSES
         $Keep->set($Opt{parent}, deps => sub { #   targets are deps to parent
             [ @{ shift() // [] }, [ map { strip_worktree($_) } @target ]];

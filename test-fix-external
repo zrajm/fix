@@ -151,6 +151,8 @@ my $fix  = realpath(__FILE__ =~ s#[^/]+$#$name#r);
 my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;
 
 my $testdir = make_tempdir($name);
+mkdir($testdir = "$testdir/testdir")           # create a subdir to test in
+    or die "Failed to create '$testdir': $!,";
 chdir($testdir) or die "Failed to cd to '$testdir': $!,";
 $ENV{PWD} = $testdir;
 
@@ -207,6 +209,21 @@ note "Non-existing buildscript";
     ok  (! -f 'NON-EXISTING-TARGET',         "Target non-existing");
     ok  (! -e $run,                          "Runstate dir non-existing");
     ok  (! -e $keep,                         "Keepstate dir non-existing");
+}
+
+write_file('../invalid.fix', '');
+
+note "Buildscript outside work tree";
+{
+    my $r = system("$fix --stats ../invalid 2>/dev/null");
+
+    is  ($r >> 8,           254,     "Exit status");
+    is  (execcount(),         1,     "Run count");
+    ok  (  -f '../invalid.fix',      "Buildfile existing");
+    ok  (! -f '../invalid--fixing',  "Tempfile non-existing");
+    ok  (! -f '../invalid',          "Target non-existing");
+    ok  (! -e $run,                  "Runstate dir non-existing");
+    ok  (! -e $keep,                 "Keepstate dir non-existing");
 }
 
 $c{'1.fix'} = nl('echo FIRST', 'exit 1', 'echo SECOND');

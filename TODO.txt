@@ -10,9 +10,6 @@
 ** TODO Test for B<--xtrace>
 ** TODO Test error messages
 * Main program
-** TODO Fail on invoking fix with target outside current worktree
-   Git says the following when you try to do this:
-   fatal: '..' is outside repository
 ** TODO Pass args to buildscripts
    Should pass (same as Gup, but with both filenames as relative paths):
 
@@ -276,7 +273,6 @@
    communication between the mother process and her children)
 ** DONE Test runstate content for ABORT
    CLOSED: [2014-01-11 Sat 14:06]
-
 ** DONE Add option '--stats' (for use when testing)
    CLOSED: [2014-01-11 Sat 16:33]
    Each child should load and increment a counter, so that we, after a complete
@@ -310,3 +306,7 @@
 ** DONE Change dir before running a buildscript
    CLOSED: [2014-01-16 Thu 20:33]
    Change to the dir containing the buildscript before running it.
+** DONE Fail on invoking fix with target outside current worktree
+   CLOSED: [2014-01-16 Thu 20:54]
+   Git says the following when you try to do this:
+   fatal: '..' is outside repository

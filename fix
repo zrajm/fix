@@ -650,6 +650,10 @@ sub update_targets {
     my $changed  = FALSE;
   TARGET: foreach my $target (@target) {
         debug("Updating target: $target\n");
+        if ($target !~ m#^\Q$Opt{work_tree}\E($|/)#) {
+            msg(ERROR, "Target '$target' is outside fix's worktree\n");
+            exit 254;
+        }
         my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
         # buildscript source
         if ($type eq SOURCE) {                 # buildscript source

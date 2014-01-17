@@ -322,8 +322,8 @@ sub man {
     }
 
     sub absolute {
-        my ($_) = @_;
-        clean(m#^/# ? $_ : current() . "/$_");
+        my ($_, $basedir) = @_;
+        clean(m#^/# ? $_ : ($basedir // current()) . "/$_");
     }
 
     # Searches for each of the named files, first in DIR, then the dir above
@@ -651,7 +651,7 @@ sub update_targets {
   TARGET: foreach my $target (@target) {
         debug("Updating target: $target\n");
         if ($target !~ m#^\Q$Opt{work_tree}\E($|/)#) {
-            msg(ERROR, "Target '$target' is outside fix's worktree\n");
+            msg(ERROR, "Target '$target' is outside fix's work tree\n");
             exit 254;
         }
         my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
@@ -742,17 +742,23 @@ sub getopts {
             $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
     ) or exit 254;
-    if ($Opt{fix_dir} eq '') {
-        my $rcfile = Local::Paths::find_above('.', '/', '.fixrc') or do {
-            warn "Current dir not in a fix worktree\n" .
-                "(Use 'touch .fixrc' where you want your worktree root.)\n";
-            exit 254;
-        };
-        my $dir = split_path($rcfile);
-        # These are absolute (logical, not physical) paths. They are inherited
-        # by buildscripts, which may (or may not) run in other directories.
-        $Opt{work_tree} = $ENV{FIX_WORK_TREE} =  $dir;
-        $Opt{fix_dir}   = $ENV{FIX_DIR}       = "$dir/.fix";
+
+    if (not is_child()) {
+        if ($Opt{fix_dir} eq '') {             # set FIX_DIR and WORK_TREE
+            my $rcfile = Local::Paths::find_above('.', '/', '.fixrc') or do {
+                warn "Current dir not in a fix worktree\n" .
+                    "(Use 'touch .fixrc' where you want your worktree root.)\n";
+                exit 254;
+            };
+            my $dir = split_path($rcfile);
+            $Opt{work_tree} = $ENV{FIX_WORK_TREE} = "$dir";
+            $Opt{fix_dir}   = $ENV{FIX_DIR}       = "$dir/.fix";
+        } else {
+            $Opt{work_tree} = $ENV{FIX_WORK_TREE} = Local::Paths::current()
+                if $Opt{work_tree} eq '';
+            $Opt{fix_dir}   = $ENV{FIX_DIR}       =
+                Local::Paths::absolute($Opt{fix_dir});
+        }
     }
     if (@arg == 0) {
         warn "No target specified\n" .
@@ -851,12 +857,12 @@ B<fix> [I<OPTION>]... I<TARGET>...
 B<Fix> is a build system. As such, it uses B<buildscripts> to generate output
 B<target>s (automatically keeping track said targets' dependencies), and when
 invoked it performs the minimal action required to make sure the specified
-targets are up-to-date, taking into account any changes in dependencies, or
-buildscripts since last invocation.
+targets are up-to-date, taking into account all changes in dependencies and
+buildscripts since it was called last.
 
 If that sounds vague, it is simply because a build system can do B<so much> -
 it can be used to compile large software projects, generate HTML for a web page
-(e.g. using Markdown source code, and template pages), or just about anything
+(e.g. using Markdown source code, and template pages) or just about anything
 else where you need to keep track of a long chain of dependencies, and B<update
 I<only> those parts of the project which currently I<need> updating>.
 
@@ -869,26 +875,6 @@ I<only> those parts of the project which currently I<need> updating>.
 =over 8
 
 =cut
-
-# =item B<--basedir>=I<PATH> (default: Dir in which B<$FIX_CONFDIR> resides)
-#
-# Set the path to the working tree root. This can also be controlled by setting
-# the B<$FIX_BASEDIR> environment variable. It can be an absolute path or a path
-# relative to the current working directory.
-#
-# This does not affect behavior of B<--confdir> (which will work as usual, i.e.
-# if unspecified the first encountered B<.fix> dir above the current directory
-# will be used).
-
-# =item B<--confdir>=I<PATH> (default: F<.fix> dir in root of current work
-# tree)
-#
-# Set the path to the F<.fix> build metadata directory. This can also be
-# controlled by setting the B<$FIX_CONFDIR> environment variable. It can be an
-# absolute path or a path relative to the current working directory.
-#
-# Setting B<$FIX_CONFDIR> will set B<$FIX_BASEDIR> to current dir (unless
-# B<$FIX_BASEDIR> is also explicitly set by user).
 
 # =item B<-a>, B<--always>
 #
@@ -911,11 +897,11 @@ usually causes the shell to print each I<line> of the script before running it.
 The output usually I<unexpanded>; i.e. variables are shown by name, not by
 content.) Useful when debugging. See also B<--verbose>.
 
-This option can also be enabled by setting the environment variable
-B<$FIX_DEBUG> (to anything except empty or zero). Regardless of whether
-B<--debug> or B<$FIX_DEBUG> was used, this causes the B<$FIX_DEBUG> to be
-set inside all run buildscripts (which is how this setting is passed down to
-all child instances of B<fix> run from within those buildscripts).
+This option can also be enabled by setting the environment variable $FIX_DEBUG
+(to anything except empty or zero). Regardless of whether B<--debug> or
+$FIX_DEBUG was used, this causes the $FIX_DEBUG to be set inside all run
+buildscripts (which is how this setting is passed down to all child instances
+of B<fix> run from within those buildscripts).
 
 =cut
 
@@ -935,22 +921,6 @@ all child instances of B<fix> run from within those buildscripts).
 
 Output a brief description of options etc on standard output, then exit.
 
-=cut
-
-# =item B<--init>
-#
-# Create new confdir for build metadata storage. Unless otherwise specified the
-# confdir will be created in the current directory.
-#
-# If B<--base-dir> (or B<$FIX_BASEDIR>) is given then the confdir will be created
-# in that directory (so that using C<--base-dir=example> will cause a confdir
-# called F<example/.fix> to be created).
-#
-# Finally, B<--conf-dir> (or B<$FIX_CONFDIR>) can be used to specify the I<exact>
-# name of the confdir to be created (so that using C<--conf-dir=example/.fix>
-# will cause a confdir called F<example/.fix> to be created). This alternative
-# will override the two above.
-
 =item B<-M>, B<--manpage>
 
 Display this manpage, then exit. This option extracts the Perl POD (Plain Old
@@ -969,10 +939,10 @@ Enable verbose mode, causing B<fix> to print some diagnostics messages
 throughout its run (less than B<--debug>).
 
 This option can also be enabled by setting the environment variable
-B<$FIX_VERBOSE> (to anything except empty or zero). Regardless of whether
-B<--verbose> or B<$FIX_VERBOSE> was used, this causes the B<$FIX_VERBOSE> to be
-set inside all run buildscripts (which is how this setting is passed down to
-all child instances of B<fix> run from within those buildscripts).
+$FIX_VERBOSE (to anything except empty or zero). Regardless of whether
+B<--verbose> or $FIX_VERBOSE was used, this causes the $FIX_VERBOSE to be set
+inside all run buildscripts (which is how this setting is passed down to all
+child instances of B<fix> run from within those buildscripts).
 
 =item B<-V>, B<--version>
 
@@ -985,11 +955,11 @@ the shell to print, preceded by C<+ >, each I<command> of the script before
 running it. The output usually I<expanded>; i.e. variables are replaced by
 their content.) Useful when debugging. See also B<--verbose>.
 
-This option can also be enabled by setting the environment variable
-B<$FIX_XTRACE> (to anything but the empty string or zero). Regardless of
-whether B<--xtrace> or B<$FIX_XTRACE> was used, this causes the B<$FIX_XTRACE>
-to be set inside all run buildscripts (which is how this setting is passed down
-to all child instances of B<fix> run from within those buildscripts).
+This option can also be enabled by setting the environment variable $FIX_XTRACE
+(to anything but the empty string or zero). Regardless of whether B<--xtrace>
+or $FIX_XTRACE was used, this causes the $FIX_XTRACE to be set inside all run
+buildscripts (which is how this setting is passed down to all child instances
+of B<fix> run from within those buildscripts).
 
 =back
 
@@ -1092,6 +1062,16 @@ statefile was found to contain unintelligible data etc.
 #
 # =back
 
+=head1 DIAGNOSTICS
+
+=cut
+
+# [[ FIXME: The general rule of thumb is that errors printed to C<STDOUT> or
+# C<STDERR> and intended for the end user are documented in DIAGNOSTICS while
+# errors passed internal to the calling program and intended for other
+# programmers are documented in ERRORS. When documenting a function that sets
+# errno, a full list of the possible errno values should be given here. ]]
+
 =head2 Tips on Debugging
 
 If you enable B<--xtrace> or B<--verbose> for an entire project, the output can
@@ -1104,14 +1084,6 @@ the entire tree of dependencies.
 
 =cut
 
-# =head1 DIAGNOSTICS
-#
-# [[ FIXME: The general rule of thumb is that errors printed to C<STDOUT> or
-# C<STDERR> and intended for the end user are documented in DIAGNOSTICS while
-# errors passed internal to the calling program and intended for other
-# programmers are documented in ERRORS. When documenting a function that sets
-# errno, a full list of the possible errno values should be given here. ]]
-
 # =head1 EXAMPLES
 #
 # FIXME: Should include some useful examples!
@@ -1120,15 +1092,15 @@ the entire tree of dependencies.
 
 The following variables are exported by B<fix> and are available for use by the
 buildscripts. B<A buildscript should never change the content of these
-variables> - though in most cases (all but B<$FIX_PARENT>) it is fine to set these
+variables> - though in most cases (all but $FIX_PARENT) it is fine to set these
 variables from the command line when invoking B<fix>.
 
-=over 6
+=over 4
 
 =item B<$FIX_CMD>
 
 Normally, you do not need to use this environment variable, since B<fix>, when
-invoked, always makes sure that that it's binary is first in B<$PATH>, but this
+invoked, always makes sure that that it's binary is first in $PATH, but this
 variable contains the name, and full path, of the currently running B<fix>
 instance.
 
@@ -1145,31 +1117,19 @@ F<b>, and adds a C<E<gt>> sign to the beginning of each line.
 If you started B<fix> by executing a symlink to B<fix>, rather than the actual
 B<fix> program, then the name of the symlink will be the name in this variable.
 
-=cut
+=item B<$FIX_DIR>
 
-# =item B<$FIX_BASEDIR>
-#
-# FIXME: Not yet implemented
-#
-# Root path of the working tree. This can also be controlled by the
-# B<--basedir> command line option. It can be an absolute path or a path
-# relative to the current working directory.
-#
-# This does not affect behavior of B<--confdir> (which will work as usual, i.e.
-# if unspecified the first encountered B<.fix> dir above the current directory
-# will be used).
+If $FIX_DIR is set it specifies a path to for the build metadata directory use
+instead of the default F<.fix/>. It may be specified using an absolute or
+relative path.
 
-# =item B<$FIX_CONFDIR>
-#
-# FIXME: Not yet implemented
-#
-# If the B<$FIX_CONFDIR> environment variable is set then it specifies a path to
-# use instead of the default F<.fix> for the build metadata directory. It can
-# be an absolute path or relative path to current working directory. This can
-# also be controlled by the B<--confdir> command line option.
-#
-# If B<$FIX_CONFDIR> is specified, without B<$FIX_BASEDIR> being set, then the
-# current directory will be used as the base dir of the work tree.
+When $FIX_DIR is set, then $FIX_WORK_TREE defaults to the current directory
+(unless that is explicitly set, too).
+
+The mother process will make sure $FIX_DIR is an absolute path before passing
+it on to its children. Note that B<fix> does whatever it damn well pleases with
+this directory (including deleting parts or whole of its content) so don't
+point $FIX_DIR to a directory where you have valuable data.
 
 =item B<$FIX_DEBUG>
 
@@ -1179,7 +1139,7 @@ See B<--debug>.
 
 Incremented by one each time a build process is invoked (a dependency is
 built). This is chiefly used to indent the output messages the proper amount.
-(Analogous to the shell's B<$SHLVL>.)
+(Analogous to the shell's $SHLVL.)
 
 =item B<$FIX_PARENT>
 
@@ -1197,6 +1157,18 @@ See B<--verbose>.
 =item B<$FIX_XTRACE>
 
 See B<--xtrace>.
+
+=item B<$FIX_WORK_TREE>
+
+If $FIX_WORK_TREE is set it specifies a path to use instead of the default
+working tree root. It can be an absolute path, or a path relative to the
+current working directory.
+
+This value can only be specified $FIX_DIR is also set. If unset $FIX_WORK_TREE
+defaults to the current directory.
+
+The mother process makes sure $FIX_WORK_TREE is an absolute path before passing
+it on to its children.
 
 =back
 
@@ -1269,7 +1241,7 @@ should be, and the file will be rebuilt next time you invoke B<fix> on it.
 
 This is the process started by the user. The B<mother process> in turn, spawn
 off subprocesses (one for each buildscript being run). The mother process is
-the only process for which B<$FIX_PARENT> is not set.
+the only process for which $FIX_PARENT is not set.
 
 In the ideal case, where the entire build tree is already up-to-date, the
 mother process is the only process started.

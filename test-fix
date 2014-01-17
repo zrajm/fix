@@ -14,6 +14,13 @@ our $keep  = ".$name/keep";                     # keepstate directory
 our $run   = ".$name/run";                      # runstate directory
 our $stats = ".$name/stats";
 
+BEGIN {                                        # load 'fix' as a module
+    use Cwd qw/realpath/;
+    my $fix = realpath(__FILE__ =~ s{[^/]+$}{fix}r);
+    require $fix;
+    Module->import();
+}
+
 ###############################################################################
 ##                                                                           ##
 ##  Functions                                                                ##
@@ -83,6 +90,13 @@ sub make_tempdir {
     return $tempdir;
 }
 
+sub enter_dir {
+    my ($dir) = @_;
+    mkdir($dir) or die "Cannot create '$dir': $!,";
+    chdir($dir) or die "Cannot cd to '$dir': $!,";
+    $ENV{PWD} = $dir;
+}
+
 sub nl { join "", map "$_\n", @_ }
 
 sub sha1 {
@@ -98,6 +112,15 @@ sub key {
     sort { length($a) <=> length($b) or $a cmp $b } keys %x;
 }
 
+sub serialize {
+    my (%x) = @_;
+    use Data::Dumper;
+    local $Data::Dumper::Indent   = 1;
+    local $Data::Dumper::Sortkeys = 1;
+    local $Data::Dumper::Terse    = 1;
+    return Dumper \%x;
+}
+
 # for use with keepstate()
 sub SOURCE { 'source' }
 sub TARGET { 'target' }
@@ -107,11 +130,7 @@ sub keepstate {
     $x{type}     = $type;
     $x{deps}     = [ @deps ] if @deps;
     $x{checksum} = sha1($content) if defined $content;
-    use Data::Dumper;
-    local $Data::Dumper::Indent   = 1;
-    local $Data::Dumper::Sortkeys = 1;
-    local $Data::Dumper::Terse    = 1;
-    return Dumper \%x;
+    return serialize(%x);
 }
 
 # for use with status()
@@ -127,11 +146,7 @@ sub runstate {
     my %x;
     $x{ABORT}        = $abort_target if defined($abort_status);
     $x{build_status} = $build_status if defined($build_status);
-    use Data::Dumper;
-    local $Data::Dumper::Indent   = 1;
-    local $Data::Dumper::Sortkeys = 1;
-    local $Data::Dumper::Terse    = 1;
-    return Dumper \%x;
+    return serialize(%x);
 }
 
 sub execcount {
@@ -151,18 +166,134 @@ my $fix  = realpath(__FILE__ =~ s#[^/]+$#$name#r);
 my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;
 
 my $testdir = make_tempdir($name);
-mkdir($testdir = "$testdir/testdir")           # create a subdir to test in
-    or die "Failed to create '$testdir': $!,";
-chdir($testdir) or die "Failed to cd to '$testdir': $!,";
-$ENV{PWD} = $testdir;
 
 ###############################################################################
 ##                                                                           ##
-##  Tests                                                                    ##
+##  Internal Tests (Testing Functions in the Program)                        ##
+##                                                                           ##
+###############################################################################
+
+enter_dir("$testdir/internal-tests");
+
+note 'split_path()';
+# FIXME: What *should* split_path('.') return?
+my @test = (
+    [ qw( a/b/c     a/b     c ) ],
+    [ qw( a/b/c/    a/b     c ) ],
+    [ qw( a/b/c///  a/b     c ) ],
+    [ qw( a/b//c/   a/b     c ) ],
+    [ qw( a//b/c    a//b    c ) ],
+    [ qw( /a/b/c    /a/b    c ) ],
+    [ qw( a         .       a ) ],
+    [ qw( /a        /       a ) ],
+);
+# We run the function twice, because it looks prettier to report basenames and
+# dirnames separately in the output.
+foreach my $test (@test) {
+    my ($path, $expect_dir, undef) = @$test;
+    my ($dir_result, undef) = Local::Modulino::split_path($path);
+    is ($dir_result, $expect_dir, "Dirname: $path");
+}
+foreach my $test (@test) {
+    my ($path, undef, $expect_file) = @$test;
+    my (undef, $file_result) = Local::Modulino::split_path($path);
+    is ($file_result, $expect_file, "Basename: $path");
+}
+
+note 'default_buildfiles()';
+{
+    my %tests = (
+        'hej.a.b.c' => [
+            'default.a.b.c.fix',
+            'default.a.b.fix',
+            'default.a.fix',
+            'default.fix' ],
+        'a' => [
+            'default.fix' ],
+    );
+    for (key %tests) {
+        my $expect = $tests{$_};
+        is_deeply([ Local::Modulino::possible_buildfiles($_) ], $expect,
+                  "Files: $_");
+    }
+}
+
+note 'Local::Paths::clean()';
+{
+    my @test = (
+        './a'        => 'a',
+        '../a'       => '../a',
+        '../../a'    => '../../a',
+        '.'          => '.',
+        './.'        => '.',
+        './..'       => '..',
+        './'         => '.',                   # odd corner case
+        '/.'         => '/',                   # odd corner case
+        '/'          => '/',
+        '/a'         => '/a',
+        '/a/..'      => '/',
+        '/a/../..'   => '/',
+        '/a/b/../..' => '/',
+        'a'          => 'a',
+        'a/'         => 'a',
+        'a/../..'    => '..',
+        'a/../../..' => '../..',
+        'a/../b/c'   => 'b/c',
+        'a/../../c'  => '../c',
+        'a/./b'      => 'a/b',
+        'a//b'       => 'a/b',
+        'a/b'        => 'a/b',
+        'a/b/../..'  => '.',
+        'a/b/c/..'   => 'a/b',
+    );
+    while (@test) {
+        my ($_, $expect) = splice(@test, 0, 2);
+        is(Local::Paths::clean($_), $expect, "Path: $_");
+    }
+}
+
+note "Local::Store, simple use";
+{
+    my $test = new Local::Store(dir => 'storage');
+    my ($x, $y);
+
+    $x = eval { $test->get('file'); 1 };
+    is  ($x, undef, "get() without fields should die");
+    like($@, qr/Missing arguments: No field names given/,
+                    "get() without fields error message");
+
+    $x = $test->get('file', 'foo');
+    is  ($x, undef, "get() on non-existing field");
+    $x = $test->set('file', foo => 'bar', apa => 'bepa');
+    ok  ($x, "set() return status");
+    for ('storage/file') {
+        ok  ( -f $_, "set() file existence: $_");
+        is  (read_file($_), serialize(foo => 'bar', apa => 'bepa'),
+             "set() file content: $_");
+    }
+
+    ($x, $y) = $test->get('file', 'foo', 'apa');
+    is  ($x, 'bar',  'get() with two existing fields, 1st field');
+    is  ($y, 'bepa', 'get() with two existing fields, 2nd field');
+    ($x, $y) = $test->get('file', 'apa', 'foo');
+    is  ($x, 'bepa', 'get() with two existing fields in opposite order, 1st field');
+    is  ($y, 'bar',  'get() with two existing fields in opposite order, 2nd field');
+
+    my %expected = ( foo => 'bar', apa => 'bepa' );
+    foreach (qw/foo apa/) {
+        $x = $test->get('file', $_);
+        is  ($x, $expected{$_}, "get() with one field in scalar context: $_");
+    }
+}
+
+###############################################################################
+##                                                                           ##
+##  External Tests (Running the Program, Testing Build Results)              ##
 ##                                                                           ##
 ###############################################################################
 
 my %c;                                         # Mnemonic: 'content'
+enter_dir("$testdir/external-tests");
 
 note "No '.fixrc'";
 {
@@ -792,7 +923,7 @@ END {
         "================================================\n"
             if $exit_statement_in_test_script;
     note
-        "Tempdir: $testdir\n",
+        "Testdir: $testdir\n",
 }
 
 #[eof]

@@ -3,8 +3,6 @@
 * Testing
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test '.fix/stats' in same way as runstate and keepstate
-** TODO Combine internal & external tests into one
-   (It's too easy to forget to run one of them before committing.)
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
@@ -312,3 +310,6 @@
    fatal: '..' is outside repository
 ** DONE Add tests for file-oriented internal functions
    CLOSED: [2014-01-17 Fri 02:05]
+** DONE Combine internal & external tests into one
+   CLOSED: [2014-01-17 Fri 12:29]
+   (It's too easy to forget to run one of them before committing.)

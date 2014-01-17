@@ -1,7 +1,7 @@
 -*- org -*-
 
 * Testing
-** TODO Add tests for file-oriented internal functions
+** TODO Add more tests for file-oriented internal functions
 ** TODO Test '.fix/stats' in same way as runstate and keepstate
 ** TODO Combine internal & external tests into one
    (It's too easy to forget to run one of them before committing.)
@@ -310,3 +310,5 @@
    CLOSED: [2014-01-16 Thu 20:54]
    Git says the following when you try to do this:
    fatal: '..' is outside repository
+** DONE Add tests for file-oriented internal functions
+   CLOSED: [2014-01-17 Fri 02:05]

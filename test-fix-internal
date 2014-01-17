@@ -7,6 +7,8 @@ use Test::More;
 use Carp 'confess';
 $SIG{__DIE__} = \&Carp::confess;
 
+our $name = 'fix';
+
 BEGIN {                                        # load 'fix' as a module
     use Cwd qw/realpath/;
     my $fix = realpath(__FILE__ =~ s{[^/]+$}{fix}r);
@@ -33,6 +35,34 @@ sub read_file {
     local $/ = undef;
     return <$in>;
 }
+
+sub make_tempdir {
+    my ($name) = @_;
+    my $tempdir = `mktemp -td $name-XXXXXX`;
+    chomp($tempdir);
+    return $tempdir;
+}
+
+sub serialize {
+    my (%x) = @_;
+    use Data::Dumper;
+    local $Data::Dumper::Indent   = 1;
+    local $Data::Dumper::Sortkeys = 1;
+    local $Data::Dumper::Terse    = 1;
+    return Dumper \%x;
+}
+
+###############################################################################
+##                                                                           ##
+##  Initialization                                                           ##
+##                                                                           ##
+###############################################################################
+
+# check if there is an 'exit' statement in this file
+my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;
+
+my $testdir = make_tempdir($name);
+chdir($testdir) or die "Failed to cd to '$testdir': $!,";
 
 ###############################################################################
 ##                                                                           ##
@@ -117,15 +147,49 @@ note 'Local::Paths::clean()';
     }
 }
 
+note "Local::Store, simple use";
+{
+    my $test = new Local::Store(dir => 'storage');
+    my ($x, $y);
+
+    $x = eval { $test->get('file'); 1 };
+    is  ($x, undef, "get() without fields should die");
+    like($@, qr/Missing arguments: No field names given/,
+                    "get() without fields error message");
+
+    $x = $test->get('file', 'foo');
+    is  ($x, undef, "get() on non-existing field");
+    $x = $test->set('file', foo => 'bar', apa => 'bepa');
+    ok  ($x, "set() return status");
+    for ('storage/file') {
+        ok  ( -f $_, "set() file existence: $_");
+        is  (read_file($_), serialize(foo => 'bar', apa => 'bepa'),
+             "set() file content: $_");
+    }
+
+    ($x, $y) = $test->get('file', 'foo', 'apa');
+    is  ($x, 'bar',  'get() with two existing fields, 1st field');
+    is  ($y, 'bepa', 'get() with two existing fields, 2nd field');
+    ($x, $y) = $test->get('file', 'apa', 'foo');
+    is  ($x, 'bepa', 'get() with two existing fields in opposite order, 1st field');
+    is  ($y, 'bar',  'get() with two existing fields in opposite order, 2nd field');
+
+    my %expected = ( foo => 'bar', apa => 'bepa' );
+    foreach (qw/foo apa/) {
+        $x = $test->get('file', $_);
+        is  ($x, $expected{$_}, "get() with one field in scalar context: $_");
+    }
+}
+
 END {
     done_testing();
-    # check if there is an 'exit' statement in this file
-    my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;
     note
         "================================================\n" .
         " NOTA BENE! EXIT STATEMENT FOUND IN TESTSCRIPT!\n" .
         "================================================\n"
             if $exit_statement_in_test_script;
+    note
+        "Tempdir: $testdir\n",
 }
 
 #[eof]

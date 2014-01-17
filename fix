@@ -245,8 +245,8 @@ sub man {
         die "get(): Missing arguments: No field names given," if @field == 0;
         my $state = $self->_read_state($file);
         return wantarray()
-            ? map { $state->{$_} // '' } @field
-            : $state->{ $field[0] } // '';
+            ? map { $state->{$_} } @field
+            : $state->{ $field[0] };
     }
 
     # If a value is a coderef, then that will be invoked with the original

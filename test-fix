@@ -9,14 +9,15 @@ use File::Path 'rmtree';
 use Carp 'confess';
 $SIG{__DIE__} = \&Carp::confess;
 
-our $name = 'fix';
+our $name  = 'fix';
 our $keep  = ".$name/keep";                     # keepstate directory
 our $run   = ".$name/run";                      # runstate directory
 our $stats = ".$name/stats";
+our $fix   = realpath(__FILE__ =~ s#[^/]+$#$name#r);
 
 BEGIN {                                        # load 'fix' as a module
     use Cwd qw/realpath/;
-    my $fix = realpath(__FILE__ =~ s{[^/]+$}{fix}r);
+    $fix = realpath(__FILE__ =~ s#[^/]+$#fix#r);
     require $fix;
     Module->import();
 }
@@ -27,13 +28,13 @@ BEGIN {                                        # load 'fix' as a module
 ##                                                                           ##
 ###############################################################################
 
-# Delete file. Ignore errors if file is gone in the end.
+# Delete file(s). Ignore errors if file is gone in the end.
 sub delete_file {
     my (@file) = @_;
     foreach my $file (@file) {
         unlink($file) or do {
             my $msg = $!;
-            die "Failed to delete file '$file': $msg," if -f $file;
+            die "Failed to delete file '$file': $msg," if -e $file;
         };
     }
 }
@@ -149,6 +150,34 @@ sub runstate {
     return serialize(%x);
 }
 
+sub run_fix {
+    my ($args, $files, $before, $after) = @_;
+    $files  //= [];
+    $before //= sub {};
+    $after  //= sub {};
+    die 'run_fix() $args must be plain string,' if ref($args)   ne '';
+    die 'run_fix() $files must be arrayref,'    if ref($files)  ne 'ARRAY';
+    die 'run_fix() $before must be coderef,'    if ref($before) ne 'CODE';
+    die 'run_fix() $after must be coderef,'     if ref($after)  ne 'CODE';
+    my %pre = fingerprints(@$files);
+
+    $before->();
+
+    # run command
+    note("Run: fix $args");
+    note("Dir: $ENV{PWD}");
+    my $exit = system("$fix $args 2> stderr.txt");
+    # check output for Perl errors/warnings
+    unlike(read_file('stderr.txt'), qr/Use of uninitialized value/,
+           "No Perl warning 'uninitialized value'");
+    delete_file('stderr.txt');
+
+    $after->();
+
+    my %post = fingerprints(@$files);
+    return ($exit, \%pre, \%post);
+}
+
 sub execcount {
     my $data = eval read_file($stats);
     return $data->{run_count};
@@ -160,8 +189,6 @@ sub execcount {
 ##                                                                           ##
 ###############################################################################
 
-my $fix  = realpath(__FILE__ =~ s#[^/]+$#$name#r);
-
 # check if there is an 'exit' statement in this file
 my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;
 
@@ -172,6 +199,10 @@ my $testdir = make_tempdir($name);
 ##  Internal Tests (Testing Functions in the Program)                        ##
 ##                                                                           ##
 ###############################################################################
+note
+    "====================================\n" .
+    " Internal Tests (Testing Functions)\n" .
+    "====================================";
 
 enter_dir("$testdir/internal-tests");
 
@@ -291,14 +322,19 @@ note "Local::Store, simple use";
 ##  External Tests (Running the Program, Testing Build Results)              ##
 ##                                                                           ##
 ###############################################################################
+note
+    "========================================\n" .
+    " External Tests (Testing Build Results)\n" .
+    "========================================";
 
 my %c;                                         # Mnemonic: 'content'
 enter_dir("$testdir/external-tests");
 
 note "No '.fixrc'";
 {
-    note $fix;
-    my $r = system("$fix --stats 2>/dev/null");
+    my ($r) = run_fix(
+        '--stats 1',
+    );
 
     is  ($r >> 8,      254, "Exit status");
     ok  (! -e $stats,       "Statsfile non-existing");
@@ -310,8 +346,9 @@ write_file('.fixrc' => '');
 
 note "No argument given";
 {
-    note $fix;
-    my $r = system("$fix --stats 2>/dev/null");
+    my ($r) = run_fix(
+        '--stats',
+    );
 
     is  ($r >> 8,      254, "Exit status");
     ok  (! -e $stats,       "Statsfile non-existing");
@@ -321,7 +358,9 @@ note "No argument given";
 
 note "Bad command line option";
 {
-    my $r = system("$fix --stats --BAD-OPTION 2>/dev/null");
+    my ($r) = run_fix(
+        '--stats --BAD-OPTION',
+    );
 
     is  ($r >> 8,      254, "Exit status");
     ok  (! -e $stats,       "Statsfile non-existing");
@@ -331,7 +370,9 @@ note "Bad command line option";
 
 note "Non-existing buildscript";
 {
-    my $r = system("$fix --stats NON-EXISTING-TARGET 2>/dev/null");
+    my ($r) = run_fix(
+        '--stats NON-EXISTING-TARGET',
+    );
 
     is  ($r >> 8,           254,             "Exit status");
     is  (execcount(),         1,             "Run count");
@@ -342,17 +383,19 @@ note "Non-existing buildscript";
     ok  (! -e $keep,                         "Keepstate dir non-existing");
 }
 
-write_file('../invalid.fix', '');
+write_file('../outside.fix', '');
 
 note "Buildscript outside work tree";
 {
-    my $r = system("$fix --stats ../invalid 2>/dev/null");
+    my ($r) = run_fix(
+        '--stats ../outside',
+    );
 
     is  ($r >> 8,           254,     "Exit status");
     is  (execcount(),         1,     "Run count");
-    ok  (  -f '../invalid.fix',      "Buildfile existing");
-    ok  (! -f '../invalid--fixing',  "Tempfile non-existing");
-    ok  (! -f '../invalid',          "Target non-existing");
+    ok  (  -f '../outside.fix',      "Buildfile existing");
+    ok  (! -f '../outside--fixing',  "Tempfile non-existing");
+    ok  (! -f '../outside',          "Target non-existing");
     ok  (! -e $run,                  "Runstate dir non-existing");
     ok  (! -e $keep,                 "Keepstate dir non-existing");
 }
@@ -364,9 +407,12 @@ note "Buildscript with exit status = 1";
 {
     delete_file('1--fixing');
 
-    my %a = fingerprints(qw/ 1.fix 1--fixing /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1--fixing /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1--fixing )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,                1,               "Exit status");
     is  (execcount(),            1,               "Run count");
@@ -392,9 +438,12 @@ note "Buildscript with exit status = 2";
 {
     delete_file('1--fixing');
 
-    my %a = fingerprints(qw/ 1.fix 1--fixing /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1--fixing /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1--fixing )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,                2,               "Exit status");
     is  (execcount(),            1,               "Run count");
@@ -420,9 +469,12 @@ note "Buildscript with command returning false";
 {
     delete_file('1--fixing');
 
-    my %a = fingerprints(qw/ 1.fix 1--fixing /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1--fixing /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1--fixing )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,                1,               "Exit status");
     is  (execcount(),            1,               "Run count");
@@ -448,9 +500,12 @@ note "Buildscript with non-existing command";
 {
     delete_file('1--fixing');
 
-    my %a = fingerprints(qw/ 1.fix 1--fixing /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1--fixing /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1--fixing )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,                127,             "Exit status");
     is  (execcount(),            1,               "Run count");
@@ -475,9 +530,12 @@ write_file('1.fix', $c{'1.fix'});
 
 note "First run of (working) buildscript";
 {
-    my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1 /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1 )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
     is  (execcount(),       1,           "Run count");
@@ -498,9 +556,12 @@ note "First run of (working) buildscript";
 
 note "Rerun without changes";
 {
-    my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1 /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1 )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
     is  (execcount(),       1,           "Run count");
@@ -523,9 +584,12 @@ note "Rerun after target was externally modified";
 {
     write_file('1', nl('XXX'));    # modify target file
 
-    my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1 /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1 )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,           253,         "Exit status");
     is  (execcount(),         1,         "Run count");
@@ -548,9 +612,12 @@ note "Rerun after target was deleted";
 {
     delete_file('1');
 
-    my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1 /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1 )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
     is  (execcount(),       1,           "Run count");
@@ -575,9 +642,12 @@ write_file('1.fix', $c{'1.fix'});
 
 note "Rerun after buildscript was changed, but give same output";
 {
-    my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1 /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1 )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
     is  (execcount(),       1,           "Run count");
@@ -601,9 +671,12 @@ $c{'1.fix'} = nl('echo 1');
 $c{'1'}     = nl('1');
 write_file('1.fix', $c{'1.fix'});
 {
-    my %a = fingerprints(qw/ 1.fix 1 /);
-    my $r = system("$fix --stats 1 2>/dev/null");
-    my %b = fingerprints(qw/ 1.fix 1 /);
+    my ($r, $a, $b) = run_fix(
+        '--stats 1',
+        [qw( 1.fix 1 )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
     is  (execcount(),       1,           "Run count");
@@ -629,9 +702,12 @@ write_file('a/1.fix', $c{'1.fix'});
 
 note "Buildscript creating target in subdir";
 {
-    my %a = fingerprints(qw( a/1.fix a/1 ));
-    my $r = system("$fix --stats a/1 2>/dev/null");
-    my %b = fingerprints(qw( a/1.fix a/1 ));
+    my ($r, $a, $b) = run_fix(
+        '--stats a/1',
+        [qw( a/1.fix a/1 )],
+    );
+    my %a = %$a;
+    my %b = %$b;
 
     is  ($r >> 8,            0,             "Exit status");
     is  (execcount(),        1,             "Run count");
@@ -682,9 +758,12 @@ my %target_deps = (
 
 note "First run of buildscript with dependencies";
 {
-    my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix --stats ab12 2>/dev/null");
-    my %post = fingerprints(key %source, %target);
+    my ($exit, $pre, $post) = run_fix(
+        '--stats ab12',
+        [ key(%source, %target) ],
+    );
+    my %pre  = %$pre;
+    my %post = %$post;
 
     is  ($exit >> 8,        0,           "Exit status");
     is  (execcount(),       4,           "Run count");
@@ -707,9 +786,12 @@ note "First run of buildscript with dependencies";
 
 note "Rerun without change";
 {
-    my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix --stats ab12 2>/dev/null");
-    my %post = fingerprints(key %source, %target);
+    my ($exit, $pre, $post) = run_fix(
+        '--stats ab12',
+        [ key(%source, %target) ],
+    );
+    my %pre  = %$pre;
+    my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
     is  (execcount(),   1,           "Run count");
@@ -738,9 +820,12 @@ $target{ab12} = nl(qw/ab12 >ab >>a >>b >12 >>1 >>22 /);
 
 note "Rerun after change of subtarget '2'";
 {
-    my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix --stats ab12 2>/dev/null");
-    my %post = fingerprints(key %source, %target);
+    my ($exit, $pre, $post) = run_fix(
+        '--stats ab12',
+        [ key(%source, %target) ],
+    );
+    my %pre  = %$pre;
+    my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
     is  (execcount(),   3,           "Run count");
@@ -766,9 +851,12 @@ note "Rerun after a dependency '12' was deleted";
 {
     delete_file('12');
 
-    my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix --stats ab12 2>/dev/null");
-    my %post = fingerprints(key %source, %target);
+    my ($exit, $pre, $post) = run_fix(
+        '--stats ab12',
+        [ key(%source, %target) ],
+    );
+    my %pre  = %$pre;
+    my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
     is  (execcount(),   2,           "Run count");
@@ -794,9 +882,12 @@ note "Rerun after a dependency '1' was deleted";
 {
     delete_file('1');
 
-    my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix --stats ab12 2>/dev/null");
-    my %post = fingerprints(key %source, %target);
+    my ($exit, $pre, $post) = run_fix(
+        '--stats ab12',
+        [ key(%source, %target) ],
+    );
+    my %pre  = %$pre;
+    my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
     is  (execcount(),   1,           "Run count");
@@ -823,9 +914,12 @@ note "Rerun after dependency target '1' externally modified";
     local $target{'1'} = nl('XXX');            # 'externally' modify target file
     write_file('1', $target{'1'});
 
-    my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix --stats ab12 2>/dev/null");
-    my %post = fingerprints(key %source, %target);
+    my ($exit, $pre, $post) = run_fix(
+        '--stats ab12',
+        [ key(%source, %target) ],
+    );
+    my %pre  = %$pre;
+    my %post = %$post;
 
     is  ($exit >> 8,    253,         "Exit status");
     is  (execcount(),   1,           "Run count");
@@ -850,15 +944,18 @@ note "Rerun after dependency target '1' externally modified";
                                      "Keepstate content: $_") for key %target;
 }
 
-note "Building target in parent dir: fix --stats ../ab12";
+note "Building target in parent dir";
 {
     delete_file('1');
 
-    my %pre  = fingerprints(key %source, %target);
-    mkdir('abc') and chdir('abc') or die "failed to chdir to 'abc',";
-    my $exit = system("$fix --stats ../ab12 2>/dev/null");
-    chdir('..') or die "failed to chdir back from 'abc',";
-    my %post = fingerprints(key %source, %target);
+    my ($exit, $pre, $post) = run_fix(
+        '--stats ../ab12',
+        [ key(%source, %target) ],
+        sub { mkdir('abc') && chdir('abc') || die "cannot cd to 'abc'," },
+        sub {                 chdir('..')  || die "cannot cd back from 'abc'," },
+    );
+    my %pre  = %$pre;
+    my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
     is  (execcount(),   1,           "Run count");
@@ -889,13 +986,16 @@ note "Building target in parent dir: fix --stats ../ab12";
 } keys %target_deps;
 write_file(%source);
 
-note "Building target in parent dir: fix --stats abc/ab12";
+note "Building target in subdir";
 {
     delete_file('1');
 
-    my %pre  = fingerprints(key %source, %target);
-    my $exit = system("$fix --stats abc/ab12 2>/dev/null");
-    my %post = fingerprints(key %source, %target);
+    my ($exit, $pre, $post) = run_fix(
+        '--stats abc/ab12',
+        [ key(%source, %target) ],
+    );
+    my %pre  = %$pre;
+    my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
     is  (execcount(),   4,           "Run count");

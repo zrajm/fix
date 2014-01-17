@@ -569,7 +569,7 @@ sub build_target {
             did($target, 'shell_error');
             die "Cannot run buildscript '$buildscript': $errno\n";
         }
-        my $aborted_target = $Run->get($target, 'ABORT');
+        my $aborted_target = $Run->get($target, 'ABORT') // '';
         if ($aborted_target ne '') {           # a dependency failed to run
             unlink($outfile);                  #   erase outfile and
             $Run->set(                         #     and tell our parent that
@@ -583,7 +583,7 @@ sub build_target {
         exit $exit;
     }
 
-    my $old_checksum = $Keep->get($target, 'checksum');
+    my $old_checksum = $Keep->get($target, 'checksum') // '';
     my $new_checksum = checksum_file($outfile);
     if ($new_checksum eq $old_checksum) {      # target unmodified
         if (-e $target) {                      #   if target exist
@@ -655,6 +655,7 @@ sub update_targets {
             exit 254;
         }
         my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
+        $type //= '';
         # buildscript source
         if ($type eq SOURCE) {                 # buildscript source
             if (has_changed($Keep, $target)) {

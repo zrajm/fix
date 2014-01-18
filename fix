@@ -369,7 +369,7 @@ sub DEBUG   { 0 }                              # plain
 sub is_child { $Opt{parent} ne '' }
 
 # Strip off worktree path from a filename.
-sub  strip_worktree { shift =~ s#^\Q$Opt{work_tree}/##r }
+sub  strip_worktree { (my $x = shift) =~ s#^\Q$Opt{work_tree}/##; $x }
 sub prefix_worktree { $Opt{work_tree} . '/' . shift() }
 
 # Set value for '--stats'. If value is already set, leave it as-is.

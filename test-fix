@@ -13,11 +13,11 @@ our $name  = 'fix';
 our $keep  = ".$name/keep";                     # keepstate directory
 our $run   = ".$name/run";                      # runstate directory
 our $stats = ".$name/stats";
-our $fix   = realpath(__FILE__ =~ s#[^/]+$#$name#r);
+(our $fix  = realpath(__FILE__)) =~ s#[^/]+$#$name#;
 
 BEGIN {                                        # load 'fix' as a module
     use Cwd qw/realpath/;
-    $fix = realpath(__FILE__ =~ s#[^/]+$#fix#r);
+    ($fix = realpath(__FILE__)) =~ s#[^/]+$#fix#;
     require $fix;
     Module->import();
 }

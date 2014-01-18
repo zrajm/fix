@@ -524,11 +524,11 @@ note "Buildscript with non-existing command";
                                                   "Keepstate content: 1.fix");
 }
 
-$c{'1.fix'} = nl('echo 11');
-$c{'1'}     = nl('11');
+$c{'1.fix'} = nl('echo $1', 'echo $2');
+$c{'1'}     = nl("$ENV{PWD}/1--fixing", "$ENV{PWD}/1");
 write_file('1.fix', $c{'1.fix'});
 
-note "First run of (working) buildscript";
+note 'First run of (working) buildscript + $1 and $2';
 {
     my ($r, $a, $b) = run_fix(
         '--stats 1',
@@ -569,7 +569,7 @@ note "Rerun without changes";
     ok  (! -f '1--fixing',               "Tempfile non-existing");
     ok  (  -f '1',                       "Target existing");
     is  ($a{'1'},           $b{'1'},     "Target unchanged");
-    is  (read_file('1'),    nl('11'),    "Target content");
+    is  (read_file('1'),    $c{'1'},     "Target content");
     ok  (  -e $run,                      "Runstate dir existing");
     is  (read_file("$run/1"), runstate(SAME_DEPS),
                                                   "Runstate content: 1");
@@ -625,7 +625,7 @@ note "Rerun after target was deleted";
     ok  (! -f '1--fixing',               "Tempfile non-existing");
     ok  (  -f '1',                       "Target existing");
     isnt($a{'1'},           $b{'1'},     "Target updated");
-    is  (read_file('1'),    nl('11'),    "Target content");
+    is  (read_file('1'),    $c{'1'},     "Target content");
     ok  (  -e $run,                      "Runstate dir existing");
     is  (read_file("$run/1"), runstate(REPL_ERASED),
                                          "Runstate content: 1");
@@ -636,8 +636,8 @@ note "Rerun after target was deleted";
                                          "Keepstate content: 1.fix");
 }
 
-$c{'1.fix'} = nl('echo 11', '# COMMENT');
-$c{'1'}     = nl('11');
+$c{'1.fix'} = nl('# COMMENT', 'echo $1', 'echo $2');
+$c{'1'}     = nl("$ENV{PWD}/1--fixing", "$ENV{PWD}/1");
 write_file('1.fix', $c{'1.fix'});
 
 note "Rerun after buildscript was changed, but give same output";
@@ -655,7 +655,7 @@ note "Rerun after buildscript was changed, but give same output";
     ok  (! -f '1--fixing',               "Tempfile non-existing");
     ok  (  -f '1',                       "Target existing");
     is  ($a{'1'},           $b{'1'},     "Target unchanged");
-    is  (read_file('1'),    nl('11'),    "Target content");
+    is  (read_file('1'),    $c{'1'},     "Target content");
     ok  (  -e $run,                      "Runstate dir existing");
     is  (read_file("$run/1"), runstate(KEPT_PREV),
                                          "Runstate content: 1");

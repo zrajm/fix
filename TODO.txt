@@ -8,27 +8,6 @@
 ** TODO Test for B<--xtrace>
 ** TODO Test error messages
 * Main program
-** TODO Pass args to buildscripts
-   Should pass (same as Gup, but with both filenames as relative paths):
-
-     $1 - (relative) path to a temporary output file
-     $2 - (relative) path to the target
-
-   If buildscript is in same directory as target, both $1 and $2 will be a
-   simple filenames (with no path components).
-
-   If buildscript is in a parent dir of the target, then that dirname will be
-   included in $1 and $2.
-
-   E.g. if you're building 'dir/target', and the buildscript invoked is
-   'default.fix' (one directory down from the target). Then $1 =
-   'dir/target-fixing', and $2 = 'dir/target'. (This is true even if you run
-   fix from inside 'dir', using 'fix target'; or even if you're inside
-   'dir/subdir' and run it using 'fix ../target'.)
-
-   NOTA BENE: When implemented, check all occurrences of $1, $2 and $3 in POD
-   and make sure they're updated to reflect what is actually passed to the
-   buildscripts.
 ** TODO Scan for alternate buildscripts (not just 'TARGET.fix')
    If TARGET.fix isn't found, look for other possible buildscripts (in current
    directory and beyond). Look for these:
@@ -316,3 +295,29 @@
 
 ** DONE Tests now detect 'uninitialized value' Perl
    CLOSED: [2014-01-17 Fri 15:24]
+** DONE Pass args to buildscripts
+   CLOSED: [2014-01-18 Sat 01:52]
+   Should pass (same as Gup, but with both filenames as relative paths):
+
+     $1 - path to a temporary output file
+     $2 - path to the target
+
+   If buildscript is in same directory as target, both $1 and $2 will be a
+   simple filenames (with no path components).
+
+   If buildscript is in a parent dir of the target, then that dirname will be
+   included in $1 and $2.
+
+   E.g. if you're building 'dir/target', and the buildscript invoked is
+   'default.fix' (one directory down from the target). Then $1 =
+   'dir/target-fixing', and $2 = 'dir/target'. (This is true even if you run
+   fix from inside 'dir', using 'fix target'; or even if you're inside
+   'dir/subdir' and run it using 'fix ../target'.)
+
+   NOTA BENE: When implemented, check all occurrences of $1, $2 and $3 in POD
+   and make sure they're updated to reflect what is actually passed to the
+   buildscripts.
+** DONE Document buildscript arguments $1 and $2
+   CLOSED: [2014-01-18 Sat 03:37]
+** DONE Test that $1 and $2 are passed to buildscripts
+   CLOSED: [2014-01-18 Sat 04:18]

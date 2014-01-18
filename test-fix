@@ -2,6 +2,12 @@
 use strict;
 use warnings;
 use 5.10.0;
+END {
+    warn
+        "# #################################\n" .
+        "# ##  THERE WERE FAILING TESTS!  ##\n" .
+        "# #################################\n" if $?;
+}
 use Test::More;
 use Cwd qw/cwd realpath/;
 use File::Path 'rmtree';
@@ -150,6 +156,14 @@ sub runstate {
     return serialize(%x);
 }
 
+sub statsstate {
+    my ($run_count, @run_targets) = @_;
+    my %x;
+    $x{run_count}   = $run_count    if defined($run_count);
+    $x{run_targets} = \@run_targets if @run_targets;
+    return serialize(%x);
+}
+
 sub run_fix {
     my ($args, $files, $before, $after) = @_;
     $files  //= [];
@@ -176,11 +190,6 @@ sub run_fix {
 
     my %post = fingerprints(@$files);
     return ($exit, \%pre, \%post);
-}
-
-sub execcount {
-    my $data = eval read_file($stats);
-    return $data->{run_count};
 }
 
 ###############################################################################
@@ -375,7 +384,9 @@ note "Non-existing buildscript";
     );
 
     is  ($r >> 8,           254,             "Exit status");
-    is  (execcount(),         1,             "Run count");
+    ok  (  -e $stats,                        "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ 'NON-EXISTING-TARGET' ]),
+                                             "Statsfile content");
     ok  (! -f 'NON-EXISTING-TARGET.fix',     "Buildfile non-existing");
     ok  (! -f 'NON-EXISTING-TARGET--fixing', "Tempfile non-existing");
     ok  (! -f 'NON-EXISTING-TARGET',         "Target non-existing");
@@ -392,7 +403,9 @@ note "Buildscript outside work tree";
     );
 
     is  ($r >> 8,           254,     "Exit status");
-    is  (execcount(),         1,     "Run count");
+    ok  (  -e $stats,                "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '../outside' ]),
+                                     "Statsfile content");
     ok  (  -f '../outside.fix',      "Buildfile existing");
     ok  (! -f '../outside--fixing',  "Tempfile non-existing");
     ok  (! -f '../outside',          "Target non-existing");
@@ -415,7 +428,9 @@ note "Buildscript with exit status = 1";
     my %b = %$b;
 
     is  ($r >> 8,                1,               "Exit status");
-    is  (execcount(),            1,               "Run count");
+    ok  (  -e $stats,                             "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                                  "Statsfile content");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (  -f '1--fixing',                        "Tempfile existing");
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
@@ -446,7 +461,9 @@ note "Buildscript with exit status = 2";
     my %b = %$b;
 
     is  ($r >> 8,                2,               "Exit status");
-    is  (execcount(),            1,               "Run count");
+    ok  (  -e $stats,                             "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                                  "Statsfile content");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (  -f '1--fixing',                        "Tempfile existing");
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
@@ -477,7 +494,9 @@ note "Buildscript with command returning false";
     my %b = %$b;
 
     is  ($r >> 8,                1,               "Exit status");
-    is  (execcount(),            1,               "Run count");
+    ok  (  -e $stats,                             "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                                  "Statsfile content");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (  -f '1--fixing',                        "Tempfile existing");
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
@@ -508,7 +527,9 @@ note "Buildscript with non-existing command";
     my %b = %$b;
 
     is  ($r >> 8,                127,             "Exit status");
-    is  (execcount(),            1,               "Run count");
+    ok  (  -e $stats,                             "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                                  "Statsfile content");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (-f '1--fixing',                          "Tempfile existing");
     isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
@@ -538,7 +559,9 @@ note 'First run of (working) buildscript + $1 and $2';
     my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
-    is  (execcount(),       1,           "Run count");
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                         "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
     ok  (  -f '1',                       "Target existing");
@@ -564,7 +587,9 @@ note "Rerun without changes";
     my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
-    is  (execcount(),       1,           "Run count");
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                         "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
     ok  (  -f '1',                       "Target existing");
@@ -592,7 +617,9 @@ note "Rerun after target was externally modified";
     my %b = %$b;
 
     is  ($r >> 8,           253,         "Exit status");
-    is  (execcount(),         1,         "Run count");
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                         "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
     ok  (  -f '1',                       "Target existing");
@@ -620,7 +647,9 @@ note "Rerun after target was deleted";
     my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
-    is  (execcount(),       1,           "Run count");
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                         "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
     ok  (  -f '1',                       "Target existing");
@@ -650,7 +679,9 @@ note "Rerun after buildscript was changed, but give same output";
     my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
-    is  (execcount(),       1,           "Run count");
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                         "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
     ok  (  -f '1',                       "Target existing");
@@ -679,7 +710,9 @@ write_file('1.fix', $c{'1.fix'});
     my %b = %$b;
 
     is  ($r >> 8,           0,           "Exit status");
-    is  (execcount(),       1,           "Run count");
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ '1' ]),
+                                         "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
     ok  (  -f '1',                       "Target existing");
@@ -710,7 +743,9 @@ note "Buildscript creating target in subdir";
     my %b = %$b;
 
     is  ($r >> 8,            0,             "Exit status");
-    is  (execcount(),        1,             "Run count");
+    ok  (  -e $stats,                       "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [ 'a/1' ]),
+                                            "Statsfile content");
     is  ($a{'a/1.fix'},      $b{'a/1.fix'}, "Buildscript unchanged");
     ok  (! -f 'a/1--fixing',                "Tempfile non-existing");
     ok  (  -f 'a/1',                        "Target existing");
@@ -766,7 +801,10 @@ note "First run of buildscript with dependencies";
     my %post = %$post;
 
     is  ($exit >> 8,        0,           "Exit status");
-    is  (execcount(),       4,           "Run count");
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"),
+         statsstate(4, [qw(ab12)], [qw(ab 12)], [qw(a b)], [qw(1 2)]),
+                                         "Statsfile content");
     is  ($pre{$_},          $post{$_},   "Buildscript unchanged: $_")
         for key %source;
     ok  (! -f "$_--fixing",              "Tempfile non-existing: $_--fixing")
@@ -794,7 +832,9 @@ note "Rerun without change";
     my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
-    is  (execcount(),   1,           "Run count");
+    ok  (  -e $stats,                "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [qw(ab12)]),
+                                     "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
@@ -828,7 +868,9 @@ note "Rerun after change of subtarget '2'";
     my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
-    is  (execcount(),   3,           "Run count");
+    ok  (  -e $stats,                "Statsfile existing");
+    is  (read_file("$stats"), statsstate(3, [qw(ab12)], [qw(1 2)], [qw(ab 12)]),
+                                     "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
@@ -859,7 +901,9 @@ note "Rerun after a dependency '12' was deleted";
     my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
-    is  (execcount(),   2,           "Run count");
+    ok  (  -e $stats,                "Statsfile existing");
+    is  (read_file("$stats"), statsstate(2, [qw(ab12)], [qw(1 2)]),
+                                     "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
@@ -890,7 +934,9 @@ note "Rerun after a dependency '1' was deleted";
     my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
-    is  (execcount(),   1,           "Run count");
+    ok  (  -e $stats,                "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [qw(ab12)]),
+                                     "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
@@ -922,7 +968,9 @@ note "Rerun after dependency target '1' externally modified";
     my %post = %$post;
 
     is  ($exit >> 8,    253,         "Exit status");
-    is  (execcount(),   1,           "Run count");
+    ok  (  -e $stats,                "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [qw(ab12)]),
+                                     "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
@@ -958,7 +1006,9 @@ note "Building target in parent dir";
     my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
-    is  (execcount(),   1,           "Run count");
+    ok  (  -e $stats,                "Statsfile existing");
+    is  (read_file("$stats"), statsstate(1, [qw(../ab12)]),
+                                     "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
@@ -998,7 +1048,10 @@ note "Building target in subdir";
     my %post = %$post;
 
     is  ($exit >> 8,    0,           "Exit status");
-    is  (execcount(),   4,           "Run count");
+    ok  (  -e $stats,                "Statsfile existing");
+    is  (read_file("$stats"),
+         statsstate(4, [qw(abc/ab12)], [qw(ab 12)], [qw(a b)], [qw(1 2)]),
+                                     "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
     ok  (  -f $_,                    "Target existing: $_")   for key %target;
@@ -1022,8 +1075,6 @@ END {
         " NOTA BENE! EXIT STATEMENT FOUND IN TESTSCRIPT!\n" .
         "================================================\n"
             if $exit_statement_in_test_script;
-    note
-        "Testdir: $testdir\n",
 }
 
 #[eof]

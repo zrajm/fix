@@ -2,7 +2,6 @@
 
 * Testing
 ** TODO Add more tests for file-oriented internal functions
-** TODO Test '.fix/stats' in same way as runstate and keepstate
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
@@ -138,6 +137,15 @@
 ** TODO Display progress using relative paths
    Relative to the user's PWD, not work_tree, or anything else.
 * Someday/maybe
+** TODO Check run order after change of subtarget
+   Test case, "Rerun after change of subtarget '2'" has invocations of fix in a
+   "backwards" order:
+
+       fix ab
+       fix 1 2
+       fix ab 12
+
+   Is this really as it should be?
 ** TODO Do depscans from work tree root dir?
    Right now fix doesn't care which dir it is in (except when executing
    buildscripts). But maybe we should do all dependency scanning while standing
@@ -321,3 +329,5 @@
    CLOSED: [2014-01-18 Sat 03:37]
 ** DONE Test that $1 and $2 are passed to buildscripts
    CLOSED: [2014-01-18 Sat 04:18]
+** DONE Test '.fix/stats' in same way as runstate and keepstate
+   CLOSED: [2014-01-18 Sat 16:59]

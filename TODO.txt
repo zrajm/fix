@@ -1,6 +1,7 @@
 -*- org -*-
 
 * Testing
+** TODO Testing of --source option
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
@@ -331,3 +332,9 @@
    CLOSED: [2014-01-18 Sat 04:18]
 ** DONE Test '.fix/stats' in same way as runstate and keepstate
    CLOSED: [2014-01-18 Sat 16:59]
+
+** DONE --stats should output all command line options (not just targets)
+   CLOSED: [2014-01-18 Sat 17:28]
+
+** DONE Add --source option + docs for it
+   CLOSED: [2014-01-18 Sat 17:29]

@@ -34,6 +34,7 @@ our %Opt = (
     parent    =>   $ENV{FIX_PARENT}    // '',  # parent target
     pid       =>   $ENV{FIX_PID}       //= $$, # PID of mother process
     shell     =>   '/bin/dash',
+    source    =>   0,
     stats     => !!$ENV{FIX_STATS},            # --stats $FIX_STATS
     xtrace    => !!$ENV{FIX_XTRACE},           # -x/--xtrace $FIX_XTRACE
     verbose   => !!$ENV{FIX_VERBOSE},          # -v/--verbose $FIX_VERBOSE
@@ -709,7 +710,7 @@ sub update_targets {
 
 # parse command line options
 sub getopts {
-    my @arg = @_;
+    my @arg = (my @orgarg) = @_;
     use Getopt::Long qw(
         GetOptionsFromArray :config
         posix_default bundling gnu_compat no_ignore_case permute
@@ -727,27 +728,31 @@ sub getopts {
         warn "$NAME: $_";
     };
     GetOptionsFromArray(\@arg,
-        'debug|D'  => sub {       ### debug output + make build shells verbose
+        'debug|D'  => sub {           ### debug output + make build shells verbose
             $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
         },
-        # 'force|f'  => sub {       ## overwrite manually edited files
+        # 'force|f'  => sub {         ## overwrite manually edited files
         #     $Opt{force} = $ENV{FIX_FORCE} = TRUE;
         # },
-        'help|h|?'  => \&help,    ### display this help and exit
-        'man|M'     => \&man,     ### display program manpage and exit
-        'stats'     => sub{       ##  save stats in .fix dir
+        'help|h|?'  => \&help,        ### display this help and exit
+        'man|M'     => \&man,         ### display program manpage and exit
+        'source'    => \$Opt{source}, ### declare source dependencies
+        'stats'     => sub{           ##  save stats in .fix dir
             $Opt{stats} = $ENV{FIX_STATS} = TRUE;
         },
-        'verbose|v' => sub {      ### output status info while building
+        'verbose|v' => sub {          ### output status info while building
             $Opt{verbose} = $ENV{FIX_VERBOSE} = TRUE;
         },
-        'version|V' => \&version, ### output version information and exit
-        'xtrace|x'  => sub {      ### use xtrace for build shells
+        'version|V' => \&version,     ### output version information and exit
+        'xtrace|x'  => sub {          ### use xtrace for build shells
             $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
     ) or exit 254;
-
     if (not is_child()) {
+        if ($Opt{source}) {
+            warn "Cannot use '--source' outside buildscript\n";
+            exit 254;
+        }
         if ($Opt{fix_dir} eq '') {             # set FIX_DIR and WORK_TREE
             my $rcfile = Local::Paths::find_above('.', '/', '.fixrc') or do {
                 warn "Current dir not in a fix worktree\n" .
@@ -787,7 +792,7 @@ sub getopts {
         $Stats->set('stats',                   #   count fix invocations
             run_count   => sub { (shift() // 0) + 1 },
             run_targets => sub {               #   save args for each call
-                [ @{ shift() // [] }, \@arg ];
+                [ @{ shift() // [] }, \@orgarg ];
             },
         );
     }
@@ -843,6 +848,7 @@ sub run {
         }
         $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
     }
+    exit 0 if $Opt{source};                    #   --source = don't build
     update_targets($Opt{level}, @target);
 }
 
@@ -855,6 +861,8 @@ fix - Efficiently build (and rebuild) TARGET(s) based on dependencies
 =head1 SYNOPSIS
 
 B<fix> [I<OPTION>]... I<TARGET>...
+
+B<fix> [I<OPTION>]... B<--source> I<FILE>...
 
 =head1 DESCRIPTION
 
@@ -935,6 +943,13 @@ Output a brief description of options etc on standard output, then exit.
 
 Display this manpage, then exit. This option extracts the Perl POD (Plain Old
 Documentation) documentation from the program and displays it using man(1).
+
+=item B<--source>
+
+Used in buildscripts to register B<source dependencies> (it cannot be used
+outside buildscripts). With this option, the arguments given on the command
+line refer to source files to register as dependencies, instead of targets to
+be built. (See also C<Dependencies> below.)
 
 =item B<--stats>
 
@@ -1059,26 +1074,45 @@ The core of B<fix> is the B<buildscript>. Each buildscript is responsible for
 building a single target, and for declaring its dependencies. Its written as a
 shell script, and called with two arguments:
 
-=over 2
+=over 4
 
-=item * B<$1> - path to a temporary output file
+=item B<$1> - path to a temporary output file
 
-=item * B<$2> - path to the target
+=item B<$2> - path to the target
 
 =back
 
 A buildscript is expected to write its target's content either to standard
 output, or to the tempfile given in $1. (Upon a successful build the tempfile
-is atomically renamed to the target.)
+is atomically renamed to the target, if the build fail the tempfile is kept
+around so that you may inspect it.)
 
-Dependencies are declared by simply invoking B<fix>, inside the buildscript,
-for each of the prerequisite targets. B<Fix> then keep track of these
-dependencies, and rebuilds the target if any of the dependencies (or its
-buildscript) are modified.
+Dependencies are declared by invoking B<fix>, inside the buildscript, for each
+of the dependencies. B<Fix> thereafter keep track of these dependencies, and
+rebuilds the target if any of the dependencies (or its buildscript) are
+modified.
 
 The $FIX_* environment variables discussed below are all set inside the
 buildscripts. You should not modify them, but you're free to read their content
 for whatever purpose.
+
+=head2 Dependencies
+
+There are two types of dependencies:
+
+=over 4
+
+=item B<Source dependencies>
+
+A dependency on a source file written by the user, not one built by B<fix>.
+Declared (inside buildscript) using: C<B<fix --source> I<FILE>...>.
+
+=item B<Target dependencies>
+
+A dependency on a target generated by B<fix>. Declared (inside the buildscript)
+using: C<B<fix> I<TARGET>...> (without the B<--source> option).
+
+=back
 
 =cut
 

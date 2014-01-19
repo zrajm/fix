@@ -423,6 +423,38 @@ sub checksum_file {
     sha1_hex(encode_utf8(read_file($file)));
 }
 
+# Add the currently running fix instance to (first dir in) $PATH (which is
+# inherited by all child processes). -- This makes sure that all subsequent
+# buildscripts that calls to fix will find it, even when fix wasn't in the
+# user's $PATH to begin with.
+#
+# To do this, a '.fix/bin' directory is created, and a symlink to the currently
+# running fix instance is placed there. Thereafter this dir is tucked onto the
+# beginning of the $PATH environment variable (which is inherited by our
+# children).
+sub add_fix_to_path {
+    my ($dir)  = @_;
+    my $bindir = "$dir/bin";
+    my $link   = "$dir/bin/$NAME";         # name of link to create
+    if (not -l $link) {                    # if missing '.fix/bin/fix'
+        if (not -d $bindir) {              #   make sure '.fix/bin' exists
+            mkpath($bindir)
+                or die "$NAME: Cannot create dir '$bindir'\n";
+        }
+        symlink($Opt{fix_cmd}, $link)
+            or die "$NAME: Cannot create symlink '$link': $!\n";
+    }
+    my $full = Local::Paths::absolute($bindir);
+    # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).
+    # Therefore the cwd cannot contain a colon (we could fix this this by
+    # having this stuff in /tmp, I guess).
+    if ($full =~ /:/) {                    # guard for stupid system bug
+        die "$NAME: Colon not allowed in current dir path ('" .
+            Local::Paths::Current() . "')\n";
+    }
+    $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
+}
+
 # Redirect standard output to FILE. Return hashref suitable for passing to
 # restore_stdout(), or die() on failure.
 sub redirect_stdout {
@@ -820,33 +852,7 @@ sub run {
         });
     } else {                                   # MOTHER PROCESS
         $Run->delete('');                      #   delete previous runstate
-        # Add the currently running 'fix' command first in $PATH (which is
-        # inherited by all child processes). -- This makes sure that all
-        # buildscripts that invoke 'fix' find it, even if 'fix' wasn't in the
-        # invoking user's $PATH to begin with.
-        #
-        # We achieve this by creating a '.fix/bin' directory, add a symlink to the
-        # 'fix' command there, and tuck that directory name onto the beginning of
-        # the $PATH environment variable that gets inherited by our children.
-        my $bindir = "$Opt{fix_dir}/bin";
-        my $link   = "$Opt{fix_dir}/bin/$NAME";# name of link to create
-        if (not -l $link) {                    # if missing '.fix/bin/fix'
-            if (not -d $bindir) {              #   make sure '.fix/bin' exists
-                mkpath($bindir)
-                    or die "$NAME: Cannot create dir '$bindir'\n";
-            }
-            symlink($Opt{fix_cmd}, $link)
-                or die "$NAME: Cannot create symlink '$link': $!\n";
-        }
-        my $full = Local::Paths::absolute($bindir);
-        # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).
-        # Therefore the cwd cannot contain a colon (we could fix this this by
-        # having this stuff in /tmp, I guess).
-        if ($full =~ /:/) {                    # guard for stupid system bug
-            die "$NAME: Colon not allowed in current dir path ('" .
-                Local::Paths::Current() . "')\n";
-        }
-        $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
+        add_fix_to_path($Opt{fix_dir});
     }
     exit 0 if $Opt{source};                    #   --source = don't build
     update_targets($Opt{level}, @target);

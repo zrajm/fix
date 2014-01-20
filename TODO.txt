@@ -114,9 +114,6 @@
    redo, allowing everyone to write build scripts *in their own language*.)
 
    [[ https://groups.google.com/forum/#!topic/redo-list/yeBwxcXvm8c][A solution to the portability (and a bunch of other) problems]]
-** TODO Allow buildscripts to write to tempfile directly
-   I.e. if a buildscript wrote to standard output, write that to target; or if
-   it wrote to the tempfile directly, write that.
 ** TODO Abort more gracefully
    Abort should not exit brutally (e.g. causing stats to be broken except for
    the file causing the abort), but recurse gracefully back again.
@@ -336,3 +333,5 @@
    CLOSED: [2014-01-18 Sat 17:29]
 ** DONE Test '--source' option
    CLOSED: [2014-01-20 Mon 08:50]
+** DONE Add test to verify that buildscripts can to write to $1
+   CLOSED: [2014-01-21 Tue 00:13]

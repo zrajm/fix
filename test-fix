@@ -557,7 +557,7 @@ note 'First run of (working) buildscript + $1 and $2';
     is  (read_file('1'),    $c{'1'},     "Target content");
     ok  (  -e $run,                      "Runstate dir existing");
     is  (read_file("$run/1"), runstate(NEW_CONTENT),
-                                                  "Runstate content: 1");
+                                         "Runstate content: 1");
     ok  (  -e $keep,                     "Keepstate dir existing");
     is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
                                          "Keepstate content: 1");
@@ -711,6 +711,55 @@ write_file('1.fix', $c{'1.fix'});
                                          "Keepstate content: 1.fix");
 }
 
+# clear heretofore generated files
+rmtree([ ".$name", qw/ 1 1.fix a / ]);
+
+%source = (
+    'test.txt.fix' => nl(
+        'echo test >$1'
+    ),
+);
+%target = (
+    'test.txt' => [
+        NEW_CONTENT, [[ 'test.txt.fix' ]], nl(
+            'test'
+        ),
+    ],
+);
+
+write_file(%source);
+
+note "Buildscript outputting to tempfile (\$1)";
+{
+    my @cmd = (
+        [qw( --stats test.txt )],
+    );
+
+    my ($exit, $pre, $post) = run_fix(
+        0, join(' ', '--stats', keys %target),
+        [ key(%source, %target) ],
+    );
+
+    ok  (  -e $stats,                   "Statsfile existing");
+    is  (read_file("$stats"), statsstate(@cmd),
+                                        "Statsfile content");
+    ok  (  -f $_,                       "Source existing: $_")  for key %source;
+    is  ($pre->{$_},    $post->{$_},    "Source unchanged: $_") for key %source;
+    is  (read_file($_), $source{$_},    "Source content: $_")   for key %source;
+    ok  (! -f "$_--fixing",             "Tempfile non-existing: $_--fixing") for key(%source, %target);
+    ok  (  -f $_,                       "Target existing: $_")  for key %target;
+    isnt($pre->{$_},    $post->{$_},    "Target updated: $_")   for key %target;
+    is  (read_file($_), $target{$_}[2], "Target content: $_")   for key %target;
+    ok  (  -e $run,                     "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate($target{$_}[0]),
+                                        "Runstate content: $_") for key %target;
+    ok  (  -e $keep,                    "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
+                                        "Keepstate content: $_") for key %source;
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}[2], @{ $target{$_}[1] }),
+                                        "Keepstate content: $_") for key %target;
+}
+
 ################################################################################
 
 %source = (
@@ -734,7 +783,6 @@ write_file('1.fix', $c{'1.fix'});
 );
 
 # clear heretofore generated files
-rmtree([ ".$name", qw/ 1 1.fix a / ]);
 write_file(%source);
 
 note "Buildscript with source dependency";

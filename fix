@@ -380,6 +380,21 @@ sub did {
     $Run->set($name, build_status => sub { shift() // $value });
 }
 
+sub add_deps {
+    my ($target, @dep) = @_;
+    $Keep->set($target, deps => sub { #   targets are deps to parent
+        [ @{ shift() // [] }, [ map { strip_worktree($_) } @dep ]];
+    });
+}
+
+sub set_source_state {
+    my ($source) = @_;
+    $Keep->set($source,
+        type     => SOURCE,
+        checksum => checksum_file($source),
+    );
+}
+
 sub read_file {
     my ($file) = @_;
     open(my $in, "<:utf8", $file)
@@ -665,7 +680,7 @@ sub _die  { msg ERROR, @_; exit 255 }
 # NB: $file must exist for has_changed() to give meaningful result
 sub has_changed {
     my ($self, $file) = @_;
-    my $checksum = $self->get($file, 'checksum');
+    my $checksum = $self->get($file, 'checksum') // '';
     return checksum_file($file) eq $checksum ? 0 : 1;
 }
 
@@ -695,10 +710,7 @@ sub update_targets {
         # buildscript source
         if ($type eq SOURCE) {                 # buildscript source
             if (has_changed($Keep, $target)) {
-                $Keep->set($target,
-                    checksum => checksum_file($target),
-                    type     => SOURCE,
-                );
+                set_source_state($target);
                 $changed = TRUE;
             }
             next TARGET;
@@ -710,10 +722,7 @@ sub update_targets {
             exit 254;
         }
         if ($type eq '') {                     # target is not known by fix
-            $Keep->set($buildscript,
-                checksum => checksum_file($buildscript),
-                type     => SOURCE,
-            );
+            set_source_state($buildscript);
             build_target($level, $buildscript, $target)
                 and $changed = TRUE;
         } elsif ($type eq TARGET) {            # file previously seen by fix
@@ -845,16 +854,17 @@ sub run {
     @target = getopts(@target);
 
     %SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
-
     if (is_child()) {                          # CHILD PROCESSES
-        $Keep->set($Opt{parent}, deps => sub { #   targets are deps to parent
-            [ @{ shift() // [] }, [ map { strip_worktree($_) } @target ]];
-        });
+        if ($Opt{source}) {                    #   '--source' = don't build
+            set_source_state($_) foreach @target;
+            add_deps($Opt{parent}, @target);
+            exit 0;
+        }
+        add_deps($Opt{parent}, @target);
     } else {                                   # MOTHER PROCESS
         $Run->delete('');                      #   delete previous runstate
         add_fix_to_path($Opt{fix_dir});
     }
-    exit 0 if $Opt{source};                    #   --source = don't build
     update_targets($Opt{level}, @target);
 }
 
@@ -1291,6 +1301,22 @@ standard output.
 # =head1 NOTES
 #
 # [[ FIXME: Miscellaneous commentary. ]]
+
+=head1 INTERNALS
+
+You shouldn't need to read this, unless your modifying B<fix>, maybe.
+
+=over 4
+
+=item Pathnames
+
+Internally all filenames are absolute, logical paths (see pwd(1) for more info
+on logical vs. physical paths). Filenames are converted to absolute paths as
+they're inputted (e.g. from the command line).
+
+In the state storage all paths are relative to the working tree root.
+
+=back
 
 =head1 GLOSSARY
 

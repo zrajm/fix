@@ -157,15 +157,15 @@ sub runstate {
 }
 
 sub statsstate {
-    my ($run_count, @run_targets) = @_;
+    my (@run_target) = @_;
     my %x;
-    $x{run_count}   = $run_count    if defined($run_count);
-    $x{run_targets} = \@run_targets if @run_targets;
+    $x{run_count}   = scalar(@run_target) if @run_target;
+    $x{run_targets} =       \@run_target  if @run_target;
     return serialize(%x);
 }
 
 sub run_fix {
-    my ($args, $files, $before, $after) = @_;
+    my ($expected_exit, $args, $files, $before, $after) = @_;
     $files  //= [];
     $before //= sub {};
     $after  //= sub {};
@@ -185,6 +185,8 @@ sub run_fix {
     unlike(read_file('stderr.txt'), qr/Use of uninitialized value/,
            "No Perl warning 'uninitialized value'");
     delete_file('stderr.txt');
+
+    is  ($exit >> 8, $expected_exit, "Exit status");
 
     $after->();
 
@@ -336,16 +338,15 @@ note
     " External Tests (Testing Build Results)\n" .
     "========================================";
 
+my (%source, %target, %target_deps);
 my %c;                                         # Mnemonic: 'content'
 enter_dir("$testdir/external-tests");
 
 note "No '.fixrc'";
 {
     my ($r) = run_fix(
-        '--stats 1',
+        254, '--stats 1',
     );
-
-    is  ($r >> 8,      254, "Exit status");
     ok  (! -e $stats,       "Statsfile non-existing");
     ok  (! -e $run,         "Runstate dir non-existing");
     ok  (! -e $keep,        "Keepstate dir non-existing");
@@ -356,10 +357,8 @@ write_file('.fixrc' => '');
 note "No argument given";
 {
     my ($r) = run_fix(
-        '--stats',
+        254, '--stats',
     );
-
-    is  ($r >> 8,      254, "Exit status");
     ok  (! -e $stats,       "Statsfile non-existing");
     ok  (! -e $run,         "Runstate dir non-existing");
     ok  (! -e $keep,        "Keepstate dir non-existing");
@@ -368,10 +367,8 @@ note "No argument given";
 note "Bad command line option";
 {
     my ($r) = run_fix(
-        '--stats --BAD-OPTION',
+        254, '--stats --BAD-OPTION',
     );
-
-    is  ($r >> 8,      254, "Exit status");
     ok  (! -e $stats,       "Statsfile non-existing");
     ok  (! -e $run,         "Runstate dir non-existing");
     ok  (! -e $keep,        "Keepstate dir non-existing");
@@ -380,12 +377,10 @@ note "Bad command line option";
 note "Non-existing buildscript";
 {
     my ($r) = run_fix(
-        '--stats NON-EXISTING-TARGET',
+        254, '--stats NON-EXISTING-TARGET',
     );
-
-    is  ($r >> 8,           254,             "Exit status");
     ok  (  -e $stats,                        "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats NON-EXISTING-TARGET )]),
+    is  (read_file("$stats"), statsstate([qw( --stats NON-EXISTING-TARGET )]),
                                              "Statsfile content");
     ok  (! -f 'NON-EXISTING-TARGET.fix',     "Buildfile non-existing");
     ok  (! -f 'NON-EXISTING-TARGET--fixing', "Tempfile non-existing");
@@ -399,12 +394,10 @@ write_file('../outside.fix', '');
 note "Buildscript outside work tree";
 {
     my ($r) = run_fix(
-        '--stats ../outside',
+        254, '--stats ../outside',
     );
-
-    is  ($r >> 8,           254,     "Exit status");
     ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats ../outside )]),
+    is  (read_file("$stats"), statsstate([qw( --stats ../outside )]),
                                      "Statsfile content");
     ok  (  -f '../outside.fix',      "Buildfile existing");
     ok  (! -f '../outside--fixing',  "Tempfile non-existing");
@@ -421,15 +414,14 @@ note "Buildscript with exit status = 1";
     delete_file('1--fixing');
 
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        1, '--stats 1',
         [qw( 1.fix 1--fixing )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,                1,               "Exit status");
     ok  (  -e $stats,                             "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                                   "Statsfile content");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (  -f '1--fixing',                        "Tempfile existing");
@@ -454,15 +446,14 @@ note "Buildscript with exit status = 2";
     delete_file('1--fixing');
 
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        2, '--stats 1',
         [qw( 1.fix 1--fixing )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,                2,               "Exit status");
     ok  (  -e $stats,                             "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                                   "Statsfile content");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (  -f '1--fixing',                        "Tempfile existing");
@@ -487,15 +478,14 @@ note "Buildscript with command returning false";
     delete_file('1--fixing');
 
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        1, '--stats 1',
         [qw( 1.fix 1--fixing )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,                1,               "Exit status");
     ok  (  -e $stats,                             "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                                   "Statsfile content");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (  -f '1--fixing',                        "Tempfile existing");
@@ -520,15 +510,14 @@ note "Buildscript with non-existing command";
     delete_file('1--fixing');
 
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        127, '--stats 1',
         [qw( 1.fix 1--fixing )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,                127,             "Exit status");
     ok  (  -e $stats,                             "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                                   "Statsfile content");
     is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
     ok  (-f '1--fixing',                          "Tempfile existing");
@@ -552,15 +541,14 @@ write_file('1.fix', $c{'1.fix'});
 note 'First run of (working) buildscript + $1 and $2';
 {
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        0, '--stats 1',
         [qw( 1.fix 1 )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,           0,           "Exit status");
     ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                          "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
@@ -580,15 +568,14 @@ note 'First run of (working) buildscript + $1 and $2';
 note "Rerun without changes";
 {
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        0, '--stats 1',
         [qw( 1.fix 1 )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,           0,           "Exit status");
     ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                          "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
@@ -610,15 +597,14 @@ note "Rerun after target was externally modified";
     write_file('1', nl('XXX'));    # modify target file
 
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        253, '--stats 1',
         [qw( 1.fix 1 )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,           253,         "Exit status");
     ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                          "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
@@ -640,15 +626,14 @@ note "Rerun after target was deleted";
     delete_file('1');
 
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        0, '--stats 1',
         [qw( 1.fix 1 )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,           0,           "Exit status");
     ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                          "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
@@ -672,15 +657,14 @@ write_file('1.fix', $c{'1.fix'});
 note "Rerun after buildscript was changed, but give same output";
 {
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        0, '--stats 1',
         [qw( 1.fix 1 )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,           0,           "Exit status");
     ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                          "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
@@ -703,15 +687,14 @@ $c{'1'}     = nl('1');
 write_file('1.fix', $c{'1.fix'});
 {
     my ($r, $a, $b) = run_fix(
-        '--stats 1',
+        0, '--stats 1',
         [qw( 1.fix 1 )],
     );
     my %a = %$a;
     my %b = %$b;
 
-    is  ($r >> 8,           0,           "Exit status");
     ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats 1 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
                                          "Statsfile content");
     is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
     ok  (! -f '1--fixing',               "Tempfile non-existing");
@@ -728,42 +711,151 @@ write_file('1.fix', $c{'1.fix'});
                                          "Keepstate content: 1.fix");
 }
 
-mkdir("a");
-$c{'a/1.fix'} = nl('echo 1');
-$c{'a/1'}     = nl('1');
-write_file('a/1.fix', $c{'1.fix'});
+################################################################################
 
-note "Buildscript creating target in subdir";
-{
-    my ($r, $a, $b) = run_fix(
-        '--stats a/1',
-        [qw( a/1.fix a/1 )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    is  ($r >> 8,            0,             "Exit status");
-    ok  (  -e $stats,                       "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats a/1 )]),
-                                            "Statsfile content");
-    is  ($a{'a/1.fix'},      $b{'a/1.fix'}, "Buildscript unchanged");
-    ok  (! -f 'a/1--fixing',                "Tempfile non-existing");
-    ok  (  -f 'a/1',                        "Target existing");
-    isnt($a{'a/1'},          $b{'a/1'},     "Target updated");
-    is  (read_file('a/1'),   nl('1'),       "Target content");
-    ok  (  -e $run,                         "Runstate dir existing");
-    is  (read_file("$run/a/1"), runstate(NEW_CONTENT),
-                                            "Runstate content: 1");
-    ok  (  -e $keep,                        "Keepstate dir existing");
-    is  (read_file("$keep/a/1"), keepstate(TARGET, $c{'1'}, [ 'a/1.fix' ]),
-                                             "Keepstate content: 1");
-    is  (read_file("$keep/a/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                             "Keepstate content: 1.fix");
-}
+%source = (
+    'indented.txt.fix' => nl(
+        'fix --source source.txt',
+        'sed "s/^/> /" <source.txt'
+    ),
+    'source.txt' => nl(
+        'some text'
+    ),
+);
+%target = (
+    'indented.txt' => [
+        NEW_CONTENT, [
+            ['indented.txt.fix'],
+            ['source.txt'],
+        ], nl(
+            '> some text'
+        ),
+    ],
+);
 
 # clear heretofore generated files
 rmtree([ ".$name", qw/ 1 1.fix a / ]);
-write_file(my %source = (
+write_file(%source);
+
+note "Buildscript with source dependency";
+{
+    my @cmd = (
+        [qw( --stats  indented.txt )],
+        [qw( --source source.txt )],
+    );
+
+    my ($exit, $pre, $post) = run_fix(
+        0, join(' ', '--stats', keys %target),
+        [ key(%source, %target) ],
+    );
+
+    ok  (  -e $stats,                   "Statsfile existing");
+    is  (read_file("$stats"), statsstate(@cmd),
+                                        "Statsfile content");
+    ok  (  -f $_,                       "Source existing: $_")  for key %source;
+    is  ($pre->{$_},    $post->{$_},    "Source unchanged: $_") for key %source;
+    is  (read_file($_), $source{$_},    "Source content: $_")   for key %source;
+    ok  (! -f "$_--fixing",             "Tempfile non-existing: $_--fixing") for key(%source, %target);
+    ok  (  -f $_,                       "Target existing: $_")  for key %target;
+    isnt($pre->{$_},    $post->{$_},    "Target updated: $_")   for key %target;
+    is  (read_file($_), $target{$_}[2], "Target content: $_")   for key %target;
+    ok  (  -e $run,                     "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate($target{$_}[0]),
+                                        "Runstate content: $_") for key %target;
+    ok  (  -e $keep,                    "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
+                                        "Keepstate content: $_") for key %source;
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}[2], @{ $target{$_}[1] }),
+                                        "Keepstate content: $_") for key %target;
+}
+
+note "Buildscript with source dependency, rebuild without change";
+{
+    my @cmd = (
+        [qw( --stats  indented.txt )],
+    );
+    $target{'indented.txt'}[0] = SAME_DEPS;
+
+    my ($exit, $pre, $post) = run_fix(
+        0, join(' ', '--stats', keys %target),
+        [ key(%source, %target) ],
+    );
+
+    ok  (  -e $stats,                   "Statsfile existing");
+    is  (read_file("$stats"), statsstate(@cmd),
+                                        "Statsfile content");
+    ok  (  -f $_,                       "Source existing: $_")  for key %source;
+    is  ($pre->{$_},    $post->{$_},    "Source unchanged: $_") for key %source;
+    is  (read_file($_), $source{$_},    "Source content: $_")   for key %source;
+    ok  (! -f "$_--fixing",             "Tempfile non-existing: $_--fixing") for key(%source, %target);
+    ok  (  -f $_,                       "Target existing: $_")  for key %target;
+    is  ($pre->{$_},    $post->{$_},    "Target updated: $_")   for key %target;
+    is  (read_file($_), $target{$_}[2], "Target content: $_")   for key %target;
+    ok  (  -e $run,                     "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate($target{$_}[0]),
+                                        "Runstate content: $_") for key %target;
+    ok  (  -e $keep,                    "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
+                                        "Keepstate content: $_") for key %source;
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}[2], @{ $target{$_}[1] }),
+                                        "Keepstate content: $_") for key %target;
+}
+
+$source{'source.txt'} = nl(
+    'some other text'
+);
+$target{'indented.txt'} = [
+    NEW_CONTENT, [
+        ['indented.txt.fix'],
+        ['source.txt'],
+    ], nl(
+        '> some other text'
+    ),
+];
+
+write_file(%source);
+note "Buildscript with source dependency, rebuild with source change";
+{
+    my @cmd = (
+        [qw( --stats  indented.txt )],
+        [qw( --source source.txt )],
+    );
+
+    my ($exit, $pre, $post) = run_fix(
+        0, join(' ', '--stats', keys %target),
+        [ key(%source, %target) ],
+    );
+
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate(@cmd),
+                                         "Statsfile content");
+
+    ok  (  -f $_,                        "Source existing: $_")  for key %source;
+    is  ($pre->{$_},    $post->{$_},     "Source unchanged: $_") for key %source;
+    is  (read_file($_), $source{$_},     "Source content: $_")   for key %source;
+
+    ok  (! -f "$_--fixing",              "Tempfile non-existing: $_--fixing") for key(%source, %target);
+
+    ok  (  -f $_,                        "Target existing: $_") for key %target;
+    isnt($pre->{$_},    $post->{$_},     "Target updated: $_")  for key %target;
+    is  (read_file($_), $target{$_}[2],  "Target content: $_")  for key %target;
+
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/$_"), runstate($target{$_}[0]),
+                                         "Runstate content: $_") for key %target;
+
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
+                                         "Keepstate content: $_") for key %source;
+    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}[2], @{ $target{$_}[1] }),
+                                         "Keepstate content: $_") for key %target;
+}
+
+################################################################################
+
+# clear heretofore generated files
+rmtree([ ".$name", qw/ 1 1.fix a / ]);
+write_file(%source = (
     'a.fix'    => nl('echo a'),
     'b.fix'    => nl('echo b'),
     '1.fix'    => nl('echo 1'),
@@ -772,7 +864,7 @@ write_file(my %source = (
     'ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat a b | sed "s/^/>/"'),
     'ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
 ));
-my %target = (                                 # expected target content
+%target = (                                    # expected target content
     a    => nl(qw/           a                 /),
     b    => nl(qw/               b             /),
     1    => nl(qw/                       1     /),
@@ -781,7 +873,7 @@ my %target = (                                 # expected target content
     12   => nl(qw/                  12  >1  >2 /),
     ab12 => nl(qw/ab12 >ab >>a >>b >12 >>1 >>2 /),
 );
-my %target_deps = (
+%target_deps = (
     1    => [[ '1.fix'    ]],
     2    => [[ '2.fix'    ]],
     a    => [[ 'a.fix'    ]],
@@ -794,16 +886,15 @@ my %target_deps = (
 note "First run of buildscript with dependencies";
 {
     my ($exit, $pre, $post) = run_fix(
-        '--stats ab12',
+        0, '--stats ab12',
         [ key(%source, %target) ],
     );
     my %pre  = %$pre;
     my %post = %$post;
 
-    is  ($exit >> 8,        0,           "Exit status");
     ok  (  -e $stats,                    "Statsfile existing");
     is  (read_file("$stats"),
-         statsstate(4, [qw( --stats ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]),
+         statsstate([qw( --stats ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]),
                                          "Statsfile content");
     is  ($pre{$_},          $post{$_},   "Buildscript unchanged: $_")
         for key %source;
@@ -825,15 +916,14 @@ note "First run of buildscript with dependencies";
 note "Rerun without change";
 {
     my ($exit, $pre, $post) = run_fix(
-        '--stats ab12',
+        0, '--stats ab12',
         [ key(%source, %target) ],
     );
     my %pre  = %$pre;
     my %post = %$post;
 
-    is  ($exit >> 8,    0,           "Exit status");
     ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats ab12 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats ab12 )]),
                                      "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
@@ -861,15 +951,14 @@ $target{ab12} = nl(qw/ab12 >ab >>a >>b >12 >>1 >>22 /);
 note "Rerun after change of subtarget '2'";
 {
     my ($exit, $pre, $post) = run_fix(
-        '--stats ab12',
+        0, '--stats ab12',
         [ key(%source, %target) ],
     );
     my %pre  = %$pre;
     my %post = %$post;
 
-    is  ($exit >> 8,    0,           "Exit status");
     ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate(3, [qw( --stats ab12 )], [qw(1 2)], [qw(ab 12)]),
+    is  (read_file("$stats"), statsstate([qw( --stats ab12 )], [qw(1 2)], [qw(ab 12)]),
                                      "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
@@ -894,15 +983,14 @@ note "Rerun after a dependency '12' was deleted";
     delete_file('12');
 
     my ($exit, $pre, $post) = run_fix(
-        '--stats ab12',
+        0, '--stats ab12',
         [ key(%source, %target) ],
     );
     my %pre  = %$pre;
     my %post = %$post;
 
-    is  ($exit >> 8,    0,           "Exit status");
     ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate(2, [qw( --stats ab12 )], [qw(1 2)]),
+    is  (read_file("$stats"), statsstate([qw( --stats ab12 )], [qw(1 2)]),
                                      "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
@@ -927,15 +1015,14 @@ note "Rerun after a dependency '1' was deleted";
     delete_file('1');
 
     my ($exit, $pre, $post) = run_fix(
-        '--stats ab12',
+        0, '--stats ab12',
         [ key(%source, %target) ],
     );
     my %pre  = %$pre;
     my %post = %$post;
 
-    is  ($exit >> 8,    0,           "Exit status");
     ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats ab12 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats ab12 )]),
                                      "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
@@ -961,15 +1048,14 @@ note "Rerun after dependency target '1' externally modified";
     write_file('1', $target{'1'});
 
     my ($exit, $pre, $post) = run_fix(
-        '--stats ab12',
+        253, '--stats ab12',
         [ key(%source, %target) ],
     );
     my %pre  = %$pre;
     my %post = %$post;
 
-    is  ($exit >> 8,    253,         "Exit status");
     ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats ab12 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats ab12 )]),
                                      "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
@@ -997,7 +1083,7 @@ note "Building target in parent dir";
     delete_file('1');
 
     my ($exit, $pre, $post) = run_fix(
-        '--stats ../ab12',
+        0, '--stats ../ab12',
         [ key(%source, %target) ],
         sub { mkdir('abc') && chdir('abc') || die "cannot cd to 'abc'," },
         sub {                 chdir('..')  || die "cannot cd back from 'abc'," },
@@ -1005,9 +1091,8 @@ note "Building target in parent dir";
     my %pre  = %$pre;
     my %post = %$post;
 
-    is  ($exit >> 8,    0,           "Exit status");
     ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate(1, [qw( --stats ../ab12 )]),
+    is  (read_file("$stats"), statsstate([qw( --stats ../ab12 )]),
                                      "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
@@ -1041,16 +1126,15 @@ note "Building target in subdir";
     delete_file('1');
 
     my ($exit, $pre, $post) = run_fix(
-        '--stats abc/ab12',
+        0, '--stats abc/ab12',
         [ key(%source, %target) ],
     );
     my %pre  = %$pre;
     my %post = %$post;
 
-    is  ($exit >> 8,    0,           "Exit status");
     ok  (  -e $stats,                "Statsfile existing");
     is  (read_file("$stats"),
-         statsstate(4, [qw( --stats abc/ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]),
+         statsstate([qw( --stats abc/ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]),
                                      "Statsfile content");
     is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
     ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;

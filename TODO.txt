@@ -1,7 +1,6 @@
 -*- org -*-
 
 * Testing
-** TODO Testing of --source option
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
@@ -22,6 +21,8 @@
        ../../default.A.B.fix
        ../../default.A.fix
        ../../default.fix
+
+   Stop the search at the root of the work tree (= git-like behavior).
 ** TODO Refactor Local::Store
 ** TODO Checksum-based dependencies
    You have the following files: 'a' which depends on 'b' which depends on 'c'.
@@ -74,7 +75,11 @@
 ** TODO Add option '--list'
    Described in POD (uncomment when implemented).
 ** TODO Add option '--plot'(?) to generate Graphviz file of build graph
-   Option name '--plot' maybe?
+   Should be able to output a general dependency graph, as well a specific
+   graph of a specific run (displaying which measures taken, and which targets
+   were rebuild). -- Visualizing what parts of a dependency tree has been
+   checked, and in which way, should help in optimizing the main loop. I wants
+   this! :)
 ** TODO Add option '--target'(?) to specify target directory
    Mention this in POD (under 'buildscript' in GLOSSARY), when implemented.
 
@@ -124,15 +129,6 @@
    Means we could ditch the runstate as well (since its currently only used for
    this).
 ** TODO Set up and run apenwarr redo's test scripts
-** TODO Improve search for 'default.fix' files
-   Currently searches (a bit naively) all the way to the root of the
-   filesystem. The user should also be able to specify a specific directory for
-   buildfiles (giving one the option of completely separating them from the
-   source or build trees).
-
-   I want git-like behavior -- fix should find the base of its work tree, and
-   stay inside of that. (Optionally making use of variables FIX_WORK_TREE and
-   FIX_DIR, see 'man git' on how that should work.)
 ** TODO Error messages should display filename relative to PWD
    Not relative to work_tree.
 ** TODO Display progress using relative paths
@@ -338,3 +334,5 @@
 
 ** DONE Add --source option + docs for it
    CLOSED: [2014-01-18 Sat 17:29]
+** DONE Test '--source' option
+   CLOSED: [2014-01-20 Mon 08:50]

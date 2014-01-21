@@ -748,7 +748,8 @@ sub update_targets {
 ##                                                                           ##
 ###############################################################################
 
-# parse command line options
+# In this function we use very plain die() and warn() messages (not colorized,
+# as in rest of fix).
 sub getopts {
     my @arg = (my @orgarg) = @_;
     use Getopt::Long qw(
@@ -759,6 +760,7 @@ sub getopts {
     # Modify Getopt::Long's error messages:
     #   'Option <OPT> requires an argument' and 'Unknown option: <OPT>',
     #   should have "'--option'" or "'-o'" rather than just "option" or "o".
+    local $SIG{__DIE__}  = sub { $! = 254; die "$NAME: @_" };
     local $SIG{__WARN__} = sub {
         my ($_) = @_;
         s{(\boption[: ]+)(\S+)}{
@@ -789,15 +791,12 @@ sub getopts {
         },
     ) or exit 254;
     if (not is_child()) {
-        if ($Opt{source}) {
-            warn "Cannot use '--source' outside buildscript\n";
-            exit 254;
-        }
+        die "Cannot use '--source' outside buildscript\n" if $Opt{source};
+
         if ($Opt{fix_dir} eq '') {             # set FIX_DIR and WORK_TREE
             my $rcfile = Local::Paths::find_above('.', '/', '.fixrc') or do {
-                warn "Current dir not in a fix worktree\n" .
+                die "Current dir not in a fix worktree\n" .
                     "(Use 'touch .fixrc' where you want your worktree root.)\n";
-                exit 254;
             };
             my $dir = split_path($rcfile);
             $Opt{work_tree} = $ENV{FIX_WORK_TREE} = "$dir";
@@ -810,9 +809,8 @@ sub getopts {
         }
     }
     if (@arg == 0) {
-        warn "No target specified\n" .
+        die "No target specified\n" .
             "Try '$NAME --help' for more information.\n";
-        exit 254;
     }
     $Run   = new Local::Store(
         dir        => "$Opt{fix_dir}/run",

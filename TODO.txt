@@ -53,6 +53,10 @@
    'a' should depend on 'b' + checksum of 'b', and 'b' should depend on 'c' +
    checksum of 'c', so that if file content changes, the file will be rebuilt,
    regardless of how the fix command was invoked.
+** TODO $FIX_WORK_TREE as current dir in buildscrips
+   Fix can then change dir just once, and doesn't have to care about it any
+   more after that. Also `cd ${2%/*}` (in a buildscript) would change dir to
+   the target directory, anyway (if anyone wants that).
 ** TODO Is something corresponding to 'redo-ifcreate' necessary?
 ** TODO Use PID lockfile avoid double invocations
 ** TODO Source config file '.fixrc' before running build

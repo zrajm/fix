@@ -335,14 +335,18 @@ sub man {
         ($dir, $topdir) = (absolute($dir), absolute($topdir));
         die "Start dir '$dir' must be inside top dir '$topdir'\n"
             unless $topdir eq '/' or $dir =~ m#^\Q$topdir\E($|/)#;
-        while ($dir ne $topdir) {
+        while (1) {
             foreach (@file) {                  # look for each file
                 my $file = "$dir/$_";
                 return $file if -e $file;
             }
-            $dir = clean("$dir/..");
+            return '' if $dir eq $topdir;
+            $dir = do {
+                my $next = clean("$dir/..");
+                return '' if $dir eq $next;
+                $next;
+            };
         }
-        return '';
     }
 }
 
@@ -557,11 +561,11 @@ sub split_path {
 #     default.tar.fix
 #     default.fix
 #
-sub possible_buildfiles {
+sub possible_buildscripts {
     my ($file) = @_;
     my @p = split m#\.+#, $file;
     $p[0] = 'default';
-    map { join('.', @p[ 0 .. $_ ]) . ".fix" } reverse 0 .. $#p;
+    map { join('.', @p[ 0 .. $_ ]) . '.fix' } reverse 0 .. $#p;
 }
 
 # Returns (relative) path of fixfile for the specified target, or empty string
@@ -571,26 +575,17 @@ sub possible_buildfiles {
 # fixfile, first in the current directory, then in directory above that, etc.
 # until we reach root. (The last file looked at is '/default.fix' which is
 # probably a bit naive.)
-sub find_fixfile {
+sub find_buildscript {
     my ($target) = @_;
     return "$target.fix" if -e "$target.fix";
-    my ($dir, $file) = split_path($target);
-    my @fixfile = possible_buildfiles($file);
-    my $max = substrings(Local::Paths::current(), qr#[^/]+#);# pwd path depth
-    my $dotdot = qr#\Q../\E#;                  # matcher for '../' in path
-    while (substrings($dir, $dotdot) < $max) { # while not at max depth
-        foreach (@fixfile) {                   #   try each fixfile
-            my $fixfile = "$dir/$_";
-            return $fixfile if -e $fixfile;
-        }
-        $dir = Local::Paths::clean("$dir/..");
-    }
-    return '';
+    return Local::Paths::find_above(
+        '.', $Opt{work_tree}, possible_buildscripts($target),
+    );
 }
 
 # build_target($level, $target);
 #
-# Builds TARGET by executing its buildfile. Return TRUE if the content of
+# Builds TARGET by executing its buildscript. Return TRUE if the content of
 # TARGET was modified because of the (re)build, FALSE if target was not
 # modified. Die()s on error.
 #
@@ -715,7 +710,7 @@ sub update_targets {
             }
             next TARGET;
         }
-        my $buildscript = "$target.fix";       # target's buildscript
+        my $buildscript = find_buildscript($target);
         if (not -f $buildscript) {
             quit(254, "No rule to make target '" .
                 strip_worktree($target) . "'");
@@ -1106,6 +1101,23 @@ Dependencies are declared by invoking B<fix>, inside the buildscript, for each
 of the dependencies. B<Fix> thereafter keep track of these dependencies, and
 rebuilds the target if any of the dependencies (or its buildscript) are
 modified.
+
+Buildscript are sought first based on target name, then by successively
+removing file name extensions, then lastly by looking in parent directories.
+Given the target 'TARGET', this would entail looking for the following files:
+
+    TARGET.A.B.fix
+    default.A.B.fix
+    default.A.fix
+    default.fix
+    ../default.A.B.fix
+    ../default.A.fix
+    ../default.fix
+    ../../default.A.B.fix
+    ../../default.A.fix
+    ../../default.fix
+
+The search stops at the root of the work tree (similar to git).
 
 The $FIX_* environment variables discussed below are all set inside the
 buildscripts. You should not modify them, but you're free to read their content

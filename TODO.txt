@@ -8,22 +8,6 @@
 ** TODO Test error messages
 ** TODO Apenwarr redo's tests
 * Main program
-** TODO Scan for alternate buildscripts (not just 'TARGET.fix')
-   If TARGET.fix isn't found, look for other possible buildscripts (in current
-   directory and beyond). Look for these:
-
-       TARGET.A.B.fix
-       default.A.B.fix
-       default.A.fix
-       default.fix
-       ../default.A.B.fix
-       ../default.A.fix
-       ../default.fix
-       ../../default.A.B.fix
-       ../../default.A.fix
-       ../../default.fix
-
-   Stop the search at the root of the work tree (= git-like behavior).
 ** TODO Options to specify script tree, target tree, and source tree dirs
    There should be options which would allow for separation (of one or more) of
    these three directories, so that you can avoid cluttering up the root of
@@ -358,3 +342,20 @@
    CLOSED: [2014-01-20 Mon 08:50]
 ** DONE Add test to verify that buildscripts can to write to $1
    CLOSED: [2014-01-21 Tue 00:13]
+** DONE Scan for alternate buildscripts (not just 'TARGET.fix')
+   CLOSED: [2014-01-21 Tue 22:08]
+   If TARGET.fix isn't found, look for other possible buildscripts (in current
+   directory and beyond). Look for these:
+
+       TARGET.A.B.fix
+       default.A.B.fix
+       default.A.fix
+       default.fix
+       ../default.A.B.fix
+       ../default.A.fix
+       ../default.fix
+       ../../default.A.B.fix
+       ../../default.A.fix
+       ../../default.fix
+
+   Stop the search at the root of the work tree (= git-like behavior).

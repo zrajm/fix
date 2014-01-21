@@ -242,7 +242,7 @@ foreach my $test (@test) {
     is ($file_result, $expect_file, "Basename: $path");
 }
 
-note 'default_buildfiles()';
+note 'default_buildscripts()';
 {
     my %tests = (
         'hej.a.b.c' => [
@@ -255,7 +255,7 @@ note 'default_buildfiles()';
     );
     for (key %tests) {
         my $expect = $tests{$_};
-        is_deeply([ Local::Modulino::possible_buildfiles($_) ], $expect,
+        is_deeply([ Local::Modulino::possible_buildscripts($_) ], $expect,
                   "Files: $_");
     }
 }
@@ -532,6 +532,108 @@ note "Buildscript with non-existing command";
                                                   "Keepstate content: 1");
     is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
                                                   "Keepstate content: 1.fix");
+}
+
+rmtree([ ".$name", '1--fixing', keys %c ]);    # erase previous set of files
+%c = ();
+
+$c{'1.txt.fix'} = nl('echo $1', 'echo $2');
+$c{'1.txt'}     = nl("$ENV{PWD}/1.txt--fixing", "$ENV{PWD}/1.txt");
+write_file('1.txt.fix', $c{'1.txt.fix'});
+
+note 'First run of (working) buildscript, using "1.txt.fix" rule';
+{
+    my ($r, $a, $b) = run_fix(
+        0, '--stats 1.txt',
+        [qw( 1.txt.fix 1.txt )],
+    );
+    my %a = %$a;
+    my %b = %$b;
+
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate([qw( --stats 1.txt )]),
+                                         "Statsfile content");
+    is  ($a{'1.txt.fix'},    $b{'1.txt.fix'}, "Buildscript unchanged");
+    ok  (! -f '1.txt--fixing',           "Tempfile non-existing");
+    ok  (  -f '1.txt',                   "Target existing");
+    isnt($a{'1.txt'},        $b{'1.txt'}, "Target updated");
+    is  (read_file('1.txt'), $c{'1.txt'}, "Target content");
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/1.txt"), runstate(NEW_CONTENT),
+                                         "Runstate content: 1.txt");
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/1.txt"), keepstate(TARGET, $c{'1.txt'}, [ '1.txt.fix' ]),
+                                         "Keepstate content: 1.txt");
+    is  (read_file("$keep/1.txt.fix"), keepstate(SOURCE, $c{'1.txt.fix'}),
+                                         "Keepstate content: 1.txt.fix");
+}
+
+rmtree([ ".$name", keys %c ]);                 # erase previous set of files
+%c = ();
+
+$c{'default.fix'} = nl('echo $1', 'echo $2');
+$c{'1.txt'}           = nl("$ENV{PWD}/1.txt--fixing", "$ENV{PWD}/1.txt");
+write_file('default.fix', $c{'default.fix'});
+
+note 'First run of (working) buildscript, using "default.txt.fix" rule';
+{
+    my ($r, $a, $b) = run_fix(
+        0, '--stats 1.txt',
+        [qw( default.fix 1.txt )],
+    );
+    my %a = %$a;
+    my %b = %$b;
+
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate([qw( --stats 1.txt )]),
+                                         "Statsfile content");
+    is  ($a{'default.fix'},  $b{'default.fix'}, "Buildscript unchanged");
+    ok  (! -f '1.txt--fixing',           "Tempfile non-existing");
+    ok  (  -f '1.txt',                   "Target existing");
+    isnt($a{'1.txt'},        $b{'1.txt'}, "Target updated");
+    is  (read_file('1.txt'), $c{'1.txt'}, "Target content");
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/1.txt"), runstate(NEW_CONTENT),
+                                         "Runstate content: 1.txt");
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/1.txt"), keepstate(TARGET, $c{'1.txt'}, [ 'default.fix' ]),
+                                         "Keepstate content: 1.txt");
+    is  (read_file("$keep/default.fix"), keepstate(SOURCE, $c{'default.fix'}),
+                                         "Keepstate content: default.fix");
+}
+
+rmtree([ ".$name", keys %c ]);                 # erase previous set of files
+%c = ();
+
+$c{'default.txt.fix'} = nl('echo $1', 'echo $2');
+$c{'1.txt'}           = nl("$ENV{PWD}/1.txt--fixing", "$ENV{PWD}/1.txt");
+write_file('default.txt.fix', $c{'default.txt.fix'});
+
+note 'First run of (working) buildscript, using "default.fix" rule';
+{
+    my ($r, $a, $b) = run_fix(
+        0, '--stats 1.txt',
+        [qw( default.txt.fix 1.txt )],
+    );
+    my %a = %$a;
+    my %b = %$b;
+
+    ok  (  -e $stats,                    "Statsfile existing");
+    is  (read_file("$stats"), statsstate([qw( --stats 1.txt )]),
+                                         "Statsfile content");
+    is  ($a{'default.txt.fix'}, $b{'default.txt.fix'}, "Buildscript unchanged");
+    ok  (! -f '1.txt--fixing',           "Tempfile non-existing");
+    ok  (  -f '1.txt',                   "Target existing");
+    isnt($a{'1.txt'},        $b{'1.txt'}, "Target updated");
+    is  (read_file('1.txt'), $c{'1.txt'}, "Target content");
+    ok  (  -e $run,                      "Runstate dir existing");
+    is  (read_file("$run/1.txt"), runstate(NEW_CONTENT),
+                                         "Runstate content: 1.txt");
+    ok  (  -e $keep,                     "Keepstate dir existing");
+    is  (read_file("$keep/1.txt"), keepstate(TARGET, $c{'1.txt'}, [ 'default.txt.fix' ]),
+                                         "Keepstate content: 1.txt");
+    is  (read_file("$keep/default.txt.fix"), keepstate(SOURCE, $c{'default.txt.fix'}),
+                                         "Keepstate content: default.txt.fix");
 }
 
 $c{'1.fix'} = nl('echo $1', 'echo $2');

@@ -366,6 +366,32 @@ sub WARN    { 2 }                              # yellow
 sub INFO    { 3 }                              # green
 sub VERBOSE { 3 }                              # green
 sub DEBUG   { 0 }                              # plain
+{
+    my @ansi = ("\e[m", "\e[1m", "\e[33m", "\e[32m", "\e[31m");
+    # Return indented and colorized message.
+    sub msg {
+        my ($loglevel, $message) = @_;
+        die "msg(): missing loglevel" unless defined $ansi[$loglevel];
+        chomp $message;
+        return "$ansi[$loglevel]$NAME " . ("  " x ($Opt{level} - 1)) .
+            $ansi[BOLD] . $message . $ansi[PLAIN] . "\n";
+    }
+}
+sub info {
+    my ($msg) = @_;
+    say STDERR "\e[32m$NAME " . ("  " x ($Opt{level} - 1)) . "\e[1m$msg\e[m";
+}
+# Display verbose msg in mother process, or all processes with --verbose/--debug
+sub verb { (is_child() or $Opt{debug} or $Opt{verbose}) and info @_ }
+sub debug {
+    return unless $Opt{debug};
+    my ($msg) = @_;
+    say STDERR "$NAME " . ("  " x ($Opt{level} - 1)) . $msg;
+}
+sub quit {
+    ($!, my $msg) = @_;
+    die $msg // "", "\n";
+}
 
 sub is_child { $Opt{parent} ne '' }
 
@@ -575,15 +601,14 @@ sub find_fixfile {
 # dependencies was rebuilt.)
 sub build_target {
     my ($level, $buildscript, $target) = @_;
-    debug("Building target: $target\n");
+    debug("Building target: $target");
     info(strip_worktree($target));
     if (-f $target and has_changed($Keep, $target)) {
         $Run->set($target,      ABORT => strip_worktree($target));
         $Run->set($Opt{parent}, ABORT => strip_worktree($target)) if is_child();
         did($target, 'wont_overwrite');
-        msg(ERROR, strip_worktree($target) . ": Target externally modified, " .
-            "aborting\n");
-        exit 253;
+        quit(253, strip_worktree($target) .
+            ": Target externally modified, aborting");
     }
     # clear dependency information (rebuilt each run)
     $Keep->set($target,
@@ -621,15 +646,16 @@ sub build_target {
             die "Cannot run buildscript '$buildscript': $errno\n";
         }
         my $aborted_target = $Run->get($target, 'ABORT') // '';
-        if ($aborted_target ne '') {           # a dependency failed to run
-            unlink($outfile);                  #   erase outfile and
-            $Run->set(                         #     and tell our parent that
-                $Opt{parent},                  #     that we failed, too
-                ABORT => $aborted_target,
-            ) if is_child();
-        } else {                               # a buildscript returned non-zero
-            msg(ERROR, strip_worktree($target) . ": exit status $exit\n");
+        if ($aborted_target eq '') {           # buildscript returned non-zero
+            did($target, 'buildscript_error');
+            quit($exit, strip_worktree($target) . ": exit status $exit");
         }
+        # a dependency failed to run
+        unlink($outfile);                  #   erase outfile and
+        $Run->set(                         #     and tell our parent that
+            $Opt{parent},                  #     that we failed, too
+            ABORT => $aborted_target,
+        ) if is_child();
         did($target, 'buildscript_error');
         exit $exit;
     }
@@ -651,31 +677,6 @@ sub build_target {
     did($target, 'rebuilt_new_content');
     return TRUE;
 }
-
-# FIXME: clean up msg()
-{
-    my @ansi = ("\e[m", "\e[1m", "\e[33m", "\e[32m", "\e[31m");
-    sub msg {
-        my ($loglevel, $message) = @_;
-        die "msg(): missing loglevel" unless defined $ansi[$loglevel];
-        chomp $message;
-        say STDERR "$ansi[$loglevel]$NAME " . ("  " x ($Opt{level} - 1)) .
-            $ansi[BOLD] . $message . $ansi[PLAIN];
-    }
-}
-sub info {
-    chomp(my $msg = shift);
-    say STDERR "\e[32m$NAME " . ("  " x ($Opt{level} - 1)) . "\e[1m$msg\e[m";
-}
-# Display verbose msg in mother process, or all processes with --verbose/--debug
-sub verb { (is_child() or $Opt{debug} or $Opt{verbose}) and info @_ }
-sub debug {
-    return unless $Opt{debug};
-    chomp(my $msg = shift);
-    say STDERR "$NAME " . ("  " x ($Opt{level} - 1)) . $msg;
-}
-sub _warn { msg WARN, @_ }
-sub _die  { msg ERROR, @_; exit 255 }
 
 # NB: $file must exist for has_changed() to give meaningful result
 sub has_changed {
@@ -700,10 +701,9 @@ sub update_targets {
     local $Opt{level} = $level;
     my $changed  = FALSE;
   TARGET: foreach my $target (@target) {
-        debug("Updating target: $target\n");
+        debug("Updating target: $target");
         if ($target !~ m#^\Q$Opt{work_tree}\E($|/)#) {
-            msg(ERROR, "Target '$target' is outside fix's work tree\n");
-            exit 254;
+            quit(254, "Target '$target' is outside fix's work tree");
         }
         my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
         $type //= '';
@@ -717,9 +717,8 @@ sub update_targets {
         }
         my $buildscript = "$target.fix";       # target's buildscript
         if (not -f $buildscript) {
-            msg(ERROR, "No rule to make target '" .
-                strip_worktree($target) . "'\n");
-            exit 254;
+            quit(254, "No rule to make target '" .
+                strip_worktree($target) . "'");
         }
         if ($type eq '') {                     # target is not known by fix
             set_source_state($buildscript);
@@ -852,8 +851,10 @@ __PACKAGE__->run(@ARGV) unless caller();
 sub run {
     my ($class, @target) = @_;
     @target = getopts(@target);
-
-    %SIG = (__WARN__ => \&_warn, __DIE__  => \&_die);
+    %SIG = (
+        __WARN__ => sub { warn msg(WARN,  @_) },
+        __DIE__  => sub { die  msg(ERROR, @_) },
+    );
     if (is_child()) {                          # CHILD PROCESSES
         if ($Opt{source}) {                    #   '--source' = don't build
             set_source_state($_) foreach @target;

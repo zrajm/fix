@@ -6,6 +6,7 @@
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
 ** TODO Test error messages
+** TODO Apenwarr redo's tests
 * Main program
 ** TODO Scan for alternate buildscripts (not just 'TARGET.fix')
    If TARGET.fix isn't found, look for other possible buildscripts (in current
@@ -23,6 +24,22 @@
        ../../default.fix
 
    Stop the search at the root of the work tree (= git-like behavior).
+** TODO Options to specify script tree, target tree, and source tree dirs
+   There should be options which would allow for separation (of one or more) of
+   these three directories, so that you can avoid cluttering up the root of
+   your working tree.
+
+   One should be able to give these options in .fixrc, none of these
+   directories may reside outside of the working tree.
+
+   Option names(?)
+     --script-tree, --target-tree, --source-tree
+
+   A recommended setup(?)
+
+   work/
+     fix/    -- contains your fixscripts
+     build/  -- built output
 ** TODO Refactor Local::Store
 ** TODO Checksum-based dependencies
    You have the following files: 'a' which depends on 'b' which depends on 'c'.
@@ -36,7 +53,6 @@
    'a' should depend on 'b' + checksum of 'b', and 'b' should depend on 'c' +
    checksum of 'c', so that if file content changes, the file will be rebuilt,
    regardless of how the fix command was invoked.
-
 ** TODO Is something corresponding to 'redo-ifcreate' necessary?
 ** TODO Use PID lockfile avoid double invocations
 ** TODO Source config file '.fixrc' before running build
@@ -44,6 +60,8 @@
    (with its $PWD in the base directory) before any buildscript is invoked, and
    can be used to set up $PATH and similar stuffs.
 ** TODO Logging
+   Write each buildscripts STDERR to file, and, if build fails, output content
+   of the failing scripts STDERR, before terminating.
 ** TODO Drop Data::Dumper dependency
    Statefiles should be written in simple attribute/value format, so that a
    file looking like this (what about file name parsing -- something that can
@@ -104,8 +122,8 @@
    If the newly generated target looks the same, just update the state, and
    keep the old target.
 ** TODO Don't overwrite externally modified tempfiles
-   I.e. refuse to do it, if it already exists, and wasn't produced by fixitude
-   itself)
+   I.e. refuse to do it, if it already exists, and wasn't produced by fix
+   itself).
 ** TODO Parallel builds
    Fork and run parallel 'fix' for each argument given.
 ** TODO Magic numbers (#!) in buildscripts
@@ -125,7 +143,8 @@
 
    Means we could ditch the runstate as well (since its currently only used for
    this).
-** TODO Set up and run apenwarr redo's test scripts
+** TODO Add Local::Paths::relative(PATH[, BASE]) function
+   Which convert a pathname to a relative path.
 ** TODO Error messages should display filename relative to PWD
    Not relative to work_tree.
 ** TODO Display progress using relative paths

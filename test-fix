@@ -38,10 +38,8 @@ BEGIN {                                        # load 'fix' as a module
 sub delete_file {
     my (@file) = @_;
     foreach my $file (@file) {
-        unlink($file) or do {
-            my $msg = $!;
-            die "Failed to delete file '$file': $msg," if -e $file;
-        };
+        next unless -e $file;
+        unlink($file) or die "Failed to delete file '$file': $!,";
     }
 }
 
@@ -114,9 +112,8 @@ sub sha1 {
 }
 
 # Return keys in hash, sorted by first by length, then alphabetically.
-sub key {
-    my %x = @_;
-    sort { length($a) <=> length($b) or $a cmp $b } keys %x;
+sub key(\%) {
+    sort { length($a) <=> length($b) or $a cmp $b } keys %{ shift() };
 }
 
 sub serialize {
@@ -140,8 +137,9 @@ sub keepstate {
     return serialize(%x);
 }
 
-# for use with status()
-sub SAME_DEPS   { 'wont_rebuild' }
+# for use with run_fix_test() and runstate()
+sub ABORTED     { 'aborted' }
+sub UNCHANGED   { 'wont_rebuild' }
 sub WONT_OVERWR { 'wont_overwrite' }
 sub SHELL_FAIL  { 'shell_error' }
 sub BUILD_FAIL  { 'buildscript_error' }
@@ -164,34 +162,173 @@ sub statsstate {
     return serialize(%x);
 }
 
-sub run_fix {
-    my ($expected_exit, $args, $files, $before, $after) = @_;
-    $files  //= [];
-    $before //= sub {};
-    $after  //= sub {};
-    die 'run_fix() $args must be plain string,' if ref($args)   ne '';
-    die 'run_fix() $files must be arrayref,'    if ref($files)  ne 'ARRAY';
-    die 'run_fix() $before must be coderef,'    if ref($before) ne 'CODE';
-    die 'run_fix() $after must be coderef,'     if ref($after)  ne 'CODE';
-    my %pre = fingerprints(@$files);
+{
+    sub TRUE  { 1 }
+    sub FALSE { 0 }
+    my %target_rewritten = (
+        ABORTED     ,=> FALSE,      # unmodified targets, no runstate left
+        UNCHANGED   ,=> FALSE,
+        WONT_OVERWR ,=> FALSE,
+        SHELL_FAIL  ,=> FALSE,
+        BUILD_FAIL  ,=> FALSE,
+        KEPT_PREV   ,=> FALSE,
+        REPL_ERASED ,=> TRUE,
+        NEW_CONTENT ,=> TRUE,
+    );
+    sub run_fix_test {
+        my %arg = @_;
+        $arg{before} //= sub {};
+        $arg{after}  //= sub {};
+        die "run_fix_test() option 'exit' must be integer,"      if $arg{exit} !~ /^\d+$/;
+        die "run_fix_test() option 'before' must be coderef,"    if ref($arg{before}) ne 'CODE';
+        die "run_fix_test() option 'after' must be coderef,"     if ref($arg{after})  ne 'CODE';
+        my %result = %{ $arg{result} // {} };
+        my %source = %{ $arg{source} // {} };
+        my @stats  = @{ $arg{stats}  // [] };
+        my @args   = @{ $arg{args}   // [] };
 
-    $before->();
+        # write source files
+        foreach (key %source) {
+            write_file($_ => $source{$_}) if defined $source{$_};
+        }
 
-    # run command
-    note("Run: fix $args");
-    note("Dir: $ENV{PWD}");
-    my $exit = system("$fix $args 2> stderr.txt");
-    # check output for Perl errors/warnings
-    unlike(read_file('stderr.txt'), qr/Use of uninitialized value/,
-           "No Perl warning 'uninitialized value'");
-    delete_file('stderr.txt');
+        my @file = do {
+            my @tempfile = map { "$_--fixing" } keys %result;
+            delete_file @tempfile;
+            (keys %source, @tempfile, keys %result);
+        };
 
-    is  ($exit >> 8, $expected_exit, "Exit status");
+        my %pre  = fingerprints(@file);
+        $arg{before}();                        # run 'before' hook
+        unshift(@args, '--stats');             # insert '--stats' option
+        unshift(@{ $stats[0] }, '--stats') if @stats;
+        note("Run: fix @args");                # run command
+        note("Dir: $ENV{PWD}");
+        my $exit = system("$fix @args 2> stderr.txt");
 
-    $after->();
+        my $stderr = read_file('stderr.txt');  # check stderr output
+        unlike($stderr, qr/Use of uninitialized value/,
+               "No Perl warning 'uninitialized value'");
+        delete_file('stderr.txt');
 
-    my %post = fingerprints(@$files);
-    return ($exit, \%pre, \%post);
+        is($exit >> 8, $arg{exit},             # check exit status
+           "Exit status: $arg{exit}");
+
+        $arg{after}();                         # run 'after' hook
+        my %post = fingerprints(@file);
+
+        # check statsfile
+        if (@stats == 0) {
+            ok(!-e $stats, "Statsfile non-existing");
+        } else {
+            ok( -e $stats, "Statsfile existing");
+            is(read_file($stats), statsstate(@stats), "Statsfile content");
+        }
+
+        # check sourcefiles
+        {
+            foreach (key %source) {
+                ok(! -f $_, "Sourcefile non-existing: $_")
+                    if not defined $source{$_};
+            }
+            my @source = grep { defined $source{$_} } key(%source);
+            ok(   -f $_,            "Sourcefile existing: $_" ) for @source;
+            is($pre{$_}, $post{$_}, "Sourcefile unchanged: $_") for @source;
+        }
+
+        # check tempfiles
+        {
+            my @tempfile = (
+                key(%source),
+                grep { not defined $result{$_}{temp} } key(%result),
+            );
+            foreach (@tempfile) {
+                my $file = "$_--fixing";
+                ok(! -f $file, "Tempfile non-existing: $file");
+            }
+            @tempfile = grep { defined $result{$_}{temp} } key(%result);
+            foreach (@tempfile) {
+                my $file = "$_--fixing";
+                ok(  -f $file, "Tempfile existing: $file");
+            }
+            foreach (@tempfile) {
+                my $file = "$_--fixing";
+                isnt($pre{$file}, $post{$file}, "Tempfile updated: $file");
+            }
+            foreach (@tempfile) {
+                my $file = "$_--fixing";
+                my $gotten   = read_file($file);
+                my $expected = $result{$_}{temp};
+                is($gotten, $expected, "Tempfile content: $file");
+            }
+        }
+
+        # check targets
+        {
+            my @target;
+
+            @target = grep { not defined $result{$_}{cont} } key(%result);
+            ok(!-f $_, "Target non-existing: $_") for @target;
+
+            @target = grep {     defined $result{$_}{cont} } key(%result);
+            ok( -f $_, "Target existing: $_"    ) for @target;
+
+            foreach (@target) {                # rewritten targets
+                my $state = $result{$_}{state};
+                isnt($pre{$_}, $post{$_}, "Target updated: $_")
+                    if $target_rewritten{$state} == TRUE;
+            }
+            foreach (@target) {                # unmodified targets
+                my $state = $result{$_}{state};
+                is($pre{$_}, $post{$_}, "Target unchanged: $_")
+                    if $target_rewritten{$state} == FALSE;
+            }
+            foreach (@target) {                # if modified, check content
+                is(read_file($_), $result{$_}{cont}, "Target content: $_")
+                    if $pre{$_} ne $post{$_};
+            }
+        }
+
+        # check runstate
+        my @runstate = grep { $result{$_}{state} ne ABORTED } key(%result);
+        if (@runstate == 0) {                  # no targets generated
+            ok(!-e $run, "Runstate dir non-existing: $run");
+        } else {                               # targets were generated
+            ok( -e $run, "Runstate dir existing: $run");
+            foreach (key %result) {
+                ok(!-f "$run/$_", "Runstate non-existing: $run/$_")
+                    if $result{$_}{state} eq ABORTED;
+            }
+            foreach (@runstate) {
+                ok( -f "$run/$_", "Runstate existing: $run/$_");
+            }
+            foreach (@runstate) {
+                my $gotten   = read_file("$run/$_");
+                my $expected = runstate(
+                    $result{$_}{state},
+                    ($result{$_}{abort} ? (ABORT => $result{$_}{abort}) : ()),
+                );
+                is($gotten, $expected, "Runstate content: $run/$_");
+            }
+        }
+
+        # check keepstate
+        if (@runstate == 0) {
+            ok(!-e $keep, "Keepstate dir non-existing: $keep");
+        } else {
+            ok( -e $keep, "Keepstate dir existing: $keep");
+            foreach (key %source) {
+                my $gotten   = read_file("$keep/$_");
+                my $expected = keepstate(SOURCE, $source{$_});
+                is($gotten, $expected, "Keepstate content: $keep/$_");
+            }
+            foreach (key %result) {
+                my $gotten   = read_file("$keep/$_");
+                my $expected = keepstate(TARGET, $result{$_}{cont}, @{ $result{$_}{deps} });
+                is($gotten, $expected, "Keepstate content: $keep/$_");
+            }
+        }
+    }
 }
 
 ###############################################################################
@@ -201,8 +338,7 @@ sub run_fix {
 ###############################################################################
 
 # check if there is an 'exit' statement in this file
-my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit/m;
-
+my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit.*;/m;
 my $testdir = make_tempdir($name);
 
 ###############################################################################
@@ -343,964 +479,847 @@ my %c;                                         # Mnemonic: 'content'
 enter_dir("$testdir/external-tests");
 
 note "No '.fixrc'";
-{
-    my ($r) = run_fix(
-        254, '--stats 1',
-    );
-    ok  (! -e $stats,       "Statsfile non-existing");
-    ok  (! -e $run,         "Runstate dir non-existing");
-    ok  (! -e $keep,        "Keepstate dir non-existing");
-}
+run_fix_test(
+    exit => 254,
+    args => [qw( 1 )],
+);
 
 write_file('.fixrc' => '');
 
 note "No argument given";
-{
-    my ($r) = run_fix(
-        254, '--stats',
-    );
-    ok  (! -e $stats,       "Statsfile non-existing");
-    ok  (! -e $run,         "Runstate dir non-existing");
-    ok  (! -e $keep,        "Keepstate dir non-existing");
-}
+run_fix_test(
+    exit => 254,
+    args => [qw()],
+);
 
 note "Bad command line option";
-{
-    my ($r) = run_fix(
-        254, '--stats --BAD-OPTION',
-    );
-    ok  (! -e $stats,       "Statsfile non-existing");
-    ok  (! -e $run,         "Runstate dir non-existing");
-    ok  (! -e $keep,        "Keepstate dir non-existing");
-}
+run_fix_test(
+    exit => 254,
+    args => [qw( --BAD-OPTION )],
+);
 
 note "Non-existing buildscript";
 {
-    my ($r) = run_fix(
-        254, '--stats NON-EXISTING-TARGET',
+    run_fix_test(
+        exit   => 254,
+        args   =>  [qw( NON-EXISTING-TARGET )],
+        stats  => [[qw( NON-EXISTING-TARGET )]],
+        source => {
+            'NON-EXISTING-TARGET.fix' => undef,
+        },
+        result => {
+            'NON-EXISTING-TARGET' => {
+                state => ABORTED,
+            },
+        },
     );
-    ok  (  -e $stats,                        "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats NON-EXISTING-TARGET )]),
-                                             "Statsfile content");
-    ok  (! -f 'NON-EXISTING-TARGET.fix',     "Buildfile non-existing");
-    ok  (! -f 'NON-EXISTING-TARGET--fixing', "Tempfile non-existing");
-    ok  (! -f 'NON-EXISTING-TARGET',         "Target non-existing");
-    ok  (! -e $run,                          "Runstate dir non-existing");
-    ok  (! -e $keep,                         "Keepstate dir non-existing");
 }
 
 write_file('../outside.fix', '');
 
 note "Buildscript outside work tree";
-{
-    my ($r) = run_fix(
-        254, '--stats ../outside',
-    );
-    ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats ../outside )]),
-                                     "Statsfile content");
-    ok  (  -f '../outside.fix',      "Buildfile existing");
-    ok  (! -f '../outside--fixing',  "Tempfile non-existing");
-    ok  (! -f '../outside',          "Target non-existing");
-    ok  (! -e $run,                  "Runstate dir non-existing");
-    ok  (! -e $keep,                 "Keepstate dir non-existing");
-}
-
-$c{'1.fix'} = nl('echo FIRST', 'exit 1', 'echo SECOND');
-write_file('1.fix', $c{'1.fix'});
+run_fix_test(
+    exit   => 254,
+    args   =>  [qw( ../outside )],
+    stats  => [[qw( ../outside )]],
+    source => {
+        '../outside.fix' => '',
+    },
+    result => {
+        '../outside' => {
+            state => ABORTED,
+        },
+    },
+);
 
 note "Buildscript with exit status = 1";
-{
-    delete_file('1--fixing');
-
-    my ($r, $a, $b) = run_fix(
-        1, '--stats 1',
-        [qw( 1.fix 1--fixing )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                             "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                                  "Statsfile content");
-    is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
-    ok  (  -f '1--fixing',                        "Tempfile existing");
-    isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
-    is  (read_file('1--fixing'), nl('FIRST'),     "Tempfile content");
-    ok  (! -f '1',                                "Target non-existing");
-    ok  (  -e $run,                               "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(BUILD_FAIL),
-                                                  "Runstate content: 1");
-    ok  (  -e $keep,                              "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, undef, [ '1.fix' ]),
-                                                  "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                                  "Keepstate content: 1.fix");
-}
-
-$c{'1.fix'} = nl('echo FIRST', 'exit 2', 'echo SECOND');
-write_file('1.fix', $c{'1.fix'});
+run_fix_test(
+    exit   => 1,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('echo FIRST',
+                      'exit 1',
+                      'echo SECOND'),
+    },
+    result => {
+        '1' => {
+            state => BUILD_FAIL,
+            deps  => [[ '1.fix' ]],
+            temp  => nl('FIRST'),
+        },
+    },
+);
 
 note "Buildscript with exit status = 2";
-{
-    delete_file('1--fixing');
-
-    my ($r, $a, $b) = run_fix(
-        2, '--stats 1',
-        [qw( 1.fix 1--fixing )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                             "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                                  "Statsfile content");
-    is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
-    ok  (  -f '1--fixing',                        "Tempfile existing");
-    isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
-    is  (read_file('1--fixing'), nl('FIRST'),     "Tempfile content");
-    ok  (! -f '1',                                "Target non-existing");
-    ok  (  -e $run,                               "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(BUILD_FAIL),
-                                                  "Runstate content: 1");
-    ok  (  -e $keep,                              "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, undef, [ '1.fix' ]),
-                                                  "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                                  "Keepstate content: 1.fix");
-}
-
-$c{'1.fix'} = nl('echo FIRST', 'false', 'echo SECOND');
-write_file('1.fix', $c{'1.fix'});
+run_fix_test(
+    exit   => 2,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('echo FIRST',
+                      'exit 2',
+                      'echo SECOND'),
+    },
+    result => {
+        '1' => {
+            state => BUILD_FAIL,
+            deps  => [[ '1.fix' ]],
+            temp  => nl('FIRST'),
+        },
+    },
+);
 
 note "Buildscript with command returning false";
-{
-    delete_file('1--fixing');
-
-    my ($r, $a, $b) = run_fix(
-        1, '--stats 1',
-        [qw( 1.fix 1--fixing )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                             "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                                  "Statsfile content");
-    is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
-    ok  (  -f '1--fixing',                        "Tempfile existing");
-    isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
-    is  (read_file('1--fixing'), nl('FIRST'),     "Tempfile content");
-    ok  (! -f '1',                                "Target non-existing");
-    ok  (  -e $run,                               "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(BUILD_FAIL),
-                                                  "Runstate content: 1");
-    ok  (  -e $keep,                              "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, undef, [ '1.fix' ]),
-                                                  "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                                  "Keepstate content: 1.fix");
-}
-
-$c{'1.fix'} = nl("NONEXISTING-SHELL-COMMAND");
-write_file('1.fix', $c{'1.fix'});
+run_fix_test(
+    exit   => 1,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('echo FIRST',
+                      'false',
+                      'echo SECOND'),
+    },
+    result => {
+        '1' => {
+            state => BUILD_FAIL,
+            deps  => [[ '1.fix' ]],
+            temp  => nl('FIRST'),
+        },
+    },
+);
 
 note "Buildscript with non-existing command";
-{
-    delete_file('1--fixing');
+run_fix_test(
+    exit   => 127,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('NONEXISTING-SHELL-COMMAND'),
+    },
+    result => {
+        '1' => {
+            state => BUILD_FAIL,
+            deps  => [[ '1.fix' ]],
+            temp  => nl(),
+        },
+    },
+);
 
-    my ($r, $a, $b) = run_fix(
-        127, '--stats 1',
-        [qw( 1.fix 1--fixing )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                             "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                                  "Statsfile content");
-    is  ($a{'1.fix'},            $b{'1.fix'},     "Buildscript unchanged");
-    ok  (-f '1--fixing',                          "Tempfile existing");
-    isnt($a{'1--fixing'},        $b{'1--fixing'}, "Tempfile updated");
-    is  (read_file('1--fixing'), '',              "Tempfile content");
-    ok  (! -f '1',                                "Target non-existing");
-    ok  (  -e $run,                               "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(BUILD_FAIL),
-                                                  "Runstate content: 1");
-    ok  (  -e $keep,                              "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, undef, [ '1.fix' ]),
-                                                  "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                                  "Keepstate content: 1.fix");
-}
-
-rmtree([ ".$name", '1--fixing', keys %c ]);    # erase previous set of files
-%c = ();
-
-$c{'1.txt.fix'} = nl('echo $1', 'echo $2');
-$c{'1.txt'}     = nl("$ENV{PWD}/1.txt--fixing", "$ENV{PWD}/1.txt");
-write_file('1.txt.fix', $c{'1.txt.fix'});
+###############################################################################
 
 note 'First run of (working) buildscript, using "1.txt.fix" rule';
-{
-    my ($r, $a, $b) = run_fix(
-        0, '--stats 1.txt',
-        [qw( 1.txt.fix 1.txt )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1.txt )]),
-                                         "Statsfile content");
-    is  ($a{'1.txt.fix'},    $b{'1.txt.fix'}, "Buildscript unchanged");
-    ok  (! -f '1.txt--fixing',           "Tempfile non-existing");
-    ok  (  -f '1.txt',                   "Target existing");
-    isnt($a{'1.txt'},        $b{'1.txt'}, "Target updated");
-    is  (read_file('1.txt'), $c{'1.txt'}, "Target content");
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1.txt"), runstate(NEW_CONTENT),
-                                         "Runstate content: 1.txt");
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/1.txt"), keepstate(TARGET, $c{'1.txt'}, [ '1.txt.fix' ]),
-                                         "Keepstate content: 1.txt");
-    is  (read_file("$keep/1.txt.fix"), keepstate(SOURCE, $c{'1.txt.fix'}),
-                                         "Keepstate content: 1.txt.fix");
-}
-
-rmtree([ ".$name", keys %c ]);                 # erase previous set of files
-%c = ();
-
-$c{'default.fix'} = nl('echo $1', 'echo $2');
-$c{'1.txt'}           = nl("$ENV{PWD}/1.txt--fixing", "$ENV{PWD}/1.txt");
-write_file('default.fix', $c{'default.fix'});
+rmtree([ ".$name", '1.txt' ]);
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( 1.txt )],
+    stats  => [[qw( 1.txt )]],
+    source => {
+        '1.txt.fix' => nl('echo $1',
+                          'echo $2'),
+    },
+    result => {
+        '1.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ '1.txt.fix' ]],
+            cont  => nl("$ENV{PWD}/1.txt--fixing",
+                        "$ENV{PWD}/1.txt"),
+        },
+    },
+);
+rmtree([ ".$name", '1.txt', '1.txt.fix' ]);    # erase generated files
 
 note 'First run of (working) buildscript, using "default.txt.fix" rule';
-{
-    my ($r, $a, $b) = run_fix(
-        0, '--stats 1.txt',
-        [qw( default.fix 1.txt )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1.txt )]),
-                                         "Statsfile content");
-    is  ($a{'default.fix'},  $b{'default.fix'}, "Buildscript unchanged");
-    ok  (! -f '1.txt--fixing',           "Tempfile non-existing");
-    ok  (  -f '1.txt',                   "Target existing");
-    isnt($a{'1.txt'},        $b{'1.txt'}, "Target updated");
-    is  (read_file('1.txt'), $c{'1.txt'}, "Target content");
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1.txt"), runstate(NEW_CONTENT),
-                                         "Runstate content: 1.txt");
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/1.txt"), keepstate(TARGET, $c{'1.txt'}, [ 'default.fix' ]),
-                                         "Keepstate content: 1.txt");
-    is  (read_file("$keep/default.fix"), keepstate(SOURCE, $c{'default.fix'}),
-                                         "Keepstate content: default.fix");
-}
-
-rmtree([ ".$name", keys %c ]);                 # erase previous set of files
-%c = ();
-
-$c{'default.txt.fix'} = nl('echo $1', 'echo $2');
-$c{'1.txt'}           = nl("$ENV{PWD}/1.txt--fixing", "$ENV{PWD}/1.txt");
-write_file('default.txt.fix', $c{'default.txt.fix'});
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( 1.txt )],
+    stats  => [[qw( 1.txt )]],
+    source => {
+        'default.txt.fix' => nl('echo $1',
+                                'echo $2'),
+    },
+    result => {
+        '1.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'default.txt.fix' ]],
+            cont  => nl("$ENV{PWD}/1.txt--fixing",
+                        "$ENV{PWD}/1.txt"),
+        },
+    },
+);
+rmtree([ ".$name", '1.txt', 'default.txt.fix' ]);  # erase generated files
 
 note 'First run of (working) buildscript, using "default.fix" rule';
-{
-    my ($r, $a, $b) = run_fix(
-        0, '--stats 1.txt',
-        [qw( default.txt.fix 1.txt )],
-    );
-    my %a = %$a;
-    my %b = %$b;
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( 1.txt )],
+    stats  => [[qw( 1.txt )]],
+    source => {
+        'default.fix' => nl('echo $1',
+                            'echo $2'),
+    },
+    result => {
+        '1.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'default.fix' ]],
+            cont  => nl("$ENV{PWD}/1.txt--fixing",
+                        "$ENV{PWD}/1.txt"),
+        },
+    },
+);
+rmtree([ ".$name", '1.txt', 'default.fix' ]);  # erase generated files
 
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1.txt )]),
-                                         "Statsfile content");
-    is  ($a{'default.txt.fix'}, $b{'default.txt.fix'}, "Buildscript unchanged");
-    ok  (! -f '1.txt--fixing',           "Tempfile non-existing");
-    ok  (  -f '1.txt',                   "Target existing");
-    isnt($a{'1.txt'},        $b{'1.txt'}, "Target updated");
-    is  (read_file('1.txt'), $c{'1.txt'}, "Target content");
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1.txt"), runstate(NEW_CONTENT),
-                                         "Runstate content: 1.txt");
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/1.txt"), keepstate(TARGET, $c{'1.txt'}, [ 'default.txt.fix' ]),
-                                         "Keepstate content: 1.txt");
-    is  (read_file("$keep/default.txt.fix"), keepstate(SOURCE, $c{'default.txt.fix'}),
-                                         "Keepstate content: default.txt.fix");
-}
-
-$c{'1.fix'} = nl('echo $1', 'echo $2');
-$c{'1'}     = nl("$ENV{PWD}/1--fixing", "$ENV{PWD}/1");
-write_file('1.fix', $c{'1.fix'});
+###############################################################################
 
 note 'First run of (working) buildscript + $1 and $2';
-{
-    my ($r, $a, $b) = run_fix(
-        0, '--stats 1',
-        [qw( 1.fix 1 )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                         "Statsfile content");
-    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',               "Tempfile non-existing");
-    ok  (  -f '1',                       "Target existing");
-    isnt($a{'1'},           $b{'1'},     "Target updated");
-    is  (read_file('1'),    $c{'1'},     "Target content");
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(NEW_CONTENT),
-                                         "Runstate content: 1");
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
-                                         "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                         "Keepstate content: 1.fix");
-}
+rmtree([ '1', '1.fix' ]);  # erase generated files
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('echo $1',
+                      'echo $2'),
+    },
+    result => {
+        '1' => {
+            state => NEW_CONTENT,
+            deps  => [[ '1.fix' ]],
+            cont  => nl("$ENV{PWD}/1--fixing",
+                        "$ENV{PWD}/1"),
+        },
+    },
+);
 
 note "Rerun without changes";
-{
-    my ($r, $a, $b) = run_fix(
-        0, '--stats 1',
-        [qw( 1.fix 1 )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                         "Statsfile content");
-    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',               "Tempfile non-existing");
-    ok  (  -f '1',                       "Target existing");
-    is  ($a{'1'},           $b{'1'},     "Target unchanged");
-    is  (read_file('1'),    $c{'1'},     "Target content");
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(SAME_DEPS),
-                                                  "Runstate content: 1");
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
-                                         "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                         "Keepstate content: 1.fix");
-}
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('echo $1',
+                      'echo $2'),
+    },
+    result => {
+        '1' => {
+            state => UNCHANGED,
+            deps  => [[ '1.fix' ]],
+            cont  => nl("$ENV{PWD}/1--fixing",
+                        "$ENV{PWD}/1"),
+        },
+    },
+);
 
 note "Rerun after target was externally modified";
-{
-    write_file('1', nl('XXX'));    # modify target file
-
-    my ($r, $a, $b) = run_fix(
-        253, '--stats 1',
-        [qw( 1.fix 1 )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                         "Statsfile content");
-    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',               "Tempfile non-existing");
-    ok  (  -f '1',                       "Target existing");
-    is  ($a{'1'},           $b{'1'},     "Target unchanged");
-    is  (read_file('1'),    nl('XXX'),   "Target content");
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(WONT_OVERWR, ABORT => '1'),
-                                         "Runstate content: 1");
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
-                                         "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                         "Keepstate content: 1.fix");
-}
+# (Won't generate tempfile, since build isn't attempted at all.)
+write_file('1', nl('XXX'));                    # modify target file
+run_fix_test(
+    exit   => 253,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('echo $1',
+                      'echo $2'),
+    },
+    result => {
+        '1' => {
+            abort => '1',
+            state => WONT_OVERWR,
+            deps  => [[ '1.fix' ]],
+            cont  => nl("$ENV{PWD}/1--fixing",
+                        "$ENV{PWD}/1"),
+        },
+    },
+);
 
 note "Rerun after target was deleted";
-{
-    delete_file('1');
-
-    my ($r, $a, $b) = run_fix(
-        0, '--stats 1',
-        [qw( 1.fix 1 )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                         "Statsfile content");
-    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',               "Tempfile non-existing");
-    ok  (  -f '1',                       "Target existing");
-    isnt($a{'1'},           $b{'1'},     "Target updated");
-    is  (read_file('1'),    $c{'1'},     "Target content");
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(REPL_ERASED),
-                                         "Runstate content: 1");
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
-                                         "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                         "Keepstate content: 1.fix");
-}
-
-$c{'1.fix'} = nl('# COMMENT', 'echo $1', 'echo $2');
-$c{'1'}     = nl("$ENV{PWD}/1--fixing", "$ENV{PWD}/1");
-write_file('1.fix', $c{'1.fix'});
+delete_file('1');
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('echo $1',
+                      'echo $2'),
+    },
+    result => {
+        '1' => {
+            state => REPL_ERASED,
+            deps  => [[ '1.fix' ]],
+            cont  => nl("$ENV{PWD}/1--fixing",
+                        "$ENV{PWD}/1"),
+        },
+    },
+);
 
 note "Rerun after buildscript was changed, but give same output";
-{
-    my ($r, $a, $b) = run_fix(
-        0, '--stats 1',
-        [qw( 1.fix 1 )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                         "Statsfile content");
-    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',               "Tempfile non-existing");
-    ok  (  -f '1',                       "Target existing");
-    is  ($a{'1'},           $b{'1'},     "Target unchanged");
-    is  (read_file('1'),    $c{'1'},     "Target content");
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(KEPT_PREV),
-                                         "Runstate content: 1");
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
-                                         "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                         "Keepstate content: 1.fix");
-}
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('# COMMENT',
+                      'echo $1',
+                      'echo $2'),
+    },
+    result => {
+        '1' => {
+            state => KEPT_PREV,
+            deps  => [[ '1.fix' ]],
+            cont  => nl("$ENV{PWD}/1--fixing",
+                        "$ENV{PWD}/1"),
+        },
+    },
+);
 
 note "Rerun after buildscript was changed, and give new output";
-$c{'1.fix'} = nl('echo 1');
-$c{'1'}     = nl('1');
-write_file('1.fix', $c{'1.fix'});
-{
-    my ($r, $a, $b) = run_fix(
-        0, '--stats 1',
-        [qw( 1.fix 1 )],
-    );
-    my %a = %$a;
-    my %b = %$b;
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats 1 )]),
-                                         "Statsfile content");
-    is  ($a{'1.fix'},       $b{'1.fix'}, "Buildscript unchanged");
-    ok  (! -f '1--fixing',               "Tempfile non-existing");
-    ok  (  -f '1',                       "Target existing");
-    isnt($a{'1'},           $b{'1'},     "Target updated");
-    is  (read_file('1'),    nl('1'),     "Target content");
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/1"), runstate(NEW_CONTENT),
-                                         "Runstate content: 1");
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/1"), keepstate(TARGET, $c{'1'}, [ '1.fix' ]),
-                                         "Keepstate content: 1");
-    is  (read_file("$keep/1.fix"), keepstate(SOURCE, $c{'1.fix'}),
-                                         "Keepstate content: 1.fix");
-}
-
-# clear heretofore generated files
-rmtree([ ".$name", qw/ 1 1.fix a / ]);
-
-%source = (
-    'test.txt.fix' => nl(
-        'echo test >$1'
-    ),
-);
-%target = (
-    'test.txt' => [
-        NEW_CONTENT, [[ 'test.txt.fix' ]], nl(
-            'test'
-        ),
-    ],
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( 1 )],
+    stats  => [[qw( 1 )]],
+    source => {
+        '1.fix' => nl('echo 1'),
+    },
+    result => {
+        '1' => {
+            state => NEW_CONTENT,
+            deps  => [[ '1.fix' ]],
+            cont  => nl('1'),
+        },
+    },
 );
 
-write_file(%source);
+###############################################################################
 
-note "Buildscript outputting to tempfile (\$1)";
-{
-    my @cmd = (
-        [qw( --stats test.txt )],
-    );
-
-    my ($exit, $pre, $post) = run_fix(
-        0, join(' ', '--stats', keys %target),
-        [ key(%source, %target) ],
-    );
-
-    ok  (  -e $stats,                   "Statsfile existing");
-    is  (read_file("$stats"), statsstate(@cmd),
-                                        "Statsfile content");
-    ok  (  -f $_,                       "Source existing: $_")  for key %source;
-    is  ($pre->{$_},    $post->{$_},    "Source unchanged: $_") for key %source;
-    is  (read_file($_), $source{$_},    "Source content: $_")   for key %source;
-    ok  (! -f "$_--fixing",             "Tempfile non-existing: $_--fixing") for key(%source, %target);
-    ok  (  -f $_,                       "Target existing: $_")  for key %target;
-    isnt($pre->{$_},    $post->{$_},    "Target updated: $_")   for key %target;
-    is  (read_file($_), $target{$_}[2], "Target content: $_")   for key %target;
-    ok  (  -e $run,                     "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate($target{$_}[0]),
-                                        "Runstate content: $_") for key %target;
-    ok  (  -e $keep,                    "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                        "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}[2], @{ $target{$_}[1] }),
-                                        "Keepstate content: $_") for key %target;
-}
-
-################################################################################
-
-%source = (
-    'indented.txt.fix' => nl(
-        'fix --source source.txt',
-        'sed "s/^/> /" <source.txt'
-    ),
-    'source.txt' => nl(
-        'some text'
-    ),
-);
-%target = (
-    'indented.txt' => [
-        NEW_CONTENT, [
-            ['indented.txt.fix'],
-            ['source.txt'],
-        ], nl(
-            '> some text'
-        ),
-    ],
+note 'Writing to tempfile $1';
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( test.txt )],
+    stats  => [[qw( test.txt )]],
+    source => {
+        'test.txt.fix' => nl('echo test >$1'),
+    },
+    result => {
+        'test.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'test.txt.fix' ]],
+            cont  => nl('test'),
+        },
+    },
 );
 
-# clear heretofore generated files
-write_file(%source);
+###############################################################################
 
-note "Buildscript with source dependency";
-{
-    my @cmd = (
-        [qw( --stats  indented.txt )],
-        [qw( --source source.txt )],
-    );
-
-    my ($exit, $pre, $post) = run_fix(
-        0, join(' ', '--stats', keys %target),
-        [ key(%source, %target) ],
-    );
-
-    ok  (  -e $stats,                   "Statsfile existing");
-    is  (read_file("$stats"), statsstate(@cmd),
-                                        "Statsfile content");
-    ok  (  -f $_,                       "Source existing: $_")  for key %source;
-    is  ($pre->{$_},    $post->{$_},    "Source unchanged: $_") for key %source;
-    is  (read_file($_), $source{$_},    "Source content: $_")   for key %source;
-    ok  (! -f "$_--fixing",             "Tempfile non-existing: $_--fixing") for key(%source, %target);
-    ok  (  -f $_,                       "Target existing: $_")  for key %target;
-    isnt($pre->{$_},    $post->{$_},    "Target updated: $_")   for key %target;
-    is  (read_file($_), $target{$_}[2], "Target content: $_")   for key %target;
-    ok  (  -e $run,                     "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate($target{$_}[0]),
-                                        "Runstate content: $_") for key %target;
-    ok  (  -e $keep,                    "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                        "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}[2], @{ $target{$_}[1] }),
-                                        "Keepstate content: $_") for key %target;
-}
-
-note "Buildscript with source dependency, rebuild without change";
-{
-    my @cmd = (
-        [qw( --stats  indented.txt )],
-    );
-    $target{'indented.txt'}[0] = SAME_DEPS;
-
-    my ($exit, $pre, $post) = run_fix(
-        0, join(' ', '--stats', keys %target),
-        [ key(%source, %target) ],
-    );
-
-    ok  (  -e $stats,                   "Statsfile existing");
-    is  (read_file("$stats"), statsstate(@cmd),
-                                        "Statsfile content");
-    ok  (  -f $_,                       "Source existing: $_")  for key %source;
-    is  ($pre->{$_},    $post->{$_},    "Source unchanged: $_") for key %source;
-    is  (read_file($_), $source{$_},    "Source content: $_")   for key %source;
-    ok  (! -f "$_--fixing",             "Tempfile non-existing: $_--fixing") for key(%source, %target);
-    ok  (  -f $_,                       "Target existing: $_")  for key %target;
-    is  ($pre->{$_},    $post->{$_},    "Target updated: $_")   for key %target;
-    is  (read_file($_), $target{$_}[2], "Target content: $_")   for key %target;
-    ok  (  -e $run,                     "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate($target{$_}[0]),
-                                        "Runstate content: $_") for key %target;
-    ok  (  -e $keep,                    "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                        "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}[2], @{ $target{$_}[1] }),
-                                        "Keepstate content: $_") for key %target;
-}
-
-$source{'source.txt'} = nl(
-    'some other text'
+note '=== Source Dependency ===';
+note "Source dependency";
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( indented.txt )],
+    stats  => [[qw( indented.txt )], [qw( --source source.txt )]],
+    source => {
+        'indented.txt.fix' => nl('fix --source source.txt',
+                                 'sed "s/^/> /" <source.txt'),
+        'source.txt' => nl('some text'),
+    },
+    result => {
+        'indented.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'indented.txt.fix' ], [ 'source.txt' ]],
+            cont  => nl('> some text'),
+        },
+    },
 );
-$target{'indented.txt'} = [
-    NEW_CONTENT, [
-        ['indented.txt.fix'],
-        ['source.txt'],
-    ], nl(
-        '> some other text'
-    ),
-];
 
-write_file(%source);
-note "Buildscript with source dependency, rebuild with source change";
-{
-    my @cmd = (
-        [qw( --stats  indented.txt )],
-        [qw( --source source.txt )],
-    );
-
-    my ($exit, $pre, $post) = run_fix(
-        0, join(' ', '--stats', keys %target),
-        [ key(%source, %target) ],
-    );
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"), statsstate(@cmd),
-                                         "Statsfile content");
-
-    ok  (  -f $_,                        "Source existing: $_")  for key %source;
-    is  ($pre->{$_},    $post->{$_},     "Source unchanged: $_") for key %source;
-    is  (read_file($_), $source{$_},     "Source content: $_")   for key %source;
-
-    ok  (! -f "$_--fixing",              "Tempfile non-existing: $_--fixing") for key(%source, %target);
-
-    ok  (  -f $_,                        "Target existing: $_") for key %target;
-    isnt($pre->{$_},    $post->{$_},     "Target updated: $_")  for key %target;
-    is  (read_file($_), $target{$_}[2],  "Target content: $_")  for key %target;
-
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate($target{$_}[0]),
-                                         "Runstate content: $_") for key %target;
-
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                         "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}[2], @{ $target{$_}[1] }),
-                                         "Keepstate content: $_") for key %target;
-}
-
-################################################################################
-
-# clear heretofore generated files
-rmtree([ ".$name", qw/ 1 1.fix a / ]);
-write_file(%source = (
-    'a.fix'    => nl('echo a'),
-    'b.fix'    => nl('echo b'),
-    '1.fix'    => nl('echo 1'),
-    '2.fix'    => nl('echo 2'),
-    '12.fix'   => nl('$FIX_CMD 1 2',   'echo 12',   'cat 1 2 | sed "s/^/>/"'),
-    'ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat a b | sed "s/^/>/"'),
-    'ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
-));
-%target = (                                    # expected target content
-    a    => nl(qw/           a                 /),
-    b    => nl(qw/               b             /),
-    1    => nl(qw/                       1     /),
-    2    => nl(qw/                           2 /),
-    ab   => nl(qw/      ab  >a  >b             /),
-    12   => nl(qw/                  12  >1  >2 /),
-    ab12 => nl(qw/ab12 >ab >>a >>b >12 >>1 >>2 /),
+note "Source dependency, rebuild without change";
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( indented.txt )],
+    stats  => [[qw( indented.txt )]],
+    source => {
+        'indented.txt.fix' => nl('fix --source source.txt',
+                                 'sed "s/^/> /" <source.txt'),
+        'source.txt' => nl('some text'),
+    },
+    result => {
+        'indented.txt' => {
+            state => UNCHANGED,
+            deps  => [[ 'indented.txt.fix' ], [ 'source.txt' ]],
+            cont  => nl('> some text'),
+        },
+    },
 );
-%target_deps = (
-    1    => [[ '1.fix'    ]],
-    2    => [[ '2.fix'    ]],
-    a    => [[ 'a.fix'    ]],
-    b    => [[ 'b.fix'    ]],
-    ab   => [[ 'ab.fix'   ], [qw/  a  b /]],
-    12   => [[ '12.fix'   ], [qw/  1  2 /]],
-    ab12 => [[ 'ab12.fix' ], [qw/ ab 12 /]],
+
+note "Source dependency, rebuild with source change";
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( indented.txt )],
+    stats  => [[qw( indented.txt )], [qw( --source source.txt )]],
+    source => {
+        'indented.txt.fix' => nl('fix --source source.txt',
+                                 'sed "s/^/> /" <source.txt'),
+        'source.txt' => nl('some other text'),
+    },
+    result => {
+        'indented.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'indented.txt.fix' ], [ 'source.txt' ]],
+            cont  => nl('> some other text'),
+        },
+    },
 );
+
+###############################################################################
+
+note '=== Complex Dependencies ===';
+rmtree([ ".$name", qw( 1 1.fix a ) ]);         # clear previously generated files
 
 note "First run of buildscript with dependencies";
-{
-    my ($exit, $pre, $post) = run_fix(
-        0, '--stats ab12',
-        [ key(%source, %target) ],
-    );
-    my %pre  = %$pre;
-    my %post = %$post;
-
-    ok  (  -e $stats,                    "Statsfile existing");
-    is  (read_file("$stats"),
-         statsstate([qw( --stats ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]),
-                                         "Statsfile content");
-    is  ($pre{$_},          $post{$_},   "Buildscript unchanged: $_")
-        for key %source;
-    ok  (! -f "$_--fixing",              "Tempfile non-existing: $_--fixing")
-        for key %target;
-    ok  (  -f $_,                        "Target existing: $_") for key %target;
-    isnt($pre{$_},          $post{$_},   "Target updated: $_")  for key %target;
-    is  (read_file($_),     $target{$_}, "Target content: $_")  for key %target;
-    ok  (  -e $run,                      "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate(NEW_CONTENT),
-                                         "Runstate content: $_") for key %target;
-    ok  (  -e $keep,                     "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                         "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                         "Keepstate content: $_") for key %target;
-}
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( ab12 )],
+    stats  => [[qw( ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]],
+    source => {
+        'ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
+        'ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat  a  b | sed "s/^/>/"'),
+        '12.fix'   => nl('$FIX_CMD 1 2',   'echo 12',   'cat  1  2 | sed "s/^/>/"'),
+        'b.fix'    => nl('echo b'),
+        'a.fix'    => nl('echo a'),
+        '2.fix'    => nl('echo 2'),
+        '1.fix'    => nl('echo 1'),
+    },
+    result => {
+        ab12 => {
+            state => NEW_CONTENT,
+            deps  => [[ 'ab12.fix' ], [qw( ab 12 )]],
+            cont  => nl(qw(ab12 >ab >>a >>b >12 >>1 >>2 )),
+        },
+        ab => {
+            state => NEW_CONTENT,
+            deps  => [[ 'ab.fix' ], [qw( a  b )]],
+            cont  => nl(qw(      ab  >a  >b             )),
+        },
+        12 => {
+            state => NEW_CONTENT,
+            deps  => [[ '12.fix' ], [qw( 1  2 )]],
+            cont  => nl(qw(                  12  >1  >2 )),
+        },
+        a => {
+            state => NEW_CONTENT,
+            deps  => [[ 'a.fix' ]],
+            cont  => nl(qw(           a                 )),
+        },
+        b => {
+            state => NEW_CONTENT,
+            deps  => [[ 'b.fix' ]],
+            cont  => nl(qw(               b             )),
+        },
+        1 => {
+            state => NEW_CONTENT,
+            deps  => [[ '1.fix' ]],
+            cont  => nl(qw(                       1     )),
+        },
+        2 => {
+            state => NEW_CONTENT,
+            deps  => [[ '2.fix' ]],
+            cont  => nl(qw(                           2 )),
+        },
+    },
+);
 
 note "Rerun without change";
-{
-    my ($exit, $pre, $post) = run_fix(
-        0, '--stats ab12',
-        [ key(%source, %target) ],
-    );
-    my %pre  = %$pre;
-    my %post = %$post;
-
-    ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats ab12 )]),
-                                     "Statsfile content");
-    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
-    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
-    ok  (  -f $_,                    "Target existing: $_")   for key %target;
-    is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for key %target;
-    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (  -e $run,                  "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate(SAME_DEPS),
-                                     "Runstate content: $_") for key %target;
-    ok  (  -e $keep,                 "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                     "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                     "Keepstate content: $_") for key %target;
-}
-
-$source{'2.fix'} = nl('echo 22');
-write_file('2.fix', $source{'2.fix'});
-
-# changes in expected target content
-$target{2}    = nl(qw/                           22 /);
-$target{12}   = nl(qw/                  12  >1  >22 /);
-$target{ab12} = nl(qw/ab12 >ab >>a >>b >12 >>1 >>22 /);
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( ab12 )],
+    stats  => [[qw( ab12 )]],
+    source => {
+        'ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
+        'ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat  a  b | sed "s/^/>/"'),
+        '12.fix'   => nl('$FIX_CMD 1 2',   'echo 12',   'cat  1  2 | sed "s/^/>/"'),
+        'b.fix'    => nl('echo b'),
+        'a.fix'    => nl('echo a'),
+        '2.fix'    => nl('echo 2'),
+        '1.fix'    => nl('echo 1'),
+    },
+    result => {
+        ab12 => {
+            state => UNCHANGED,
+            deps  => [[ 'ab12.fix' ], [qw( ab 12 )]],
+            cont  => nl(qw(ab12 >ab >>a >>b >12 >>1 >>2 )),
+        },
+        ab => {
+            state => UNCHANGED,
+            deps  => [[ 'ab.fix' ], [qw( a  b )]],
+            cont  => nl(qw(      ab  >a  >b             )),
+        },
+        12 => {
+            state => UNCHANGED,
+            deps  => [[ '12.fix' ], [qw( 1  2 )]],
+            cont  => nl(qw(                  12  >1  >2 )),
+        },
+        a => {
+            state => UNCHANGED,
+            deps  => [[ 'a.fix' ]],
+            cont  => nl(qw(           a                 )),
+        },
+        b => {
+            state => UNCHANGED,
+            deps  => [[ 'b.fix' ]],
+            cont  => nl(qw(               b             )),
+        },
+        1 => {
+            state => UNCHANGED,
+            deps  => [[ '1.fix' ]],
+            cont  => nl(qw(                       1     )),
+        },
+        2 => {
+            state => UNCHANGED,
+            deps  => [[ '2.fix' ]],
+            cont  => nl(qw(                           2 )),
+        },
+    },
+);
 
 note "Rerun after change of subtarget '2'";
-{
-    my ($exit, $pre, $post) = run_fix(
-        0, '--stats ab12',
-        [ key(%source, %target) ],
-    );
-    my %pre  = %$pre;
-    my %post = %$post;
-
-    ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats ab12 )], [qw(1 2)], [qw(ab 12)]),
-                                     "Statsfile content");
-    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
-    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
-    ok  (  -f $_,                    "Target existing: $_")   for key %target;
-    isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/2 12 ab12/;
-    is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 1 ab/;
-    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (  -e $run,                  "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate(SAME_DEPS),
-                                     "Runstate content: $_") for qw/a b 1 ab/;
-    is  (read_file("$run/$_"), runstate(NEW_CONTENT),
-                                     "Runstate content: $_") for qw/2 12 ab12/;
-    ok  (  -e $keep,                 "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                     "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                     "Keepstate content: $_") for key %target;
-}
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( ab12 )],
+    stats  => [[qw( ab12 )], [qw(1 2)], [qw(ab 12)]],
+    source => {
+        'ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
+        'ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat  a  b | sed "s/^/>/"'),
+        '12.fix'   => nl('$FIX_CMD 1 2',   'echo 12',   'cat  1  2 | sed "s/^/>/"'),
+        'b.fix'    => nl('echo b'),
+        'a.fix'    => nl('echo a'),
+        '2.fix'    => nl('echo 22'),
+        '1.fix'    => nl('echo 1'),
+    },
+    result => {
+        ab12 => {
+            state => NEW_CONTENT,
+            deps  => [[ 'ab12.fix' ], [qw( ab 12 )]],
+            cont  => nl(qw(ab12 >ab >>a >>b >12 >>1 >>22 )),
+        },
+        ab => {
+            state => UNCHANGED,
+            deps  => [[ 'ab.fix' ], [qw( a  b )]],
+            cont  => nl(qw(      ab  >a  >b              )),
+        },
+        12 => {
+            state => NEW_CONTENT,
+            deps  => [[ '12.fix' ], [qw( 1  2 )]],
+            cont  => nl(qw(                  12  >1  >22 )),
+        },
+        a => {
+            state => UNCHANGED,
+            deps  => [[ 'a.fix' ]],
+            cont  => nl(qw(           a                  )),
+        },
+        b => {
+            state => UNCHANGED,
+            deps  => [[ 'b.fix' ]],
+            cont  => nl(qw(               b              )),
+        },
+        1 => {
+            state => UNCHANGED,
+            deps  => [[ '1.fix' ]],
+            cont  => nl(qw(                       1      )),
+        },
+        2 => {
+            state => NEW_CONTENT,
+            deps  => [[ '2.fix' ]],
+            cont  => nl(qw(                           22 )),
+        },
+    },
+);
 
 note "Rerun after a dependency '12' was deleted";
-{
-    delete_file('12');
-
-    my ($exit, $pre, $post) = run_fix(
-        0, '--stats ab12',
-        [ key(%source, %target) ],
-    );
-    my %pre  = %$pre;
-    my %post = %$post;
-
-    ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats ab12 )], [qw(1 2)]),
-                                     "Statsfile content");
-    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
-    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
-    ok  (  -f $_,                    "Target existing: $_")   for key %target;
-    isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/12/;
-    is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 1 2 ab ab12/;
-    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (  -e $run,                  "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate(SAME_DEPS),
-                                     "Runstate content: $_") for qw/a b 1 2 ab ab12/;
-    is  (read_file("$run/$_"), runstate(REPL_ERASED),
-                                     "Runstate content: $_") for qw/12/;
-    ok  (  -e $keep,                 "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                     "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                     "Keepstate content: $_") for key %target;
-}
+delete_file('12');
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( ab12 )],
+    stats  => [[qw( ab12 )], [qw(1 2)]],
+    source => {
+        'ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
+        'ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat  a  b | sed "s/^/>/"'),
+        '12.fix'   => nl('$FIX_CMD 1 2',   'echo 12',   'cat  1  2 | sed "s/^/>/"'),
+        'b.fix'    => nl('echo b'),
+        'a.fix'    => nl('echo a'),
+        '2.fix'    => nl('echo 22'),
+        '1.fix'    => nl('echo 1'),
+    },
+    result => {
+        ab12 => {
+            state => UNCHANGED,
+            deps  => [[ 'ab12.fix' ], [qw( ab 12 )]],
+            cont  => nl(qw(ab12 >ab >>a >>b >12 >>1 >>22 )),
+        },
+        ab => {
+            state => UNCHANGED,
+            deps  => [[ 'ab.fix' ], [qw( a  b )]],
+            cont  => nl(qw(      ab  >a  >b              )),
+        },
+        12 => {
+            state => REPL_ERASED,
+            deps  => [[ '12.fix' ], [qw( 1  2 )]],
+            cont  => nl(qw(                  12  >1  >22 )),
+        },
+        a => {
+            state => UNCHANGED,
+            deps  => [[ 'a.fix' ]],
+            cont  => nl(qw(           a                  )),
+        },
+        b => {
+            state => UNCHANGED,
+            deps  => [[ 'b.fix' ]],
+            cont  => nl(qw(               b              )),
+        },
+        1 => {
+            state => UNCHANGED,
+            deps  => [[ '1.fix' ]],
+            cont  => nl(qw(                       1      )),
+        },
+        2 => {
+            state => UNCHANGED,
+            deps  => [[ '2.fix' ]],
+            cont  => nl(qw(                           22 )),
+        },
+    },
+);
 
 note "Rerun after a dependency '1' was deleted";
-{
-    delete_file('1');
-
-    my ($exit, $pre, $post) = run_fix(
-        0, '--stats ab12',
-        [ key(%source, %target) ],
-    );
-    my %pre  = %$pre;
-    my %post = %$post;
-
-    ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats ab12 )]),
-                                     "Statsfile content");
-    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
-    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
-    ok  (  -f $_,                    "Target existing: $_")   for key %target;
-    isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/1/;
-    is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 2 ab 12 ab12/;
-    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (  -e $run,                  "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate(SAME_DEPS),
-                                     "Runstate content: $_") for qw/a b 2 ab 12 ab12/;
-    is  (read_file("$run/$_"), runstate(REPL_ERASED),
-                                     "Runstate content: $_") for qw/1/;
-    ok  (  -e $keep,                 "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                     "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                     "Keepstate content: $_") for key %target;
-}
+delete_file('1');
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( ab12 )],
+    stats  => [[qw( ab12 )]],
+    source => {
+        'ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
+        'ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat  a  b | sed "s/^/>/"'),
+        '12.fix'   => nl('$FIX_CMD 1 2',   'echo 12',   'cat  1  2 | sed "s/^/>/"'),
+        'b.fix'    => nl('echo b'),
+        'a.fix'    => nl('echo a'),
+        '2.fix'    => nl('echo 22'),
+        '1.fix'    => nl('echo 1'),
+    },
+    result => {
+        ab12 => {
+            state => UNCHANGED,
+            deps  => [[ 'ab12.fix' ], [qw( ab 12 )]],
+            cont  => nl(qw(ab12 >ab >>a >>b >12 >>1 >>22 )),
+        },
+        ab => {
+            state => UNCHANGED,
+            deps  => [[ 'ab.fix' ], [qw( a  b )]],
+            cont  => nl(qw(      ab  >a  >b              )),
+        },
+        12 => {
+            state => UNCHANGED,
+            deps  => [[ '12.fix' ], [qw( 1  2 )]],
+            cont  => nl(qw(                  12  >1  >22 )),
+        },
+        a => {
+            state => UNCHANGED,
+            deps  => [[ 'a.fix' ]],
+            cont  => nl(qw(           a                  )),
+        },
+        b => {
+            state => UNCHANGED,
+            deps  => [[ 'b.fix' ]],
+            cont  => nl(qw(               b              )),
+        },
+        1 => {
+            state => REPL_ERASED,
+            deps  => [[ '1.fix' ]],
+            cont  => nl(qw(                       1      )),
+        },
+        2 => {
+            state => UNCHANGED,
+            deps  => [[ '2.fix' ]],
+            cont  => nl(qw(                           22 )),
+        },
+    },
+);
 
 note "Rerun after dependency target '1' externally modified";
-{
-    local $target{'1'} = nl('XXX');            # 'externally' modify target file
-    write_file('1', $target{'1'});
+# (Won't generate tempfile, since build isn't attempted at all.)
+# FIXME: When graceful abort is implemented, check runstate of ABORTED targets.
+write_file('1', nl('XXX'));                    # modify target file
+run_fix_test(
+    exit   => 253,
+    args   =>  [qw( ab12 )],
+    stats  => [[qw( ab12 )]],
+    source => {
+        'ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
+        'ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat  a  b | sed "s/^/>/"'),
+        '12.fix'   => nl('$FIX_CMD 1 2',   'echo 12',   'cat  1  2 | sed "s/^/>/"'),
+        'b.fix'    => nl('echo b'),
+        'a.fix'    => nl('echo a'),
+        '2.fix'    => nl('echo 22'),
+        '1.fix'    => nl('echo 1'),
+    },
+    result => {
+        ab12 => {
+            state => ABORTED,
+            deps  => [[ 'ab12.fix' ], [qw( ab 12 )]],
+            cont  => nl(qw(ab12 >ab >>a >>b >12 >>1 >>22 )),
+        },
+        ab => {
+            state => UNCHANGED,
+            deps  => [[ 'ab.fix' ], [qw( a  b )]],
+            cont  => nl(qw(      ab  >a  >b              )),
+        },
+        12 => {
+            state => ABORTED,
+            deps  => [[ '12.fix' ], [qw( 1  2 )]],
+            cont  => nl(qw(                  12  >1  >22 )),
+        },
+        a => {
+            state => UNCHANGED,
+            deps  => [[ 'a.fix' ]],
+            cont  => nl(qw(           a                  )),
+        },
+        b => {
+            state => UNCHANGED,
+            deps  => [[ 'b.fix' ]],
+            cont  => nl(qw(               b              )),
+        },
+        1 => {
+            abort => '1',
+            state => WONT_OVERWR,
+            deps  => [[ '1.fix' ]],
+            cont  => nl(qw(                       1      )),
+        },
+        2 => {
+            state => ABORTED,
+            deps  => [[ '2.fix' ]],
+            cont  => nl(qw(                           22 )),
+        },
+    },
+);
 
-    my ($exit, $pre, $post) = run_fix(
-        253, '--stats ab12',
-        [ key(%source, %target) ],
-    );
-    my %pre  = %$pre;
-    my %post = %$post;
+###############################################################################
 
-    ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats ab12 )]),
-                                     "Statsfile content");
-    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
-    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
-    ok  (  -f $_,                    "Target existing: $_")   for key %target;
-    is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for key %target;
-    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-} {
-    # $target{'1'} == 'XXX' above, but in state we're expecting to see old values
-    ok  (  -e $run,                  "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate(WONT_OVERWR, ABORT => $_),
-                                     "Runstate content: $_") for qw/1/;
-    # When build is aborted, stats become unreliable for the other files.
-    # is  (read_file("$run/$_"), runstate(SAME_DEPS),
-    #                                  "Runstate content: $_") for qw/a b 2 12 ab ab12/;
-    ok  (  -e $keep,                 "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                     "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                     "Keepstate content: $_") for key %target;
-}
-
+note '=== Target Outside Current Dir ===';
 note "Building target in parent dir";
-{
-    delete_file('1');
-
-    my ($exit, $pre, $post) = run_fix(
-        0, '--stats ../ab12',
-        [ key(%source, %target) ],
-        sub { mkdir('abc') && chdir('abc') || die "cannot cd to 'abc'," },
-        sub {                 chdir('..')  || die "cannot cd back from 'abc'," },
-    );
-    my %pre  = %$pre;
-    my %post = %$post;
-
-    ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"), statsstate([qw( --stats ../ab12 )]),
-                                     "Statsfile content");
-    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
-    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
-    ok  (  -f $_,                    "Target existing: $_")   for key %target;
-    isnt($pre{$_},      $post{$_},   "Target updated: $_")    for qw/1/;
-    is  ($pre{$_},      $post{$_},   "Target unchanged: $_")  for qw/a b 2 ab 12 ab12/;
-    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (  -e $run,                  "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate(SAME_DEPS),
-                                     "Runstate content: $_") for qw/a b 2 ab 12 ab12/;
-    is  (read_file("$run/$_"), runstate(REPL_ERASED),
-                                     "Runstate content: $_") for qw/1/;
-    ok  (  -e $keep,                 "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                     "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                     "Keepstate content: $_") for key %target;
-}
-
-# rewrite filenames to include subdir name
-%source = map { ("abc/$_" => $source{$_}) } keys %source;
-%target = map { ("abc/$_" => $target{$_}) } keys %target;
-%target_deps = map {
-    my $value = [ map { [ map { "abc/$_" } @$_ ] } @{ $target_deps{$_} } ];
-    ("abc/$_" => $value);
-} keys %target_deps;
-write_file(%source);
+delete_file('1');
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( ../ab12 )],
+    # FIXME: When stats are relative to $FIX_WORK_TREE.
+    stats  => [[qw( ../ab12 )]],
+    before => sub {
+        mkdir('abc') && chdir('abc') || die "cannot cd to 'abc',";
+    },
+    after  => sub {
+        chdir('..')  || die "cannot cd back from 'abc',";
+        ok(! -e "abc/.fix", "Statedir non-existing in subdir: abc/.fix");
+    },
+    source => {
+        'ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
+        'ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat  a  b | sed "s/^/>/"'),
+        '12.fix'   => nl('$FIX_CMD 1 2',   'echo 12',   'cat  1  2 | sed "s/^/>/"'),
+        'b.fix'    => nl('echo b'),
+        'a.fix'    => nl('echo a'),
+        '2.fix'    => nl('echo 22'),
+        '1.fix'    => nl('echo 1'),
+    },
+    result => {
+        ab12 => {
+            state => UNCHANGED,
+            deps  => [[ 'ab12.fix' ], [qw( ab 12 )]],
+            cont  => nl(qw(ab12 >ab >>a >>b >12 >>1 >>22 )),
+        },
+        ab => {
+            state => UNCHANGED,
+            deps  => [[ 'ab.fix' ], [qw( a  b )]],
+            cont  => nl(qw(      ab  >a  >b              )),
+        },
+        12 => {
+            state => UNCHANGED,
+            deps  => [[ '12.fix' ], [qw( 1  2 )]],
+            cont  => nl(qw(                  12  >1  >22 )),
+        },
+        a => {
+            state => UNCHANGED,
+            deps  => [[ 'a.fix' ]],
+            cont  => nl(qw(           a                  )),
+        },
+        b => {
+            state => UNCHANGED,
+            deps  => [[ 'b.fix' ]],
+            cont  => nl(qw(               b              )),
+        },
+        1 => {
+            state => REPL_ERASED,
+            deps  => [[ '1.fix' ]],
+            cont  => nl(qw(                       1      )),
+        },
+        2 => {
+            state => UNCHANGED,
+            deps  => [[ '2.fix' ]],
+            cont  => nl(qw(                           22 )),
+        },
+    },
+);
 
 note "Building target in subdir";
-{
-    delete_file('1');
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( abc/ab12 )],
+    # FIXME: When stats are relative to $FIX_WORK_TREE.
+    stats  => [[qw( abc/ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]],
+    after  => sub {
+        ok(! -e "abc/.fix", "Statedir non-existing in subdir: abc/.fix");
+    },
+    source => {
+        'abc/ab12.fix' => nl('$FIX_CMD ab 12', 'echo ab12', 'cat ab 12 | sed "s/^/>/"'),
+        'abc/ab.fix'   => nl('$FIX_CMD a b',   'echo ab',   'cat  a  b | sed "s/^/>/"'),
+        'abc/12.fix'   => nl('$FIX_CMD 1 2',   'echo 12',   'cat  1  2 | sed "s/^/>/"'),
+        'abc/b.fix'    => nl('echo b'),
+        'abc/a.fix'    => nl('echo a'),
+        'abc/2.fix'    => nl('echo 22'),
+        'abc/1.fix'    => nl('echo 1'),
+    },
+    result => {
+        'abc/ab12' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'abc/ab12.fix' ], [qw( abc/ab abc/12 )]],
+            cont  => nl(qw(ab12 >ab >>a >>b >12 >>1 >>22 )),
+        },
+        'abc/ab' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'abc/ab.fix' ], [qw( abc/a  abc/b )]],
+            cont  => nl(qw(      ab  >a  >b              )),
+        },
+        'abc/12' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'abc/12.fix' ], [qw( abc/1  abc/2 )]],
+            cont  => nl(qw(                  12  >1  >22 )),
+        },
+        'abc/a' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'abc/a.fix' ]],
+            cont  => nl(qw(           a                  )),
+        },
+        'abc/b' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'abc/b.fix' ]],
+            cont  => nl(qw(               b              )),
+        },
+        'abc/1' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'abc/1.fix' ]],
+            cont  => nl(qw(                       1      )),
+        },
+        'abc/2' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'abc/2.fix' ]],
+            cont  => nl(qw(                           22 )),
+        },
+    },
+);
 
-    my ($exit, $pre, $post) = run_fix(
-        0, '--stats abc/ab12',
-        [ key(%source, %target) ],
-    );
-    my %pre  = %$pre;
-    my %post = %$post;
-
-    ok  (  -e $stats,                "Statsfile existing");
-    is  (read_file("$stats"),
-         statsstate([qw( --stats abc/ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]),
-                                     "Statsfile content");
-    is  ($pre{$_},      $post{$_},   "Buildscript unchanged: $_") for key %source;
-    ok  (! -f "$_--fixing",          "Tempfile non-existing: $_--fixing") for key %target;
-    ok  (  -f $_,                    "Target existing: $_")   for key %target;
-    isnt($pre{$_},      $post{$_},   "Target updated: $_")    for key %target;
-    is  (read_file($_), $target{$_}, "Target content: $_")    for key %target;
-    ok  (! -e "abc/.fix",            "Statedir non-existing in subdir");
-    ok  (  -e $run,                  "Runstate dir existing");
-    is  (read_file("$run/$_"), runstate(NEW_CONTENT),
-                                     "Runstate content: $_") for key %target;
-    ok  (  -e $keep,                 "Keepstate dir existing");
-    is  (read_file("$keep/$_"), keepstate(SOURCE, $source{$_}),
-                                     "Keepstate content: $_") for key %source;
-    is  (read_file("$keep/$_"), keepstate(TARGET, $target{$_}, @{ $target_deps{$_} }),
-                                     "Keepstate content: $_") for key %target;
-}
+###############################################################################
 
 END {
     done_testing();

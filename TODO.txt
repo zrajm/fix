@@ -1,6 +1,9 @@
 -*- org -*-
 
 * Testing
+** TODO Add subtests
+   This requires some kind of compatibility function for old versions
+   Test::More (i.e. my desktop machine).
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
@@ -8,6 +11,10 @@
 ** TODO Test error messages
 ** TODO Apenwarr redo's tests
 * Main program
+** TODO Stats outputted paths should be relative to $FIX_WORK_TREE
+   (They're currently relative to the current dir.) Some tests will be affected
+   by this. Relevant tests have the comment: 'FIXME: When stats are relative to
+   $FIX_WORK_TREE.'
 ** TODO Options to specify script tree, target tree, and source tree dirs
    There should be options which would allow for separation (of one or more) of
    these three directories, so that you can avoid cluttering up the root of
@@ -24,6 +31,8 @@
    work/
      fix/    -- contains your fixscripts
      build/  -- built output
+
+   (See also option '--target' below.)
 ** TODO Refactor Local::Store
 ** TODO Checksum-based dependencies
    You have the following files: 'a' which depends on 'b' which depends on 'c'.
@@ -37,6 +46,10 @@
    'a' should depend on 'b' + checksum of 'b', and 'b' should depend on 'c' +
    checksum of 'c', so that if file content changes, the file will be rebuilt,
    regardless of how the fix command was invoked.
+** TODO Abort status should be kept between builds
+   If a file has unchanged dependencies (and dependencies of dependencies) then
+   there is no need to try to build it again, since we *know* build will fail
+   this time around too...
 ** TODO $FIX_WORK_TREE as current dir in buildscrips
    Fix can then change dir just once, and doesn't have to care about it any
    more after that. Also `cd ${2%/*}` (in a buildscript) would change dir to
@@ -72,12 +85,27 @@
        }
 ** TODO Prettier output output each target name just once
 ** TODO Add option '--always' to rebuild everything
-   Described in POD (uncomment when implemented).
-   Alternative option names '--all' or '--dirty'?
+   Described in POD (uncomment when implemented). Alternative option names
+   '--all', '--rebuild' or '--everything'.
+
+   Building should be so good and dependable that this option is never, ever
+   needed, nevertheless, it should exist for emergencies.
 ** TODO Add option '--clean'
    Described in POD (uncomment when implemented).
+** TODO Add option '--dirty'(?)                                         :LOW:
+   Should be used in buildscript to indicate that it should always be
+   considered dirty, and needs to be rebuilt every time. This would be used for
+   a target that use outside information that is expected to always change
+   (e.g. running processes or something like that).
+
+   Best way to use this flag would be to make a special buildscript, using 'fix
+   --dirty', that capture this information in a file (doing a minimal amount of
+   work) and then have other buildscripts depend upon this file. That way, if
+   this always-dirty buildscript generate an output identical to the previous
+   output a minimal amount of work would have to be done.
 ** TODO Add option '--force'
-   Described in POD (uncomment when implemented).
+   Described in POD (uncomment when implemented). Could also be called
+   '--overwrite'.
 ** TODO Add option '--list'
    Described in POD (uncomment when implemented).
 ** TODO Add option '--plot'(?) to generate Graphviz file of build graph
@@ -359,3 +387,7 @@
        ../../default.fix
 
    Stop the search at the root of the work tree (= git-like behavior).
+** DONE Major rewrite of external tests
+   CLOSED: [2014-01-25 Sat 20:38]
+   All testing is now done in run_fix_test(). Desired effects are all expressed
+   as args, severely reducing test sizes and making tests more readable.

@@ -286,13 +286,10 @@ sub man {
 # cwd()! It gives *physical* insteado of *logical* paths! (Bugs ohoy!) :(
 {
     package Local::Paths;
-    use Cwd;
-
     # Current working directory. Returns environment variable '$PWD' (= logical
     # path) if available and falls back to returning Perl's cwd() if that
     # fails.
-    sub current { $ENV{PWD} // Cwd::cwd() }
-
+    sub current { $ENV{PWD} // do { use Cwd; Cwd::cwd() } }
     BEGIN {
         *CORE::GLOBAL::chdir = sub {
             my $dir = absolute(shift());
@@ -300,7 +297,6 @@ sub man {
             CORE::chdir($dir) and $ENV{PWD} = $dir;
         };
     }
-
     # Clean up a path without looking at the file system.
     sub clean {
         my ($path) = @_;
@@ -321,12 +317,27 @@ sub man {
             ? (($path =~ m#^/#) ? '/' : '.')   #   original path to see if it
             : $newpath;                        #   started with '/'
     }
-
+    # Return absolute path ($path is relative to $basedir, or current dir).
     sub absolute {
-        my ($_, $basedir) = @_;
-        clean(m#^/# ? $_ : ($basedir // current()) . "/$_");
+        my ($path, $basedir) = @_;
+        $basedir //= current();
+        clean($path =~ m#^/# ? $path : join('/', $basedir, $path));
     }
-
+    # Return relative path (relative to $basedir, or current dir). $path and
+    # $basedir may be absolute or relative (to the current dir).
+    sub relative {
+        my ($path, $basedir) = map { absolute($_) } @_;
+        $basedir //= current();
+        my @path = split('/', $path,    -1);
+        my @base = split('/', $basedir, -1);
+        while (@path and @base                 # remove all identical dirs
+                and $path[0] eq $base[0]) {
+            shift(@path);
+            shift(@base);
+        }
+        pop @base if @base and $base[-1] eq '';# happens if $basedir = '/'
+        return join('/', ('..') x scalar(@base), @path);
+    }
     # Searches for each of the named files, first in DIR, then the dir above
     # that, etc. all the way up to the specified TOPDIR. Return name of found
     # file, or empty string on failure.

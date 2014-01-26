@@ -396,6 +396,23 @@ note 'default_buildscripts()';
     }
 }
 
+note 'Local::Paths::relative()';
+{
+    my @test = (
+        [qw( /x/y/z.txt  /           x/y/z.txt )],
+        [qw( /x/y/z.txt  /x            y/z.txt )],
+        [qw( /x/y/z.txt  /x/y            z.txt )],
+        [qw( /x/y/z.txt  /x/y/a       ../z.txt )],
+        [qw( /x/y/z.txt  /x/y/a/b  ../../z.txt )],
+        [qw( ../z.txt    .            ../z.txt )],
+    );
+    foreach (@test) {
+        my ($file, $dir, $result) = @$_;
+        my $got = Local::Paths::relative($file, $dir);
+        is($got, $result, "$result");
+    }
+}
+
 note 'Local::Paths::clean()';
 {
     my @test = (
@@ -485,6 +502,8 @@ run_fix_test(
 );
 
 write_file('.fixrc' => '');
+
+###############################################################################
 
 note "No argument given";
 run_fix_test(

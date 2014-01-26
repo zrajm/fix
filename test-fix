@@ -1224,8 +1224,7 @@ delete_file('1');
 run_fix_test(
     exit   => 0,
     args   =>  [qw( ../ab12 )],
-    # FIXME: When stats are relative to $FIX_WORK_TREE.
-    stats  => [[qw( ../ab12 )]],
+    stats  => [[qw( ab12 )]],
     before => sub {
         mkdir('abc') && chdir('abc') || die "cannot cd to 'abc',";
     },
@@ -1285,8 +1284,10 @@ note "Building target in subdir";
 run_fix_test(
     exit   => 0,
     args   =>  [qw( abc/ab12 )],
-    # FIXME: When stats are relative to $FIX_WORK_TREE.
-    stats  => [[qw( abc/ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]],
+    stats  => [[qw( abc/ab12      )],
+               [qw( abc/ab abc/12 )],
+               [qw( abc/a  abc/b  )],
+               [qw( abc/1  abc/2  )]],
     after  => sub {
         ok(! -e "abc/.fix", "Statedir non-existing in subdir: abc/.fix");
     },

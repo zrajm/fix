@@ -830,13 +830,16 @@ sub getopts {
         dir        => "$Opt{fix_dir}/keep",
         namefilter => \&strip_worktree,
     );
-    if ($Opt{stats}) {                         # write child counter
+    if ($Opt{stats}) {                         # write '--stats'
         $Stats->delete('stats')                #   mother deletes earlier stats
             unless is_child();
         $Stats->set('stats',                   #   count fix invocations
             run_count   => sub { (shift() // 0) + 1 },
             run_targets => sub {               #   save args for each call
-                [ @{ shift() // [] }, \@orgarg ];
+                my @arg = map {
+                    m#^-# ? $_ : Local::Paths::relative($_, $Opt{work_tree});
+                } @orgarg;
+                [ @{ shift() // [] }, \@arg ];
             },
         );
     }

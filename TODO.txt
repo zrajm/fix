@@ -11,10 +11,6 @@
 ** TODO Test error messages
 ** TODO Apenwarr redo's tests
 * Main program
-** TODO Stats outputted paths should be relative to $FIX_WORK_TREE
-   (They're currently relative to the current dir.) Some tests will be affected
-   by this. Relevant tests have the comment: 'FIXME: When stats are relative to
-   $FIX_WORK_TREE.'
 ** TODO Options to specify script tree, target tree, and source tree dirs
    There should be options which would allow for separation (of one or more) of
    these three directories, so that you can avoid cluttering up the root of
@@ -391,3 +387,8 @@
    CLOSED: [2014-01-25 Sat 20:38]
    All testing is now done in run_fix_test(). Desired effects are all expressed
    as args, severely reducing test sizes and making tests more readable.
+** DONE Stats outputted paths should be relative to $FIX_WORK_TREE
+   CLOSED: [2014-01-26 Sun 08:54]
+   (They're currently relative to the current dir.) Some tests will be affected
+   by this. Relevant tests have the comment: 'FIXME: When stats are relative to
+   $FIX_WORK_TREE.'

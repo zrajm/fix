@@ -14,6 +14,8 @@ $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Terse    = 1;
 
+import Local::Paths qw( abspath relpath find_parent_path );
+
 ###############################################################################
 ##                                                                           ##
 ##  Settings                                                                 ##
@@ -26,7 +28,7 @@ our ($NAME)  = __FILE__ =~ m#([^/]*)$#;        # last non-slash part of path
 our ($Keep, $Run);
 our %Opt = (
     debug     => !!$ENV{FIX_DEBUG},            # -D/--debug $FIX_DEBUG
-    fix_cmd   =>   $ENV{FIX_CMD}       //= Local::Paths::absolute(__FILE__),
+    fix_cmd   =>   $ENV{FIX_CMD}       //= abspath(__FILE__),
     fix_dir   =>   $ENV{FIX_DIR}       // '',  # '.fix' dir
     work_tree =>   $ENV{FIX_WORK_TREE} // '',  # worktree root
     # force   => !!$ENV{FIX_FORCE},            # -f/--force $FIX_FORCE
@@ -286,13 +288,18 @@ sub man {
 # cwd()! It gives *physical* insteado of *logical* paths! (Bugs ohoy!) :(
 {
     package Local::Paths;
+    BEGIN {
+        use Exporter 'import';
+        our @ISA       = qw(Exporter);
+        our @EXPORT_OK = qw(abspath relpath find_parent_path);
+    }
     # Current working directory. Returns environment variable '$PWD' (= logical
-    # path) if available and falls back to returning Perl's cwd() if that
-    # fails.
+    # path) if available, and falls back to returning Perl's cwd() if that
+    # fails. (NOT EXPORTED: Use abspath(".") from outside module.)
     sub current { $ENV{PWD} // do { use Cwd; Cwd::cwd() } }
     BEGIN {
         *CORE::GLOBAL::chdir = sub {
-            my $dir = absolute(shift());
+            my $dir = abspath(shift());
             return 1 if $dir eq $ENV{PWD};
             CORE::chdir($dir) and $ENV{PWD} = $dir;
         };
@@ -318,15 +325,15 @@ sub man {
             : $newpath;                        #   started with '/'
     }
     # Return absolute path ($path is relative to $basedir, or current dir).
-    sub absolute {
+    sub abspath {
         my ($path, $basedir) = @_;
         $basedir //= current();
         clean($path =~ m#^/# ? $path : join('/', $basedir, $path));
     }
     # Return relative path (relative to $basedir, or current dir). $path and
     # $basedir may be absolute or relative (to the current dir).
-    sub relative {
-        my ($path, $basedir) = map { absolute($_) } @_;
+    sub relpath {
+        my ($path, $basedir) = map { abspath($_) } @_;
         $basedir //= current();
         my @path = split('/', $path,    -1);
         my @base = split('/', $basedir, -1);
@@ -341,9 +348,9 @@ sub man {
     # Searches for each of the named files, first in DIR, then the dir above
     # that, etc. all the way up to the specified TOPDIR. Return name of found
     # file, or empty string on failure.
-    sub find_above {
+    sub find_parent_path {
         my ($dir, $topdir, @file) = @_;
-        ($dir, $topdir) = (absolute($dir), absolute($topdir));
+        ($dir, $topdir) = (abspath($dir), abspath($topdir));
         die "Start dir '$dir' must be inside top dir '$topdir'\n"
             unless $topdir eq '/' or $dir =~ m#^\Q$topdir\E($|/)#;
         while (1) {
@@ -500,13 +507,13 @@ sub add_fix_to_path {
         symlink($Opt{fix_cmd}, $link)
             or die "$NAME: Cannot create symlink '$link': $!\n";
     }
-    my $full = Local::Paths::absolute($bindir);
+    my $full = abspath($bindir);
     # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).
     # Therefore the cwd cannot contain a colon (we could fix this this by
     # having this stuff in /tmp, I guess).
     if ($full =~ /:/) {                    # guard for stupid system bug
         die "$NAME: Colon not allowed in current dir path ('" .
-            Local::Paths::Current() . "')\n";
+            abspath('.') . "')\n";
     }
     $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
 }
@@ -589,7 +596,7 @@ sub possible_buildscripts {
 sub find_buildscript {
     my ($target) = @_;
     return "$target.fix" if -e "$target.fix";
-    return Local::Paths::find_above(
+    return find_parent_path(
         '.', $Opt{work_tree}, possible_buildscripts($target),
     );
 }
@@ -800,7 +807,7 @@ sub getopts {
         die "Cannot use '--source' outside buildscript\n" if $Opt{source};
 
         if ($Opt{fix_dir} eq '') {             # set FIX_DIR and WORK_TREE
-            my $rcfile = Local::Paths::find_above('.', '/', '.fixrc') or do {
+            my $rcfile = find_parent_path('.', '/', '.fixrc') or do {
                 die "Current dir not in a fix worktree\n" .
                     "(Use 'touch .fixrc' where you want your worktree root.)\n";
             };
@@ -808,10 +815,9 @@ sub getopts {
             $Opt{work_tree} = $ENV{FIX_WORK_TREE} = "$dir";
             $Opt{fix_dir}   = $ENV{FIX_DIR}       = "$dir/.fix";
         } else {
-            $Opt{work_tree} = $ENV{FIX_WORK_TREE} = Local::Paths::current()
+            $Opt{work_tree} = $ENV{FIX_WORK_TREE} = abspath('.')
                 if $Opt{work_tree} eq '';
-            $Opt{fix_dir}   = $ENV{FIX_DIR}       =
-                Local::Paths::absolute($Opt{fix_dir});
+            $Opt{fix_dir}   = $ENV{FIX_DIR}       = abspath($Opt{fix_dir});
         }
     }
     if (@arg == 0) {
@@ -837,13 +843,13 @@ sub getopts {
             run_count   => sub { (shift() // 0) + 1 },
             run_targets => sub {               #   save args for each call
                 my @arg = map {
-                    m#^-# ? $_ : Local::Paths::relative($_, $Opt{work_tree});
+                    m#^-# ? $_ : relpath($_, $Opt{work_tree});
                 } @orgarg;
                 [ @{ shift() // [] }, \@arg ];
             },
         );
     }
-    return map { Local::Paths::absolute($_) } @arg;
+    return map { abspath($_) } @arg;
 }
 
 ###############################################################################

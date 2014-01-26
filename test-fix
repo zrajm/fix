@@ -396,7 +396,7 @@ note 'default_buildscripts()';
     }
 }
 
-note 'Local::Paths::relative()';
+note 'Local::Paths::relpath()';
 {
     my @test = (
         [qw( /x/y/z.txt  /           x/y/z.txt )],
@@ -408,7 +408,7 @@ note 'Local::Paths::relative()';
     );
     foreach (@test) {
         my ($file, $dir, $result) = @$_;
-        my $got = Local::Paths::relative($file, $dir);
+        my $got = Local::Paths::relpath($file, $dir);
         is($got, $result, "$result");
     }
 }

@@ -392,3 +392,5 @@
    (They're currently relative to the current dir.) Some tests will be affected
    by this. Relevant tests have the comment: 'FIXME: When stats are relative to
    $FIX_WORK_TREE.'
+** DONE Export path functions from Local::Paths
+   CLOSED: [2014-01-26 Sun 18:34]

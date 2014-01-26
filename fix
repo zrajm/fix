@@ -23,7 +23,7 @@ $Data::Dumper::Terse    = 1;
 our $VERSION = "0.3";
 our $YEAR    = "2012-2014";
 our ($NAME)  = __FILE__ =~ m#([^/]*)$#;        # last non-slash part of path
-our ($Keep, $Run, $Stats);
+our ($Keep, $Run);
 our %Opt = (
     debug     => !!$ENV{FIX_DEBUG},            # -D/--debug $FIX_DEBUG
     fix_cmd   =>   $ENV{FIX_CMD}       //= Local::Paths::absolute(__FILE__),
@@ -818,22 +818,22 @@ sub getopts {
         die "No target specified\n" .
             "Try '$NAME --help' for more information.\n";
     }
-    $Run   = new Local::Store(
+    $Run = new Local::Store(
         dir        => "$Opt{fix_dir}/run",
         namefilter => \&strip_worktree,
     );
-    $Stats = new Local::Store(
-        dir        => "$Opt{fix_dir}",
-        namefilter => \&strip_worktree,
-    );
-    $Keep  = new Local::Store(
+    $Keep = new Local::Store(
         dir        => "$Opt{fix_dir}/keep",
         namefilter => \&strip_worktree,
     );
     if ($Opt{stats}) {                         # write '--stats'
-        $Stats->delete('stats')                #   mother deletes earlier stats
+        my $stats = new Local::Store(
+            dir        => "$Opt{fix_dir}",
+            namefilter => \&strip_worktree,
+        );
+        $stats->delete('stats')                #   mother deletes earlier stats
             unless is_child();
-        $Stats->set('stats',                   #   count fix invocations
+        $stats->set('stats',                   #   count fix invocations
             run_count   => sub { (shift() // 0) + 1 },
             run_targets => sub {               #   save args for each call
                 my @arg = map {

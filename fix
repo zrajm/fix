@@ -417,11 +417,10 @@ sub quit {
 
 sub is_child { $Opt{parent} ne '' }
 
-# Strip off worktree path from a filename.
-sub  strip_worktree { (my $x = shift) =~ s#^\Q$Opt{work_tree}/##; $x }
-sub prefix_worktree { $Opt{work_tree} . '/' . shift() }
+sub  strip_worktree { relpath(shift(), $Opt{work_tree}) }
+sub prefix_worktree { abspath(shift(), $Opt{work_tree}) }
 
-# Set value for '--stats'. If value is already set, leave it as-is.
+# Set runstate value for '--stats'. If value already set, don't change it.
 sub did {
     return unless $Opt{stats};
     my ($name, $value) = @_;
@@ -833,10 +832,7 @@ sub getopts {
         namefilter => \&strip_worktree,
     );
     if ($Opt{stats}) {                         # write '--stats'
-        my $stats = new Local::Store(
-            dir        => "$Opt{fix_dir}",
-            namefilter => \&strip_worktree,
-        );
+        my $stats = new Local::Store(dir => $Opt{fix_dir});
         $stats->delete('stats')                #   mother deletes earlier stats
             unless is_child();
         $stats->set('stats',                   #   count fix invocations

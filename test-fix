@@ -216,6 +216,7 @@ sub statsstate {
         }
 
         my $stderr = read_file('stderr.txt');  # check stderr output
+        #say STDERR $stderr;
         unlike($stderr, qr/Use of uninitialized value/,
                "No Perl warning 'uninitialized value'");
         delete_file('stderr.txt');
@@ -228,10 +229,12 @@ sub statsstate {
 
         # check statsfile
         if (@stats == 0) {
-            ok(!-e $stats, "Statsfile non-existing");
+            ok(!-e $stats, "Statsfile non-existing: $stats");
         } else {
-            ok( -e $stats, "Statsfile existing");
-            is(read_file($stats), statsstate(@stats), "Statsfile content");
+            ok( -e $stats, "Statsfile existing: $stats");
+            my $gotten   = read_file($stats);
+            my $expected = statsstate(@stats);
+            is($gotten, $expected, "Statsfile content: $stats");
         }
 
         # check sourcefiles
@@ -1233,7 +1236,7 @@ delete_file('1');
 run_fix_test(
     exit   => 0,
     args   =>  [qw( ../ab12 )],
-    stats  => [[qw( ab12 )]],
+    stats  => [[qw(    ab12 )]],
     before => sub {
         mkdir('abc') && chdir('abc') || die "cannot cd to 'abc',";
     },

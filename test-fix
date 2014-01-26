@@ -206,6 +206,15 @@ sub statsstate {
         note("Dir: $ENV{PWD}");
         my $exit = system("$fix @args 2> stderr.txt");
 
+        if (my $caught = $exit & 127) {        # exit on Ctrl-C
+            my %signame;                       #   (or any other signal)
+            use Config '%Config';
+            @signame{ split ' ', $Config{sig_num} }
+                = split ' ', $Config{sig_name};
+            warn " *** Killed by SIG" . $signame{ $caught } . "\n";
+            exit;
+        }
+
         my $stderr = read_file('stderr.txt');  # check stderr output
         unlike($stderr, qr/Use of uninitialized value/,
                "No Perl warning 'uninitialized value'");

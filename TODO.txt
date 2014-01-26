@@ -8,7 +8,6 @@
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
-** TODO Test error messages
 ** TODO Apenwarr redo's tests
 * Main program
 ** TODO Options to specify script tree, target tree, and source tree dirs
@@ -394,3 +393,5 @@
    $FIX_WORK_TREE.'
 ** DONE Export path functions from Local::Paths
    CLOSED: [2014-01-26 Sun 18:34]
+** DONE Test error messages
+   CLOSED: [2014-01-26 Sun 21:35]

@@ -212,17 +212,24 @@ sub statsstate {
             @signame{ split ' ', $Config{sig_num} }
                 = split ' ', $Config{sig_name};
             warn " *** Killed by SIG" . $signame{ $caught } . "\n";
-            exit;
+            # Block around exit is to hide it from 'exit' detector thingy.
+            { exit }
         }
 
         my $stderr = read_file('stderr.txt');  # check stderr output
+        delete_file('stderr.txt');
         #say STDERR $stderr;
+
         unlike($stderr, qr/Use of uninitialized value/,
                "No Perl warning 'uninitialized value'");
-        delete_file('stderr.txt');
 
         is($exit >> 8, $arg{exit},             # check exit status
-           "Exit status: $arg{exit}");
+           "Exit status");
+
+        if (defined $arg{errmsg}) {            # check any error message
+            my $info = nl("Try '$name --help' for more information.");
+            is($stderr, $arg{errmsg} . $info, "Error message");
+        }
 
         $arg{after}();                         # run 'after' hook
         my %post = fingerprints(@file);
@@ -509,8 +516,10 @@ enter_dir("$testdir/external-tests");
 
 note "No '.fixrc'";
 run_fix_test(
-    exit => 254,
-    args => [qw( 1 )],
+    exit   => 254,
+    errmsg => nl("fix: Current dir not in a fix worktree",
+                 "(Use 'touch .fixrc' where you want your worktree root.)"),
+    args   => [qw( 1 )],
 );
 
 write_file('.fixrc' => '');
@@ -519,36 +528,54 @@ write_file('.fixrc' => '');
 
 note "No argument given";
 run_fix_test(
-    exit => 254,
-    args => [qw()],
+    exit   => 254,
+    errmsg => nl("fix: No target specified"),
+    args   => [qw()],
 );
 
 note "Bad command line option";
 run_fix_test(
-    exit => 254,
-    args => [qw( --BAD-OPTION )],
+    exit   => 254,
+    errmsg => nl("fix: Unknown option: '--BAD-OPTION'",
+                 "fix: No target specified"),
+    args   => [qw( --BAD-OPTION )],
+);
+
+note "Two bad command line options";
+run_fix_test(
+    exit   => 254,
+    errmsg => nl("fix: Unknown option: '--BAD-OPTION'",
+                 "fix: Unknown option: '--BAD-OPTION-2'",
+                 "fix: No target specified"),
+    args   => [qw( --BAD-OPTION --BAD-OPTION-2 )],
+);
+
+note "Option '--source' on command line";
+run_fix_test(
+    exit   => 254,
+    errmsg => nl("fix: Cannot use '--source' outside buildscript"),
+    args   => [qw( --source NON-EXISTING-TARGET )],
 );
 
 note "Non-existing buildscript";
-{
-    run_fix_test(
-        exit   => 254,
-        args   =>  [qw( NON-EXISTING-TARGET )],
-        stats  => [[qw( NON-EXISTING-TARGET )]],
-        source => {
-            'NON-EXISTING-TARGET.fix' => undef,
+# FIXME: Test output on standard error
+run_fix_test(
+    exit   => 254,
+    args   =>  [qw( NON-EXISTING-TARGET )],
+    stats  => [[qw( NON-EXISTING-TARGET )]],
+    source => {
+        'NON-EXISTING-TARGET.fix' => undef,
+    },
+    result => {
+        'NON-EXISTING-TARGET' => {
+            state => ABORTED,
         },
-        result => {
-            'NON-EXISTING-TARGET' => {
-                state => ABORTED,
-            },
-        },
-    );
-}
-
-write_file('../outside.fix', '');
+    },
+);
 
 note "Buildscript outside work tree";
+write_file('../outside.fix', '');
+# FIXME: Test output on standard error
 run_fix_test(
     exit   => 254,
     args   =>  [qw( ../outside )],
@@ -564,6 +591,7 @@ run_fix_test(
 );
 
 note "Buildscript with exit status = 1";
+# FIXME: Test output on standard error
 run_fix_test(
     exit   => 1,
     args   =>  [qw( 1 )],
@@ -583,6 +611,7 @@ run_fix_test(
 );
 
 note "Buildscript with exit status = 2";
+# FIXME: Test output on standard error
 run_fix_test(
     exit   => 2,
     args   =>  [qw( 1 )],
@@ -602,6 +631,7 @@ run_fix_test(
 );
 
 note "Buildscript with command returning false";
+# FIXME: Test output on standard error
 run_fix_test(
     exit   => 1,
     args   =>  [qw( 1 )],
@@ -621,6 +651,7 @@ run_fix_test(
 );
 
 note "Buildscript with non-existing command";
+# FIXME: Test output on standard error
 run_fix_test(
     exit   => 127,
     args   =>  [qw( 1 )],

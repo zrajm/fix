@@ -768,13 +768,13 @@ sub getopts {
         GetOptionsFromArray :config
         posix_default bundling gnu_compat no_ignore_case permute
     );
-
     # Modify Getopt::Long's error messages:
     #   'Option <OPT> requires an argument' and 'Unknown option: <OPT>',
     #   should have "'--option'" or "'-o'" rather than just "option" or "o".
-    local $SIG{__DIE__}  = sub { $! = 254; die "$NAME: @_" };
+    my $warn = FALSE;
     local $SIG{__WARN__} = sub {
         my ($_) = @_;
+        $warn = TRUE;
         s{(\boption[: ]+)(\S+)}{
             my $x = length($2) == 1 ? '-' : '--';
             "$1'$x$2'";
@@ -801,27 +801,28 @@ sub getopts {
         'xtrace|x'  => sub {          ### use xtrace for build shells
             $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
-    ) or exit 254;
+    );
+    warn "No target specified\n" if @arg == 0;
     if (not is_child()) {
-        die "Cannot use '--source' outside buildscript\n" if $Opt{source};
-
+        warn "Cannot use '--source' outside buildscript\n" if $Opt{source};
         if ($Opt{fix_dir} eq '') {             # set FIX_DIR and WORK_TREE
-            my $rcfile = find_parent_path('.', '/', '.fixrc') or do {
-                die "Current dir not in a fix worktree\n" .
+            if (my $rcfile = find_parent_path('.', '/', '.fixrc')) {
+                my $dir    = split_path($rcfile);
+                $Opt{work_tree} = $ENV{FIX_WORK_TREE} = "$dir";
+                $Opt{fix_dir}   = $ENV{FIX_DIR}       = "$dir/.fix";
+            } else {
+                warn "Current dir not in a fix worktree\n" .
                     "(Use 'touch .fixrc' where you want your worktree root.)\n";
-            };
-            my $dir = split_path($rcfile);
-            $Opt{work_tree} = $ENV{FIX_WORK_TREE} = "$dir";
-            $Opt{fix_dir}   = $ENV{FIX_DIR}       = "$dir/.fix";
+            }
         } else {
             $Opt{work_tree} = $ENV{FIX_WORK_TREE} = abspath('.')
                 if $Opt{work_tree} eq '';
             $Opt{fix_dir}   = $ENV{FIX_DIR}       = abspath($Opt{fix_dir});
         }
     }
-    if (@arg == 0) {
-        die "No target specified\n" .
-            "Try '$NAME --help' for more information.\n";
+    if ($warn) {                               # die if there were warnings
+        $! = 254;
+        die "Try '$NAME --help' for more information.\n";
     }
     $Run = new Local::Store(
         dir        => "$Opt{fix_dir}/run",

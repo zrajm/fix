@@ -616,6 +616,13 @@ sub find_buildscript {
     );
 }
 
+# NB: $file must exist for has_changed() to give meaningful result
+sub has_changed {
+    my ($file) = @_;
+    my $checksum = $Keep->get($file, 'checksum') // '';
+    return checksum_file($file) eq $checksum ? 0 : 1;
+}
+
 # build_target($level, $target);
 #
 # Builds TARGET by executing its buildscript. Return TRUE if the content of
@@ -631,7 +638,7 @@ sub build_target {
     my ($level, $buildscript, $target) = @_;
     debug("Building target: $target");
     info(strip_worktree($target));
-    if (-f $target and has_changed($Keep, $target)) {
+    if (-f $target and has_changed($target)) {
         $Run->set($target,      ABORT => strip_worktree($target));
         $Run->set($Opt{parent}, ABORT => strip_worktree($target)) if is_child();
         did($target, 'wont_overwrite');
@@ -706,13 +713,6 @@ sub build_target {
     return TRUE;
 }
 
-# NB: $file must exist for has_changed() to give meaningful result
-sub has_changed {
-    my ($self, $file) = @_;
-    my $checksum = $self->get($file, 'checksum') // '';
-    return checksum_file($file) eq $checksum ? 0 : 1;
-}
-
 # update_targets($level, [ $target => $checksum ]...);
 #
 # Make sure all TARGET(s) are up-to-date, rebuilding them if necessary. Return
@@ -738,7 +738,7 @@ sub update_targets {
         $type //= '';
         # buildscript source
         if ($type eq SOURCE) {                 # buildscript source
-            if (has_changed($Keep, $target)) {
+            if (has_changed($target)) {
                 set_source_state($target);
                 $changed = TRUE;
             }
@@ -760,7 +760,7 @@ sub update_targets {
                 update_targets($level + 1, get_keepstate_deps(@$deps))
                     and $deps_changed = TRUE;
             }
-            if ($deps_changed or (not -e $target) or has_changed($Keep, $target)) {
+            if ($deps_changed or (not -e $target) or has_changed($target)) {
                 build_target($level, $buildscript, $target)
                     and $changed = TRUE;
             } else {

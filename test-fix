@@ -385,7 +385,7 @@ note
     " Internal Tests (Testing Functions)\n" .
     "====================================";
 
-enter_dir("$testdir/internal-tests");
+enter_dir("$testdir/01-internal-tests");
 
 note 'split_path()';
 # FIXME: What *should* split_path('.') return?
@@ -524,6 +524,9 @@ note
     "========================================\n" .
     " External Tests (Testing Build Results)\n" .
     "========================================";
+
+note '=== Passing Bad Args ===';
+enter_dir("$testdir/02-external-passing-bad-args");
 
 note "No '.fixrc'";
 run_fix_test(
@@ -679,8 +682,11 @@ run_fix_test(
 
 ###############################################################################
 
-note 'First run of (working) buildscript, using "1.txt.fix" rule';
-rmtree([ ".$name", '1.txt' ]);
+note '=== Building with Default Buildscripts ===';
+enter_dir("$testdir/03-external-default-buildscripts");
+write_file('.fixrc' => '');
+
+note 'Build using "1.txt.fix" rule';
 run_fix_test(
     exit   => 0,
     args   =>  [qw( 1.txt )],
@@ -700,7 +706,7 @@ run_fix_test(
 );
 rmtree([ ".$name", '1.txt', '1.txt.fix' ]);    # erase generated files
 
-note 'First run of (working) buildscript, using "default.txt.fix" rule';
+note 'Build using "default.txt.fix" rule';
 run_fix_test(
     exit   => 0,
     args   =>  [qw( 1.txt )],
@@ -720,7 +726,7 @@ run_fix_test(
 );
 rmtree([ ".$name", '1.txt', 'default.txt.fix' ]);  # erase generated files
 
-note 'First run of (working) buildscript, using "default.fix" rule';
+note 'Build using "default.fix" rule';
 run_fix_test(
     exit   => 0,
     args   =>  [qw( 1.txt )],
@@ -742,7 +748,11 @@ rmtree([ ".$name", '1.txt', 'default.fix' ]);  # erase generated files
 
 ###############################################################################
 
-note 'First run of (working) buildscript + $1 and $2';
+note '=== Building with No Explicit Dependencies ===';
+enter_dir("$testdir/04-external-no-explicit-deps");
+write_file('.fixrc' => '');
+
+note 'Buildscript outputting $1 + $2';
 rmtree([ '1', '1.fix' ]);  # erase generated files
 run_fix_test(
     exit   => 0,
@@ -860,9 +870,7 @@ run_fix_test(
     },
 );
 
-###############################################################################
-
-note 'Writing to tempfile $1';
+note 'Writing to tempfile explicitly (not STDOUT)';
 run_fix_test(
     exit   => 0,
     args   =>  [qw( test.txt )],
@@ -882,6 +890,9 @@ run_fix_test(
 ###############################################################################
 
 note '=== Source Dependency ===';
+enter_dir("$testdir/05-external-source-deps");
+write_file('.fixrc' => '');
+
 note "Source dependency";
 run_fix_test(
     exit   => 0,
@@ -942,7 +953,7 @@ run_fix_test(
 ###############################################################################
 
 note '=== Checksum Dependencies (a.txt -> b.txt) ===';
-enter_dir("$testdir/03-external-dep-checksums");
+enter_dir("$testdir/06-external-dep-checksums");
 write_file('.fixrc' => '');
 
 note "Initial build from 'a.txt'";
@@ -1017,8 +1028,9 @@ run_fix_test(
 
 ###############################################################################
 
-note '=== Complex Dependencies ===';
-rmtree([ ".$name", qw( 1 1.fix a ) ]);         # clear previously generated files
+note '=== Multiple Dependencies ===';
+enter_dir("$testdir/07-external-multiple-deps");
+write_file('.fixrc' => '');
 
 note "First run of buildscript with dependencies";
 run_fix_test(
@@ -1347,6 +1359,7 @@ run_fix_test(
 ###############################################################################
 
 note '=== Target Outside Current Dir ===';
+
 note "Building target in parent dir";
 delete_file('1');
 run_fix_test(

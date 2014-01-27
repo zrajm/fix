@@ -129,10 +129,21 @@ sub serialize {
 sub SOURCE { 'source' }
 sub TARGET { 'target' }
 sub keepstate {
-    my ($type, $content, @deps) = @_;
+    my ($type, $content, $deps, $source, $result) = @_;
+    # Add checksum from keepstate to each dependency.
+    @$deps = map {
+        [ map {
+            my $checksum = sha1(
+                exists $result->{$_}
+                    ? $result->{$_}{cont}
+                    : $source->{$_},
+            );
+            join(':', $_, $checksum);
+        } @$_ ];
+    } @{ $deps // [] };
     my %x;
     $x{type}     = $type;
-    $x{deps}     = [ @deps ] if @deps;
+    $x{deps}     = [ @$deps ] if @$deps;
     $x{checksum} = sha1($content) if defined $content;
     return serialize(%x);
 }
@@ -343,7 +354,11 @@ sub statsstate {
             }
             foreach (key %result) {
                 my $gotten   = read_file("$keep/$_");
-                my $expected = keepstate(TARGET, $result{$_}{cont}, @{ $result{$_}{deps} });
+                my $expected = keepstate(TARGET,
+                    $result{$_}{cont},
+                    $result{$_}{deps},
+                    \%source, \%result
+                );
                 is($gotten, $expected, "Keepstate content: $keep/$_");
             }
         }
@@ -510,10 +525,6 @@ note
     " External Tests (Testing Build Results)\n" .
     "========================================";
 
-my (%source, %target, %target_deps);
-my %c;                                         # Mnemonic: 'content'
-enter_dir("$testdir/external-tests");
-
 note "No '.fixrc'";
 run_fix_test(
     exit   => 254,
@@ -523,8 +534,6 @@ run_fix_test(
 );
 
 write_file('.fixrc' => '');
-
-###############################################################################
 
 note "No argument given";
 run_fix_test(
@@ -926,6 +935,82 @@ run_fix_test(
             state => NEW_CONTENT,
             deps  => [[ 'indented.txt.fix' ], [ 'source.txt' ]],
             cont  => nl('> some other text'),
+        },
+    },
+);
+
+###############################################################################
+
+note '=== Checksum Dependencies (a.txt -> b.txt) ===';
+enter_dir("$testdir/03-external-dep-checksums");
+write_file('.fixrc' => '');
+
+note "Initial build from 'a.txt'";
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( a.txt )],
+    stats  => [[qw( a.txt )], [qw( b.txt )]],
+    source => {
+        'a.txt.fix' => nl('fix b.txt',
+                          'echo "AAA"',
+                          'sed "s/^/>/" <b.txt'),
+        'b.txt.fix' => nl('echo "BBB"'),
+    },
+    result => {
+        'a.txt' => {
+            state => NEW_CONTENT,
+            deps  => [['a.txt.fix'], ['b.txt']],
+            cont  => nl('AAA',
+                        '>BBB'),
+        },
+        'b.txt' => {
+            state => NEW_CONTENT,
+            deps  => [['b.txt.fix']],
+            cont  => nl('BBB'),
+        },
+    },
+);
+
+note "Rebuild of modified 'b.txt'";
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( b.txt )],
+    stats  => [[qw( b.txt )]],
+    source => {
+        'b.txt.fix' => nl('echo "BBB BBB"'),
+    },
+    result => {
+        'b.txt' => {
+            state => NEW_CONTENT,
+            deps  => [['b.txt.fix']],
+            cont  => nl('BBB BBB'),
+        },
+    },
+);
+
+note "Rebuild from 'a.txt'";
+# This will fail unless dependencies include checksums.
+run_fix_test(
+    exit   => 0,
+    args   =>  [qw( a.txt )],
+    stats  => [[qw( a.txt )], [qw( b.txt )]],
+    source => {
+        'a.txt.fix' => nl('fix b.txt',
+                          'echo "AAA"',
+                          'sed "s/^/>/" <b.txt'),
+        'b.txt.fix' => nl('echo "BBB BBB"'),
+    },
+    result => {
+        'a.txt' => {
+            state => NEW_CONTENT,
+            deps  => [['a.txt.fix'], ['b.txt']],
+            cont  => nl('AAA',
+                        '>BBB BBB'),
+        },
+        'b.txt' => {
+            state => UNCHANGED,
+            deps  => [['b.txt.fix']],
+            cont  => nl('BBB BBB'),
         },
     },
 );

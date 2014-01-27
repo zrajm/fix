@@ -1,6 +1,7 @@
 -*- org -*-
 
 * Testing
+** TODO ABORTED should be called NO_RUNSTATE
 ** TODO Add subtests
    This requires some kind of compatibility function for old versions
    Test::More (i.e. my desktop machine).
@@ -10,6 +11,15 @@
 ** TODO Test for B<--xtrace>
 ** TODO Apenwarr redo's tests
 * Main program
+** TODO Fix checksum dependency inefficiencies
+   As it is now checksum dependencies seem to be working but is sometimes oddly
+   inefficient.
+
+   Which checksums should be passed in initially?
+
+   Test "Rebuild from 'a.txt'" (of the checksum dependency tests) require two
+   invocations of 'fix' -- this seems wasteful, since only one target needs to
+   be rebuilt.
 ** TODO Options to specify script tree, target tree, and source tree dirs
    There should be options which would allow for separation (of one or more) of
    these three directories, so that you can avoid cluttering up the root of
@@ -29,18 +39,6 @@
 
    (See also option '--target' below.)
 ** TODO Refactor Local::Store
-** TODO Checksum-based dependencies
-   You have the following files: 'a' which depends on 'b' which depends on 'c'.
-
-   You make a change in 'c', and run 'fix b' -- thereby causing 'b' and 'c' to
-   be rebuilt (and have their updated state written).
-
-   If you now run 'fix a', then 'a' *should* be rebuild, but, since 'a' only
-   relies on 'b', and 'b' is up-to-date, then 'a' is up-to-date too!
-
-   'a' should depend on 'b' + checksum of 'b', and 'b' should depend on 'c' +
-   checksum of 'c', so that if file content changes, the file will be rebuilt,
-   regardless of how the fix command was invoked.
 ** TODO Abort status should be kept between builds
    If a file has unchanged dependencies (and dependencies of dependencies) then
    there is no need to try to build it again, since we *know* build will fail
@@ -161,6 +159,10 @@
 ** TODO Display progress using relative paths
    Relative to the user's PWD, not work_tree, or anything else.
 * Someday/maybe
+** TODO Stat fingerprints in dependencies & targets
+   Currently stat fingerprints are only used in the runstate and keepstate.
+   Could it accelerate stuff more generally if we used it when examining
+   targets and dependencies?
 ** TODO Check run order after change of subtarget
    Test case, "Rerun after change of subtarget '2'" has invocations of fix in a
    "backwards" order:
@@ -395,3 +397,24 @@
    CLOSED: [2014-01-26 Sun 18:34]
 ** DONE Test error messages
    CLOSED: [2014-01-26 Sun 21:35]
+** DONE Checksum based dependencies
+   CLOSED: [2014-01-27 Mon 03:19]
+
+   Dependency should not only indicate file, but the *content* (i.e. checksum)
+   of that file. Let's say you have two targets, like this:
+
+       a -> b
+
+   Initially you run 'fix a', to build both of them. Then you make a couple of
+   changes to the buildfile for 'b' (that cause a change in 'b'), and rebuild
+   that with 'fix b'.
+
+   If only naive dependencies are implemented, the keepstate is now in an
+   inconsistent state. When 'a' was first built, it was registered as
+   up-to-date, and when we modified and rebuilt 'b' it, too, was registered as
+   up-to-date. But the current state of 'a' include the *old* version of 'b'!
+   Running 'fix a' at this point will fix nothing since keepstate storage says
+   everything is ok (even though 'a' *should* be updated to include the change
+   in 'b')!
+
+   Because of this each dependency need to include a checksum.

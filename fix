@@ -427,10 +427,26 @@ sub did {
     $Run->set($name, build_status => sub { shift() // $value });
 }
 
+# Take a list of dependencies as expressed in the keepstate, and turn it into a
+# list of arrayrefs suitable for feeding into update_targets().
+#
+# Keepstate format is: (FILE1:CHECKSUM2, FILE2:CHECKSUM2...).
+sub get_keepstate_deps {
+    return map {
+        my ($file, $checksum) = m#^(.*):([0-9a-f]{40})$#;
+        [ prefix_worktree($file) => $checksum ];
+    } @_;
+}
+
+sub keepstate_deps {
+    my @file = @_;
+    map { join ':', strip_worktree($_), checksum_file($_) } @file;
+}
+
 sub add_deps {
     my ($target, @dep) = @_;
     $Keep->set($target, deps => sub { #   targets are deps to parent
-        [ @{ shift() // [] }, [ map { strip_worktree($_) } @dep ]];
+        [ @{ shift() // [] }, [ keepstate_deps(@dep) ]];
     });
 }
 
@@ -625,7 +641,7 @@ sub build_target {
     # clear dependency information (rebuilt each run)
     $Keep->set($target,
         type => TARGET,
-        deps => [[ strip_worktree($buildscript) ]],
+        deps => [[ keepstate_deps($buildscript) ]],
     );
 
     my $builddir = split_path($buildscript);
@@ -697,7 +713,7 @@ sub has_changed {
     return checksum_file($file) eq $checksum ? 0 : 1;
 }
 
-# update_targets($level, @target);
+# update_targets($level, [ $target => $checksum ]...);
 #
 # Make sure all TARGET(s) are up-to-date, rebuilding them if necessary. Return
 # TRUE if the content one or more TARGET(s) was modified because of a rebuild,
@@ -713,6 +729,7 @@ sub update_targets {
     local $Opt{level} = $level;
     my $changed  = FALSE;
   TARGET: foreach my $target (@target) {
+        my ($target, $checksum) = @$target;
         debug("Updating target: $target");
         if ($target !~ m#^\Q$Opt{work_tree}\E($|/)#) {
             quit(254, "Target '$target' is outside fix's work tree");
@@ -740,7 +757,7 @@ sub update_targets {
             info(strip_worktree($target) . " (previously built)");
             my $deps_changed = FALSE;
             foreach my $deps (@$dep_clusters) {#   check deps
-                update_targets($level + 1, map { prefix_worktree($_) } @$deps)
+                update_targets($level + 1, get_keepstate_deps(@$deps))
                     and $deps_changed = TRUE;
             }
             if ($deps_changed or (not -e $target) or has_changed($Keep, $target)) {
@@ -748,6 +765,8 @@ sub update_targets {
                     and $changed = TRUE;
             } else {
                 did($target, 'wont_rebuild');
+                my $old_checksum = $Keep->get($target, 'checksum') // '';
+                $changed = TRUE if $checksum ne $old_checksum;
             }
         }
     }
@@ -861,22 +880,22 @@ __PACKAGE__->run(@ARGV) unless caller();
 sub run {
     my ($class, @target) = @_;
     @target = getopts(@target);
+    if ($Opt{source}) {                        #   '--source' = don't build
+        set_source_state($_) foreach @target;
+        add_deps($Opt{parent}, @target);
+        exit 0;
+    }
     %SIG = (
         __WARN__ => sub { warn msg(WARN,  @_) },
         __DIE__  => sub { die  msg(ERROR, @_) },
     );
-    if (is_child()) {                          # CHILD PROCESSES
-        if ($Opt{source}) {                    #   '--source' = don't build
-            set_source_state($_) foreach @target;
-            add_deps($Opt{parent}, @target);
-            exit 0;
-        }
-        add_deps($Opt{parent}, @target);
-    } else {                                   # MOTHER PROCESS
+    unless (is_child()) {                      # MOTHER PROCESS
         $Run->delete('');                      #   delete previous runstate
         add_fix_to_path($Opt{fix_dir});
     }
-    update_targets($Opt{level}, @target);
+    my @dep = map { [ $_ => $Keep->get($_, 'checksum') // '' ] } @target;
+    update_targets($Opt{level}, @dep);
+    add_deps($Opt{parent}, @target) if is_child();
 }
 
 __END__

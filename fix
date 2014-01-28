@@ -187,8 +187,8 @@ sub man {
     # February 2013. [https://rt.cpan.org/Public/Bug/Display.html?id=83356]
     sub _read_file_fingerprint {
         my ($file) = @_;
-        my @stat = lstat($file) or die "Cannot stat file '$file': $!\n";
-        return join("-", @stat[1, 2, 4, 5, 7, 9, 10]);
+        my @lstat = lstat($file) or die "Cannot lstat file '$file': $!\n";
+        return join("-", @lstat[1, 2, 4, 5, 7, 9, 10]);
     }
 
     sub _read_file {
@@ -1122,9 +1122,9 @@ shell script, and called with two arguments:
 
 =over 4
 
-=item B<$1> - path to a temporary output file
+=item B<$1> - (full path to) temporary output file
 
-=item B<$2> - path to the target
+=item B<$2> - (full path to) target file buing built
 
 =back
 
@@ -1140,7 +1140,8 @@ modified.
 
 Buildscript are sought first based on target name, then by successively
 removing file name extensions, then lastly by looking in parent directories.
-Given the target 'TARGET', this would entail looking for the following files:
+Given the target 'TARGET.A.B', this would entail looking for the following
+files:
 
     TARGET.A.B.fix
     default.A.B.fix

@@ -149,7 +149,7 @@ sub keepstate {
 }
 
 # for use with run_fix_test() and runstate()
-sub ABORTED     { 'aborted' }
+sub NO_RUNSTATE { 'aborted' }
 sub UNCHANGED   { 'wont_rebuild' }
 sub WONT_OVERWR { 'wont_overwrite' }
 sub SHELL_FAIL  { 'shell_error' }
@@ -177,7 +177,7 @@ sub statsstate {
     sub TRUE  { 1 }
     sub FALSE { 0 }
     my %target_rewritten = (
-        ABORTED     ,=> FALSE,      # unmodified targets, no runstate left
+        NO_RUNSTATE ,=> FALSE,      # unmodified targets, no runstate generated
         UNCHANGED   ,=> FALSE,
         WONT_OVERWR ,=> FALSE,
         SHELL_FAIL  ,=> FALSE,
@@ -320,14 +320,14 @@ sub statsstate {
         }
 
         # check runstate
-        my @runstate = grep { $result{$_}{state} ne ABORTED } key(%result);
+        my @runstate = grep { $result{$_}{state} ne NO_RUNSTATE } key(%result);
         if (@runstate == 0) {                  # no targets generated
             ok(!-e $run, "Runstate dir non-existing: $run");
         } else {                               # targets were generated
             ok( -e $run, "Runstate dir existing: $run");
             foreach (key %result) {
                 ok(!-f "$run/$_", "Runstate non-existing: $run/$_")
-                    if $result{$_}{state} eq ABORTED;
+                    if $result{$_}{state} eq NO_RUNSTATE;
             }
             foreach (@runstate) {
                 ok( -f "$run/$_", "Runstate existing: $run/$_");
@@ -580,7 +580,7 @@ run_fix_test(
     },
     result => {
         'NON-EXISTING-TARGET' => {
-            state => ABORTED,
+            state => NO_RUNSTATE,
         },
     },
 );
@@ -597,7 +597,7 @@ run_fix_test(
     },
     result => {
         '../outside' => {
-            state => ABORTED,
+            state => NO_RUNSTATE,
         },
     },
 );
@@ -1301,7 +1301,7 @@ run_fix_test(
 
 note "Rerun after dependency target '1' externally modified";
 # (Won't generate tempfile, since build isn't attempted at all.)
-# FIXME: When graceful abort is implemented, check runstate of ABORTED targets.
+# FIXME: When graceful abort is added, check runstate of NO_RUNSTATE targets.
 write_file('1', nl('XXX'));                    # modify target file
 run_fix_test(
     exit   => 253,
@@ -1318,7 +1318,7 @@ run_fix_test(
     },
     result => {
         ab12 => {
-            state => ABORTED,
+            state => NO_RUNSTATE,
             deps  => [[ 'ab12.fix' ], [qw( ab 12 )]],
             cont  => nl(qw(ab12 >ab >>a >>b >12 >>1 >>22 )),
         },
@@ -1328,7 +1328,7 @@ run_fix_test(
             cont  => nl(qw(      ab  >a  >b              )),
         },
         12 => {
-            state => ABORTED,
+            state => NO_RUNSTATE,
             deps  => [[ '12.fix' ], [qw( 1  2 )]],
             cont  => nl(qw(                  12  >1  >22 )),
         },
@@ -1349,7 +1349,7 @@ run_fix_test(
             cont  => nl(qw(                       1      )),
         },
         2 => {
-            state => ABORTED,
+            state => NO_RUNSTATE,
             deps  => [[ '2.fix' ]],
             cont  => nl(qw(                           22 )),
         },

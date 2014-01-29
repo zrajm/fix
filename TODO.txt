@@ -160,9 +160,6 @@ This is an Emacs org-mode file.
         abc/default.fix
         default.txt.fix
         default.fix
-** TODO State storage version
-   State storage should have a format version number, so that fix won't try to
-   use the files in '.fix' if it won't be able to read them anyway.
 ** TODO Break out file functions
    File functions should not exist in multiple incarnations. The following
    should be combined:
@@ -619,3 +616,8 @@ This is an Emacs org-mode file.
    die()s without don't try to check any of the other stuff).
 ** DONE Write a milestone for version 1.0
    CLOSED: [2014-01-29 Wed 17:01]
+** DONE State store version
+   CLOSED: [2014-01-29 Wed 17:09]
+   State store should have a format version number, and fix should refuse to
+   read the files in '.fix' if it will not be able to make sense of them
+   anyway.

@@ -22,9 +22,10 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION = "0.6.5";
-our $YEAR    = "2012-2014";
-our ($NAME)  = __FILE__ =~ m#([^/]*)$#;        # last non-slash part of path
+our $VERSION       = "0.6.6";
+our $STORE_VERSION = "0.1";
+our $YEAR          = "2012-2014";
+our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
 our ($Keep, $Run);
 our %Opt = (
     debug     => !!$ENV{FIX_DEBUG},            # -D/--debug $FIX_DEBUG
@@ -416,6 +417,15 @@ sub quit {
 }
 
 sub is_child { $Opt{parent} ne '' }
+sub store_version_on_disk {
+    my $file = "$Opt{fix_dir}/store_version";
+    if (-e $Opt{fix_dir}) {
+        return read_file($file) if -e $file;
+        return '';
+    }
+    write_file($file, $STORE_VERSION);
+    return $STORE_VERSION;
+}
 
 sub  strip_worktree { relpath(shift(), $Opt{work_tree}) }
 sub prefix_worktree { abspath(shift(), $Opt{work_tree}) }
@@ -470,7 +480,7 @@ sub write_file {
     my ($file, @data) = @_;
     my $tmpfile = "$file--writing";
     # create full path of file, before writing file
-    if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
+    if (my $dir = split_path($tmpfile)) {
         die "Cannot create dir '$dir': File already exists\n"
             if -e $dir and not -d $dir;
         unless (-d $dir or mkpath($dir)) {
@@ -839,6 +849,10 @@ sub getopts {
             $Opt{work_tree} = $ENV{FIX_WORK_TREE} = abspath('.')
                 if $Opt{work_tree} eq '';
             $Opt{fix_dir}   = $ENV{FIX_DIR}       = abspath($Opt{fix_dir});
+        }
+        if ($Opt{fix_dir} and store_version_on_disk() ne $STORE_VERSION) {
+            warn "State storage on disk has old format, full rebuild needed\n" .
+                "(Erase '.fix' directory in worktree root and run again.)\n";
         }
     }
     quit(254, "Try '$NAME --help' for more information.") if $warn;

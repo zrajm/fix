@@ -19,9 +19,7 @@
      the same dir as a 'Makefile'.
    * Robustness -- Builds correctly (though slower) if metadata is deleted.
 ** TODO Publish repo on GitHub
-** TODO Some sort of git commit hook to force VERSION updates
 * Testing
-** TODO Add test for version number
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
@@ -600,3 +598,5 @@
    number of lines should equal the <patch> number.
 
    git log --follow --oneline "$(git tag|tail -n1)".. fix
+** DONE Add test for version number
+   CLOSED: [2014-01-29 Wed 04:29]

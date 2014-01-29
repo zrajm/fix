@@ -1492,7 +1492,7 @@ SKIP: {
     # patch number = number of commits since last version tag
     my $patch =()= `git log --follow --oneline "v$major.$minor".. fix`;
     # check if 'fix' has been modified since last commit
-    my $modified = system("git diff --quiet fix");
+    my $modified = system("git diff --quiet HEAD fix");
     if ($modified) {
         my $expect1 = "$major.$minor." . ($patch + 1);
         my $expect2 = "$major." . ($minor + 1) . ".0";

@@ -27,10 +27,151 @@ This is an Emacs org-mode file.
 ** TODO Test for B<--xtrace>
 ** TODO Apenwarr redo's tests
 * Main program
+** [0%] Release version 1.0
+*** TODO Read config file '.fixrc' before running build
+    This should be a .ini type config file (just like git's). It will always be
+    read before any buildscript is invoked, and can be used to set up paths,
+    aliases etc. Here's an example (adapted from git(1)):
+
+           #
+           # A '#' or ';' character indicates a comment.
+           #
+
+           ; Source, script and target directories.
+           [path]
+               ; Recommended defaults.
+               scriptdir = fix
+               targetdir = build
+               pathadd   = bin
+
+           [alias]
+               all   = ./all
+               clean = --clean
+*** TODO Options to specify script tree, target tree, and source tree dirs
+    Each fix project live inside a single worktree directory (at the base of
+    which the '.fixrc' file resides).
+
+    In the default case the sources, targets and buildscripts all live in one
+    directory, but one or more of these may be put into separate directories
+    inside the worktree. Where these are directories are is specified using the
+    following options in '.fixrc' (all DIRs is relative to the worktree root,
+    and may not reside outside the worktree):
+
+        script-tree = DIR
+        source-tree = DIR
+        target-tree = DIR
+        path-prepend = DIR     (?)
+
+    (The 'path-prepend' option is used to tuck on an extra directory at the
+    beginning $PATH.) In the most extreme case (having a separate dir for each
+    thing), the worktree could look like this:
+
+        work/
+         \_ .fixrc      # config file
+         \_ .fix/       # stored state (you should never edit these)
+         \_ script/     # buildscripts (= .fix-files)
+         \_ source/     # source files
+         \_ target/     # build targets
+
+    Now, lets assume you have just build a target ('index.html') using a build
+    script ('default.html.fix') and a source ('index.md'). The tree would look
+    like this (ignoring the fix config files):
+
+        work/
+         \_ script/
+             \_ default.html.fix
+         \_ source/
+             \_ index.md
+         \_ target/
+             \_ index.html
+
+    If you didn't have the separate script, source, and target trees, you would
+    instead be looking at a directory structure like this:
+
+        work/
+         \_ default.html.fix
+         \_ index.html
+         \_ index.md
+
+    When you invoke 'fix TARGET', it will automatically look for the buildscript
+    in the target tree (or in the worktree, if target tree hasn't been
+    specified), 'fix --source FILE' will search for source dependencies in the
+    source tree, and output written by buildscripts will be written in the
+    target tree.
+
+    When a buildscript runs, its working directory will be in the source tree,
+    so that the following will work, regardless of whether you use a separate
+    source tree or not. (If your buildscripts are running commands that are
+    particular to your project, you can add their directory to your $PATH in
+    '.fixrc', which is read before each build.)
+
+        markdown2html <index.md
+
+    (This will produce HTML on standard output.) Or:
+
+        markdown2html <index.md >$1
+
+    (Which writes its output directly to the temporary output file.)
+
+    Notice that you can have subdirs, too. Let's imagine you have a project that
+    looks like this:
+
+        work/
+         \_ script/
+             \_ default.html.fix
+         \_ source/
+             \_ guide/
+                 \_ index.md
+         \_ target/
+
+    If you now build 'target/guide/index.html', fix will first look for a
+    matching buildscript, in this order:
+
+        script/guide/index.html.fix
+        script/guide/default.html.fix
+        script/guide/default.fix
+        script/default.html.fix                <-- Found!
+        script/default.fix
+
+    Fix will then change the current directory to the source dir of the target
+    to build (in this case 'source/guide') And thereafter the buildscript is
+    started and two arguments are passed to it:
+
+        $1 - (full path to) temporary output file
+        $2 - filename (without path) of target file buing built
+
+    A nice (recommended) way to set your project up is to use the following in
+    your '.fixrc'.
+
+        [path]
+            scriptdir = fix
+            targetdir = build
+            pathadd   = bin
+
+    This will cause fix to look for buildfiles in the 'fix/' directory, write
+    generated targets in 'build/' and add the 'bin/' directory in your worktree
+    root to the beginning of your $PATH.
+*** TODO Dependence on non-existing buildscripts
+    If 'abc/TARGET.txt' was generated using buildscript 'default.fix', it needs
+    rebuilding if any of the higher priority buildscripts are ever created.
+
+        abc/TARGET.txt
+        abc/default.txt.fix
+        abc/default.fix
+        default.txt.fix
+        default.fix
 ** TODO State storage version
    State storage should have a format version number, so that fix won't try to
    use the files in '.fix' if it won't be able to read them anyway.
-** TODO Write a milestone for first release
+** TODO Break out file functions
+   File functions should not exist in multiple incarnations. The following
+   should be combined:
+
+   * _read_file() and read_file()
+   * _write_file() and write_file()
+
+   All file and filename manipulation should be gathered in one module, and
+   stuff should be imported from there as needed.
 ** TODO Fix checksum dependency inefficiencies
    As it is now checksum dependencies seem to be working but is sometimes oddly
    inefficient.
@@ -40,151 +181,12 @@ This is an Emacs org-mode file.
    Test "Rebuild from 'a.txt'" (of the checksum dependency tests) require two
    invocations of 'fix' -- this seems wasteful, since only one target needs to
    be rebuilt.
-** TODO Options to specify script tree, target tree, and source tree dirs
-   Each fix project live inside a single worktree directory (at the base of
-   which the '.fixrc' file resides).
-
-   In the default case the sources, targets and buildscripts all live in one
-   directory, but one or more of these may be put into separate directories
-   inside the worktree. Where these are directories are is specified using the
-   following options in '.fixrc' (all DIRs is relative to the worktree root,
-   and may not reside outside the worktree):
-
-       script-tree = DIR
-       source-tree = DIR
-       target-tree = DIR
-       path-prepend = DIR     (?)
-
-   (The 'path-prepend' option is used to tuck on an extra directory at the
-   beginning $PATH.) In the most extreme case (having a separate dir for each
-   thing), the worktree could look like this:
-
-       work/
-        \_ .fixrc      # config file
-        \_ .fix/       # stored state (you should never edit these)
-        \_ script/     # buildscripts (= .fix-files)
-        \_ source/     # source files
-        \_ target/     # build targets
-
-   Now, lets assume you have just build a target ('index.html') using a build
-   script ('default.html.fix') and a source ('index.md'). The tree would look
-   like this (ignoring the fix config files):
-
-       work/
-        \_ script/
-            \_ default.html.fix
-        \_ source/
-            \_ index.md
-        \_ target/
-            \_ index.html
-
-   If you didn't have the separate script, source, and target trees, you would
-   instead be looking at a directory structure like this:
-
-       work/
-        \_ default.html.fix
-        \_ index.html
-        \_ index.md
-
-   When you invoke 'fix TARGET', it will automatically look for the buildscript
-   in the target tree (or in the worktree, if target tree hasn't been
-   specified), 'fix --source FILE' will search for source dependencies in the
-   source tree, and output written by buildscripts will be written in the
-   target tree.
-
-   When a buildscript runs, its working directory will be in the source tree,
-   so that the following will work, regardless of whether you use a separate
-   source tree or not. (If your buildscripts are running commands that are
-   particular to your project, you can add their directory to your $PATH in
-   '.fixrc', which is read before each build.)
-
-       markdown2html <index.md
-
-   (This will produce HTML on standard output.) Or:
-
-       markdown2html <index.md >$1
-
-   (Which writes its output directly to the temporary output file.)
-
-   Notice that you can have subdirs, too. Let's imagine you have a project that
-   looks like this:
-
-       work/
-        \_ script/
-            \_ default.html.fix
-        \_ source/
-            \_ guide/
-                \_ index.md
-        \_ target/
-
-   If you now build 'target/guide/index.html', fix will first look for a
-   matching buildscript, in this order:
-
-       script/guide/index.html.fix
-       script/guide/default.html.fix
-       script/guide/default.fix
-       script/default.html.fix                <-- Found!
-       script/default.fix
-
-   Fix will then change the current directory to the source dir of the target
-   to build (in this case 'source/guide') And thereafter the buildscript is
-   started and two arguments are passed to it:
-
-       $1 - (full path to) temporary output file
-       $2 - filename (without path) of target file buing built
-
-   A nice (recommended) way to set your project up is to use the following in
-   your '.fixrc'.
-
-       [path]
-           scriptdir = fix
-           targetdir = build
-           pathadd   = bin
-
-   This will cause fix to look for buildfiles in the 'fix/' directory, write
-   generated targets in 'build/' and add the 'bin/' directory in your worktree
-   root to the beginning of your $PATH.
 ** TODO Abort status should be kept between builds
    If a file has unchanged dependencies (and dependencies of dependencies) then
    there is no need to try to build it again, since we *know* build will fail
    this time around too...
-** TODO $FIX_WORK_TREE as current dir in buildscrips
-   Fix can then change dir just once, and doesn't have to care about it any
-   more after that. Also `cd ${2%/*}` (in a buildscript) would change dir to
-   the target directory, anyway (if anyone wants that).
-** TODO Dependence on non-existing buildscript
-   If 'TARGET.txt' was generated using buildscript 'default.fix', it would need
-   to be rebuilt if the buildscript 'default.txt.fix' or 'TARGET.txt.fix' ever
-   was created.
-
-       TARGET.txt
-       default.txt.fix
-       default.fix
-
-   I.e after first build of 'TARGET.txt' the keepstate should reflect that
-   'TARGET.txt' in its current form depends on 'TARGET.txt.fix' and
-   'default.txt.fix' does not existing.
 ** TODO Is something corresponding to 'redo-ifcreate' necessary?
 ** TODO Use PID lockfile avoid double invocations
-** TODO Read config file '.fixrc' before running build
-   This should be a .ini type config file (just like git's). It will always be
-   read before any buildscript is invoked, and can be used to set up paths,
-   aliases etc. Here's an example (adapted from git(1)):
-
-          #
-          # A '#' or ';' character indicates a comment.
-          #
-
-          ; Source, script and target directories.
-          [path]
-              ; Recommended defaults.
-              scriptdir = fix
-              targetdir = build
-              pathadd   = bin
-
-          [alias]
-              all   = ./all
-              clean = --clean
 ** TODO Aliases
    I want to be able to write 'fix all' anywhere in the worktree hierarchy, and
    have it have the same effect. How about creating aliases with a section like
@@ -204,16 +206,15 @@ This is an Emacs org-mode file.
    Write each buildscripts STDERR to file, and, if build fails, output content
    of the failing scripts STDERR, before terminating.
 ** TODO Drop Data::Dumper dependency
-   Statefiles should be written in simple attribute/value format, so that a
-   file looking like this (what about file name parsing -- something that can
-   represent everything allowed in a filename?):
+   State storage should use same file format as the '.fixrc' file, i.e.
+   something as close as possible to the .ini format.
 
-       checksum: b282f06fc2cb678ccf84e3ae8b1317be81252391
-       deps: 'ab12.fix'
-       deps: 'ab', '12'
-       type: target
+       checksum = b282f06fc2cb678ccf84e3ae8b1317be81252391
+       deps = 'ab12.fix'
+       deps = 'ab', '12'
+       type = target
 
-   Would load into a data structure looking like this:
+   Should load into a data structure looking like this:
 
        {
            'checksum' => 'b282f06fc2cb678ccf84e3ae8b1317be81252391',
@@ -616,3 +617,5 @@ This is an Emacs org-mode file.
    CLOSED: [2014-01-29 Wed 16:45]
    Errors in options are reported separately (i.e. if options parsing fails fix
    die()s without don't try to check any of the other stuff).
+** DONE Write a milestone for version 1.0
+   CLOSED: [2014-01-29 Wed 17:01]

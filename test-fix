@@ -550,8 +550,7 @@ run_fix_test(
 run_fix_test(
     name   => "Bad command line option",
     exit   => 254,
-    errmsg => nl("fix: Unknown option: '--BAD-OPTION'",
-                 "fix: No target specified"),
+    errmsg => nl("fix: Unknown option: '--BAD-OPTION'"),
     args   => [qw( --BAD-OPTION )],
 );
 
@@ -559,8 +558,7 @@ run_fix_test(
     name   => "Two bad command line options",
     exit   => 254,
     errmsg => nl("fix: Unknown option: '--BAD-OPTION'",
-                 "fix: Unknown option: '--BAD-OPTION-2'",
-                 "fix: No target specified"),
+                 "fix: Unknown option: '--BAD-OPTION-2'"),
     args   => [qw( --BAD-OPTION --BAD-OPTION-2 )],
 );
 

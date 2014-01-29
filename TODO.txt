@@ -612,3 +612,7 @@ This is an Emacs org-mode file.
    CLOSED: [2014-01-29 Wed 14:31]
    Base64 checksums are 27 characters long (hex are 40). Shorter checksums
    makes for smaller files and easier comparison of diffs in test output.
+** DONE Separated options-related errors from other errors
+   CLOSED: [2014-01-29 Wed 16:45]
+   Errors in options are reported separately (i.e. if options parsing fails fix
+   die()s without don't try to check any of the other stuff).

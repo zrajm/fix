@@ -22,7 +22,7 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION = "0.6.4";
+our $VERSION = "0.6.5";
 our $YEAR    = "2012-2014";
 our ($NAME)  = __FILE__ =~ m#([^/]*)$#;        # last non-slash part of path
 our ($Keep, $Run);
@@ -807,8 +807,8 @@ sub getopts {
         # 'force|f'  => sub {         ## overwrite manually edited files
         #     $Opt{force} = $ENV{FIX_FORCE} = TRUE;
         # },
-        'help|h|?'  => \&help,        ### display this help and exit
-        'man|M'     => \&man,         ### display program manpage and exit
+        'help|h|?'  => \$Opt{help},   ### display this help and exit
+        'man|M'     => \$Opt{man},    ### display program manpage and exit
         'source'    => \$Opt{source}, ### declare source dependencies
         'stats'     => sub{           ##  save stats in .fix dir
             $Opt{stats} = $ENV{FIX_STATS} = TRUE;
@@ -816,11 +816,13 @@ sub getopts {
         'verbose|v' => sub {          ### output status info while building
             $Opt{verbose} = $ENV{FIX_VERBOSE} = TRUE;
         },
-        'version|V' => \&version,     ### output version information and exit
+        'version|V' => \$Opt{version},### output version information and exit
         'xtrace|x'  => sub {          ### use xtrace for build shells
             $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
         },
     );
+    quit(254, "Try '$NAME --help' for more information.") if $warn;
+    foreach (qw( help man version )) { eval $_ if $Opt{$_} }
     warn "No target specified\n" if @arg == 0;
     if (not is_child()) {
         warn "Cannot use '--source' outside buildscript\n" if $Opt{source};
@@ -839,10 +841,7 @@ sub getopts {
             $Opt{fix_dir}   = $ENV{FIX_DIR}       = abspath($Opt{fix_dir});
         }
     }
-    if ($warn) {                               # die if there were warnings
-        $! = 254;
-        die "Try '$NAME --help' for more information.\n";
-    }
+    quit(254, "Try '$NAME --help' for more information.") if $warn;
     $Run = new Local::Store(
         dir        => "$Opt{fix_dir}/run",
         namefilter => \&strip_worktree,

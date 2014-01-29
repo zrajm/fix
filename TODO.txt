@@ -1,5 +1,7 @@
 -*- org -*-
 
+This is an Emacs org-mode file.
+
 * GitHub
 ** TODO Expand GitHub README.md
    All the awesomeness of djb's 'redo':
@@ -18,7 +20,6 @@
    * Gittyness -- You need only be *somewhere* in a worktree to run it, not in
      the same dir as a 'Makefile'.
    * Robustness -- Builds correctly (though slower) if metadata is deleted.
-** TODO Publish repo on GitHub
 * Testing
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
@@ -602,3 +603,5 @@
    CLOSED: [2014-01-29 Wed 04:29]
 ** DONE Add GitHub README.md
    CLOSED: [2014-01-29 Wed 06:04]
+** DONE Publish repo on GitHub
+   CLOSED: [2014-01-29 Wed 06:24]

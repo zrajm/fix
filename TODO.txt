@@ -27,6 +27,9 @@ This is an Emacs org-mode file.
 ** TODO Test for B<--xtrace>
 ** TODO Apenwarr redo's tests
 * Main program
+** TODO State storage version
+   State storage should have a format version number, so that fix won't try to
+   use the files in '.fix' if it won't be able to read them anyway.
 ** TODO Write a milestone for first release
 ** TODO Fix checksum dependency inefficiencies
    As it is now checksum dependencies seem to be working but is sometimes oddly
@@ -605,3 +608,7 @@ This is an Emacs org-mode file.
    CLOSED: [2014-01-29 Wed 06:04]
 ** DONE Publish repo on GitHub
    CLOSED: [2014-01-29 Wed 06:24]
+** DONE Use base64 encoded checksums (instead of hex)
+   CLOSED: [2014-01-29 Wed 14:31]
+   Base64 checksums are 27 characters long (hex are 40). Shorter checksums
+   makes for smaller files and easier comparison of diffs in test output.

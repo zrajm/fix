@@ -22,7 +22,7 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION = "0.6.3";
+our $VERSION = "0.6.4";
 our $YEAR    = "2012-2014";
 our ($NAME)  = __FILE__ =~ m#([^/]*)$#;        # last non-slash part of path
 our ($Keep, $Run);
@@ -433,7 +433,7 @@ sub did {
 # Keepstate format is: (FILE1:CHECKSUM2, FILE2:CHECKSUM2...).
 sub get_keepstate_deps {
     return map {
-        my ($file, $checksum) = m#^(.*):([0-9a-f]{40})$#;
+        my ($file, $checksum) = m#^(.*):([A-Za-z0-9+/]{27})$#;
         [ prefix_worktree($file) => $checksum ];
     } @_;
 }
@@ -497,8 +497,8 @@ sub checksum_file {
     my ($file) = @_;
     return '' unless -f $file;
     use Encode qw(encode_utf8);
-    use Digest::SHA qw(sha1_hex);
-    sha1_hex(encode_utf8(read_file($file)));
+    use Digest::SHA qw(sha1_base64);
+    sha1_base64(encode_utf8(read_file($file)));
 }
 
 # Add the currently running fix instance to (first dir in) $PATH (which is

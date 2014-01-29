@@ -110,9 +110,9 @@ sub nl { join "", map "$_\n", @_ }
 
 sub sha1 {
     my ($data) = @_;
-    use Digest::SHA qw(sha1_hex);
+    use Digest::SHA qw(sha1_base64);
     use Encode qw(encode_utf8);
-    sha1_hex(encode_utf8($data));
+    sha1_base64(encode_utf8($data));
 }
 
 # Return keys in hash, sorted by first by length, then alphabetically.

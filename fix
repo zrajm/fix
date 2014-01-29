@@ -22,7 +22,7 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION = "0.3";
+our $VERSION = "0.6.3";
 our $YEAR    = "2012-2014";
 our ($NAME)  = __FILE__ =~ m#([^/]*)$#;        # last non-slash part of path
 our ($Keep, $Run);
@@ -60,10 +60,10 @@ sub pod2ansi {
     my ($_) = @_;
     return undef unless defined($_);
     my %char = (quot => '"', amp => '&', lt => '<', gt => '>');
-    s#E<([^>]*)>#$char{lc $1}#g;     # HTML-like entity
-    s#B<([^>]*)>#\e[1m$1\e[0m#g;     # bold
-    s#[FI]<([^>]*)>#\e[4m$1\e[0m#g;  # italic / filename
-    s#C<([^>]*)>#"$1"#g;             # quoted code
+    s#E<([^>]*)>#$char{lc $1}#g;               # HTML-like entity
+    s#B<([^>]*)>#\e[1m$1\e[0m#g;               # bold
+    s#[FI]<([^>]*)>#\e[4m$1\e[0m#g;            # italic / filename
+    s#C<([^>]*)>#"$1"#g;                       # quoted code
     return $_;
 }
 
@@ -263,7 +263,7 @@ sub man {
         foreach my $field (keys %arg) {
             $state->{$field} =
                 ref($arg{$field}) eq 'CODE'    # run callback
-                    ? $arg{$field}->($state->{$field}) # run callback
+                    ? $arg{$field}->($state->{$field})
                     : $arg{$field};            #   or use literal value
         }
         $self->_write_state($file);
@@ -445,7 +445,7 @@ sub keepstate_deps {
 
 sub add_deps {
     my ($target, @dep) = @_;
-    $Keep->set($target, deps => sub { #   targets are deps to parent
+    $Keep->set($target, deps => sub {
         [ @{ shift() // [] }, [ keepstate_deps(@dep) ]];
     });
 }
@@ -513,9 +513,9 @@ sub checksum_file {
 sub add_fix_to_path {
     my ($dir)  = @_;
     my $bindir = "$dir/bin";
-    my $link   = "$dir/bin/$NAME";         # name of link to create
-    if (not -l $link) {                    # if missing '.fix/bin/fix'
-        if (not -d $bindir) {              #   make sure '.fix/bin' exists
+    my $link   = "$dir/bin/$NAME";             # name of link to create
+    if (not -l $link) {                        # if missing '.fix/bin/fix'
+        if (not -d $bindir) {                  #   make sure '.fix/bin' exists
             mkpath($bindir)
                 or die "$NAME: Cannot create dir '$bindir'\n";
         }
@@ -526,11 +526,11 @@ sub add_fix_to_path {
     # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).
     # Therefore the cwd cannot contain a colon (we could fix this this by
     # having this stuff in /tmp, I guess).
-    if ($full =~ /:/) {                    # guard for stupid system bug
+    if ($full =~ /:/) {                        # guard for stupid system bug
         die "$NAME: Colon not allowed in current dir path ('" .
             abspath('.') . "')\n";
     }
-    $ENV{PATH} = "$full:$ENV{PATH}";       # add dir to path
+    $ENV{PATH} = "$full:$ENV{PATH}";           # add dir to path
 }
 
 # Redirect standard output to FILE. Return hashref suitable for passing to
@@ -686,9 +686,9 @@ sub build_target {
             quit($exit, strip_worktree($target) . ": exit status $exit");
         }
         # a dependency failed to run
-        unlink($outfile);                  #   erase outfile and
-        $Run->set(                         #     and tell our parent that
-            $Opt{parent},                  #     that we failed, too
+        unlink($outfile);                      #   erase outfile and
+        $Run->set(                             #     and tell our parent that
+            $Opt{parent},                      #     that we failed, too
             ABORT => $aborted_target,
         ) if is_child();
         did($target, 'buildscript_error');
@@ -708,7 +708,7 @@ sub build_target {
         return FALSE;
     }
     rename_file($outfile, $target);            # target modified
-    $Keep->set($target, checksum => $new_checksum); # store new checksum
+    $Keep->set($target, checksum => $new_checksum);
     did($target, 'rebuilt_new_content');
     return TRUE;
 }

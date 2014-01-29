@@ -1,25 +1,34 @@
 -*- org -*-
 
 * GitHub
-** TODO Write a proper README.md
-   What's different about this 'redo' clone?
+** TODO Write a README.md for GitHub
+   All the awesomeness of djb's 'redo':
 
-   * Small, self-contained script, with Perl as only dependency.
-   * (Possible) separation of target, source and script dirs.
-   * '.fixrc' for config
-** TODO Figure out VERSION number to use
+   * Atomic builds -- Failed builds never overwrite earlier successful ones.
+   * Fast -- Builds what is minimally required.
+   * Simple -- Buildscripts written in shell, no new syntax to learn.
+   * Content-based dependencies -- Doesn't care about file timestamps.
+   * Spaces in filenames -- or whatever other funny characters you want.
+
+   And beyond:
+
+   * Self-contained -- Perl is the only requirement.
+   * Separation -- Sources, buildscripts, and targets can be in separate dirs.
+   * Configurability -- $PATH, alias etc can be configured in '.fixrc'
+   * Gittyness -- You need only be *somewhere* in a worktree to run it, not in
+     the same dir as a 'Makefile'.
+   * Robustness -- Builds correctly (though slower) if metadata is deleted.
 ** TODO Publish repo on GitHub
 ** TODO Some sort of git commit hook to force VERSION updates
 * Testing
-** TODO Add subtests
-   This requires some kind of compatibility function for old versions
-   Test::More (i.e. my desktop machine).
+** TODO Add test for version number
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
 ** TODO Test for B<--xtrace>
 ** TODO Apenwarr redo's tests
 * Main program
+** TODO Write a milestone for first release
 ** TODO Fix checksum dependency inefficiencies
    As it is now checksum dependencies seem to be working but is sometimes oddly
    inefficient.
@@ -125,9 +134,10 @@
    A nice (recommended) way to set your project up is to use the following in
    your '.fixrc'.
 
-       script-tree = fix
-       target-tree = build
-       path-prepend = bin
+       [path]
+           scriptdir = fix
+           targetdir = build
+           pathadd   = bin
 
    This will cause fix to look for buildfiles in the 'fix/' directory, write
    generated targets in 'build/' and add the 'bin/' directory in your worktree
@@ -154,10 +164,40 @@
    'default.txt.fix' does not existing.
 ** TODO Is something corresponding to 'redo-ifcreate' necessary?
 ** TODO Use PID lockfile avoid double invocations
-** TODO Source config file '.fixrc' before running build
-   This should be a shell script which exports stuff. It will run always run
-   (with its $PWD in the base directory) before any buildscript is invoked, and
-   can be used to set up $PATH and similar stuffs.
+** TODO Read config file '.fixrc' before running build
+   This should be a .ini type config file (just like git's). It will always be
+   read before any buildscript is invoked, and can be used to set up paths,
+   aliases etc. Here's an example (adapted from git(1)):
+
+          #
+          # A '#' or ';' character indicates a comment.
+          #
+
+          ; Source, script and target directories.
+          [path]
+              ; Recommended defaults.
+              scriptdir = fix
+              targetdir = build
+              pathadd   = bin
+
+          [alias]
+              all   = ./all
+              clean = --clean
+** TODO Aliases
+   I want to be able to write 'fix all' anywhere in the worktree hierarchy, and
+   have it have the same effect. How about creating aliases with a section like
+   this in '.fixrc'?
+
+       [alias]
+           all   = ./all
+           clean = --clean
+
+   These would all execute from the worktree root (regardless of where you are
+   in the worktree at the time of execution), and whatever is to the right of
+   the equal sign would be passed to fix as arguments.
+
+   Alias names would just be an alphanumeric word, so build a file with the
+   same name, one would use an explicit relative path (e.g. 'fix ./help').
 ** TODO Logging
    Write each buildscripts STDERR to file, and, if build fails, output content
    of the failing scripts STDERR, before terminating.
@@ -524,5 +564,39 @@
    in 'b')!
 
    Because of this each dependency need to include a checksum.
-** DONE ABORTED should be called NO_RUNSTATE
+** DONE In tests: 'ABORTED' should be called 'NO_RUNSTATE'
    CLOSED: [2014-01-27 Mon 17:56]
+** DONE Add subtests
+   CLOSED: [2014-01-29 Wed 00:57]
+   Added compatibility subtest() function for older versions of Test::More
+   (i.e. for my desktop machine).
+
+   The compatibility function, is created whenever subtest() cannot be found
+   after loading Test::More, is just a simplistic emulation of the actual
+   subtest(). It performs the tests (without them being 'sub' in any way) and
+   thereafter outputs the name argument. It looks like this:
+
+       BEGIN {
+           *subtest = sub {
+               my ($name, $code) = @_;
+               $code->();
+               note $name;
+           } unless exists &subtest;
+       }
+
+** DONE Figure out VERSION number to use
+   CLOSED: [2014-01-29 Wed 01:48]
+   Fix will use a semantic versioning scheme from version 1.0.0 and thereafter.
+
+     * major (1st number) -- Breaking changes.
+     * minor (2nd number) -- New, but backward-compatible changes.
+     * patch (3rd number) -- Smaller changes.
+
+   Whenever a major or minor version number changes, it will be added as a git
+   'tag'. Patch number will simply be the number of changes made to the 'fix'
+   file since last tag.
+
+   This git commands lists the number of commits since the last tag, i.e. the
+   number of lines should equal the <patch> number.
+
+   git log --follow --oneline "$(git tag|tail -n1)".. fix

@@ -25,7 +25,14 @@ BEGIN {                                        # load 'fix' as a module
     use Cwd qw/realpath/;
     ($fix = realpath(__FILE__)) =~ s#[^/]+$#fix#;
     require $fix;
-    Module->import();
+    Local::Modulino->import();
+}
+BEGIN {
+    *subtest = sub {
+        my ($name, $code) = @_;
+        $code->();
+        note $name;
+    } unless exists &subtest;
 }
 
 ###############################################################################
@@ -190,9 +197,14 @@ sub statsstate {
         my %arg = @_;
         $arg{before} //= sub {};
         $arg{after}  //= sub {};
-        die "run_fix_test() option 'exit' must be integer,"      if $arg{exit} !~ /^\d+$/;
-        die "run_fix_test() option 'before' must be coderef,"    if ref($arg{before}) ne 'CODE';
-        die "run_fix_test() option 'after' must be coderef,"     if ref($arg{after})  ne 'CODE';
+        $arg{name}   //= 'NONE';
+        die "run_fix_test() option 'name' must be string," if ref($arg{name});
+        die "run_fix_test() option 'exit' must be integer,"
+            if $arg{exit} !~ /^\d+$/;
+        die "run_fix_test() option 'before' must be coderef,"
+            if ref($arg{before}) ne 'CODE';
+        die "run_fix_test() option 'after' must be coderef,"
+            if ref($arg{after})  ne 'CODE';
         my %result = %{ $arg{result} // {} };
         my %source = %{ $arg{source} // {} };
         my @stats  = @{ $arg{stats}  // [] };
@@ -213,8 +225,6 @@ sub statsstate {
         $arg{before}();                        # run 'before' hook
         unshift(@args, '--stats');             # insert '--stats' option
         unshift(@{ $stats[0] }, '--stats') if @stats;
-        note("Run: fix @args");                # run command
-        note("Dir: $ENV{PWD}");
         my $exit = system("$fix @args 2> stderr.txt");
 
         if (my $caught = $exit & 127) {        # exit on Ctrl-C
@@ -229,139 +239,137 @@ sub statsstate {
 
         my $stderr = read_file('stderr.txt');  # check stderr output
         delete_file('stderr.txt');
-        #say STDERR $stderr;
+        subtest "$arg{name}\n" . "Ran: fix @args\n" . "Dir: $ENV{PWD}" => sub {
 
-        unlike($stderr, qr/Use of uninitialized value/,
-               "No Perl warning 'uninitialized value'");
+            unlike($stderr, qr/Use of uninitialized value/,
+                "No Perl warning 'uninitialized value'");
 
-        is($exit >> 8, $arg{exit},             # check exit status
-           "Exit status");
+            is($exit >> 8, $arg{exit},         # check exit status
+                "Exit status");
 
-        if (defined $arg{errmsg}) {            # check any error message
-            my $info = nl("Try '$name --help' for more information.");
-            is($stderr, $arg{errmsg} . $info, "Error message");
-        }
-
-        $arg{after}();                         # run 'after' hook
-        my %post = fingerprints(@file);
-
-        # check statsfile
-        if (@stats == 0) {
-            ok(!-e $stats, "Statsfile non-existing: $stats");
-        } else {
-            ok( -e $stats, "Statsfile existing: $stats");
-            my $gotten   = read_file($stats);
-            my $expected = statsstate(@stats);
-            is($gotten, $expected, "Statsfile content: $stats");
-        }
-
-        # check sourcefiles
-        {
-            foreach (key %source) {
-                ok(! -f $_, "Sourcefile non-existing: $_")
-                    if not defined $source{$_};
+            if (defined $arg{errmsg}) {        # check any error message
+                my $info = nl("Try '$name --help' for more information.");
+                is($stderr, $arg{errmsg} . $info, "Error message");
             }
-            my @source = grep { defined $source{$_} } key(%source);
-            ok(   -f $_,            "Sourcefile existing: $_" ) for @source;
-            is($pre{$_}, $post{$_}, "Sourcefile unchanged: $_") for @source;
-        }
 
-        # check tempfiles
-        {
-            my @tempfile = (
-                key(%source),
-                grep { not defined $result{$_}{temp} } key(%result),
-            );
-            foreach (@tempfile) {
-                my $file = "$_--fixing";
-                ok(! -f $file, "Tempfile non-existing: $file");
-            }
-            @tempfile = grep { defined $result{$_}{temp} } key(%result);
-            foreach (@tempfile) {
-                my $file = "$_--fixing";
-                ok(  -f $file, "Tempfile existing: $file");
-            }
-            foreach (@tempfile) {
-                my $file = "$_--fixing";
-                isnt($pre{$file}, $post{$file}, "Tempfile updated: $file");
-            }
-            foreach (@tempfile) {
-                my $file = "$_--fixing";
-                my $gotten   = read_file($file);
-                my $expected = $result{$_}{temp};
-                is($gotten, $expected, "Tempfile content: $file");
-            }
-        }
+            $arg{after}();                     # run 'after' hook
+            my %post = fingerprints(@file);
 
-        # check targets
-        {
-            my @target;
+            # check statsfile
+            if (@stats == 0) {
+                ok(!-e $stats, "Statsfile non-existing: $stats");
+            } else {
+                ok( -e $stats, "Statsfile existing: $stats");
+                my $gotten   = read_file($stats);
+                my $expected = statsstate(@stats);
+                is($gotten, $expected, "Statsfile content: $stats");
+            }
 
-            @target = grep { not defined $result{$_}{cont} } key(%result);
-            ok(!-f $_, "Target non-existing: $_") for @target;
+            # check sourcefiles
+            {
+                foreach (key %source) {
+                    ok(! -f $_, "Sourcefile non-existing: $_")
+                        if not defined $source{$_};
+                }
+                my @source = grep { defined $source{$_} } key(%source);
+                ok(   -f $_,            "Sourcefile existing: $_" ) for @source;
+                is($pre{$_}, $post{$_}, "Sourcefile unchanged: $_") for @source;
+            }
 
-            @target = grep {     defined $result{$_}{cont} } key(%result);
-            ok( -f $_, "Target existing: $_"    ) for @target;
-
-            foreach (@target) {                # rewritten targets
-                my $state = $result{$_}{state};
-                isnt($pre{$_}, $post{$_}, "Target updated: $_")
-                    if $target_rewritten{$state} == TRUE;
-            }
-            foreach (@target) {                # unmodified targets
-                my $state = $result{$_}{state};
-                is($pre{$_}, $post{$_}, "Target unchanged: $_")
-                    if $target_rewritten{$state} == FALSE;
-            }
-            foreach (@target) {                # if modified, check content
-                is(read_file($_), $result{$_}{cont}, "Target content: $_")
-                    if $pre{$_} ne $post{$_};
-            }
-        }
-
-        # check runstate
-        my @runstate = grep { $result{$_}{state} ne NO_RUNSTATE } key(%result);
-        if (@runstate == 0) {                  # no targets generated
-            ok(!-e $run, "Runstate dir non-existing: $run");
-        } else {                               # targets were generated
-            ok( -e $run, "Runstate dir existing: $run");
-            foreach (key %result) {
-                ok(!-f "$run/$_", "Runstate non-existing: $run/$_")
-                    if $result{$_}{state} eq NO_RUNSTATE;
-            }
-            foreach (@runstate) {
-                ok( -f "$run/$_", "Runstate existing: $run/$_");
-            }
-            foreach (@runstate) {
-                my $gotten   = read_file("$run/$_");
-                my $expected = runstate(
-                    $result{$_}{state},
-                    ($result{$_}{abort} ? (ABORT => $result{$_}{abort}) : ()),
+            # check tempfiles
+            {
+                my @tempfile = (
+                    key(%source),
+                    grep { not defined $result{$_}{temp} } key(%result),
                 );
-                is($gotten, $expected, "Runstate content: $run/$_");
+                foreach (@tempfile) {
+                    my $file = "$_--fixing";
+                    ok(! -f $file, "Tempfile non-existing: $file");
+                }
+                @tempfile = grep { defined $result{$_}{temp} } key(%result);
+                foreach (@tempfile) {
+                    my $file = "$_--fixing";
+                    ok(  -f $file, "Tempfile existing: $file");
+                }
+                foreach (@tempfile) {
+                    my $file = "$_--fixing";
+                    isnt($pre{$file}, $post{$file}, "Tempfile updated: $file");
+                }
+                foreach (@tempfile) {
+                    my $file = "$_--fixing";
+                    my $gotten   = read_file($file);
+                    my $expected = $result{$_}{temp};
+                    is($gotten, $expected, "Tempfile content: $file");
+                }
             }
-        }
 
-        # check keepstate
-        if (@runstate == 0) {
-            ok(!-e $keep, "Keepstate dir non-existing: $keep");
-        } else {
-            ok( -e $keep, "Keepstate dir existing: $keep");
-            foreach (key %source) {
-                my $gotten   = read_file("$keep/$_");
-                my $expected = keepstate(SOURCE, $source{$_});
-                is($gotten, $expected, "Keepstate content: $keep/$_");
+            # check targets
+            {
+                my @target;
+                @target = grep { not defined $result{$_}{cont} } key(%result);
+                ok(!-f $_, "Target non-existing: $_") for @target;
+                @target = grep {     defined $result{$_}{cont} } key(%result);
+                ok( -f $_, "Target existing: $_"    ) for @target;
+                foreach (@target) {            # rewritten targets
+                    my $state = $result{$_}{state};
+                    isnt($pre{$_}, $post{$_}, "Target updated: $_")
+                        if $target_rewritten{$state} == TRUE;
+                }
+                foreach (@target) {            # unmodified targets
+                    my $state = $result{$_}{state};
+                    is($pre{$_}, $post{$_}, "Target unchanged: $_")
+                        if $target_rewritten{$state} == FALSE;
+                }
+                foreach (@target) {            # if modified, check content
+                    is(read_file($_), $result{$_}{cont}, "Target content: $_")
+                        if $pre{$_} ne $post{$_};
+                }
             }
-            foreach (key %result) {
-                my $gotten   = read_file("$keep/$_");
-                my $expected = keepstate(TARGET,
-                    $result{$_}{cont},
-                    $result{$_}{deps},
-                    \%source, \%result
-                );
-                is($gotten, $expected, "Keepstate content: $keep/$_");
+
+            # check runstate
+            my @runstate = grep { $result{$_}{state} ne NO_RUNSTATE } key(%result);
+            if (@runstate == 0) {              # no targets generated
+                ok(!-e $run, "Runstate dir non-existing: $run");
+            } else {                           # targets were generated
+                ok( -e $run, "Runstate dir existing: $run");
+                foreach (key %result) {
+                    ok(!-f "$run/$_", "Runstate non-existing: $run/$_")
+                        if $result{$_}{state} eq NO_RUNSTATE;
+                }
+                foreach (@runstate) {
+                    ok( -f "$run/$_", "Runstate existing: $run/$_");
+                }
+                foreach (@runstate) {
+                    my $gotten   = read_file("$run/$_");
+                    my $expected = runstate(
+                        $result{$_}{state},
+                        ($result{$_}{abort} ? (ABORT => $result{$_}{abort}) : ()),
+                    );
+                    is($gotten, $expected, "Runstate content: $run/$_");
+                }
             }
-        }
+
+            # check keepstate
+            if (@runstate == 0) {
+                ok(!-e $keep, "Keepstate dir non-existing: $keep");
+            } else {
+                ok( -e $keep, "Keepstate dir existing: $keep");
+                foreach (key %source) {
+                    my $gotten   = read_file("$keep/$_");
+                    my $expected = keepstate(SOURCE, $source{$_});
+                    is($gotten, $expected, "Keepstate content: $keep/$_");
+                }
+                foreach (key %result) {
+                    my $gotten   = read_file("$keep/$_");
+                    my $expected = keepstate(TARGET,
+                        $result{$_}{cont},
+                        $result{$_}{deps},
+                        \%source, \%result
+                    );
+                    is($gotten, $expected, "Keepstate content: $keep/$_");
+                }
+            }
+        };
     }
 }
 
@@ -377,43 +385,43 @@ my $testdir = make_tempdir($name);
 
 ###############################################################################
 ##                                                                           ##
-##  Internal Tests (Testing Functions in the Program)                        ##
+##  White-Box Tests (Testing Functions in the Program)                       ##
 ##                                                                           ##
 ###############################################################################
 note
-    "====================================\n" .
-    " Internal Tests (Testing Functions)\n" .
-    "====================================";
+    "======================================\n" .
+    " White-Box Tests (Internal Functions)\n" .
+    "======================================";
 
 enter_dir("$testdir/01-internal-tests");
 
-note 'split_path()';
-# FIXME: What *should* split_path('.') return?
-my @test = (
-    [ qw( a/b/c     a/b     c ) ],
-    [ qw( a/b/c/    a/b     c ) ],
-    [ qw( a/b/c///  a/b     c ) ],
-    [ qw( a/b//c/   a/b     c ) ],
-    [ qw( a//b/c    a//b    c ) ],
-    [ qw( /a/b/c    /a/b    c ) ],
-    [ qw( a         .       a ) ],
-    [ qw( /a        /       a ) ],
-);
-# We run the function twice, because it looks prettier to report basenames and
-# dirnames separately in the output.
-foreach my $test (@test) {
-    my ($path, $expect_dir, undef) = @$test;
-    my ($dir_result, undef) = Local::Modulino::split_path($path);
-    is ($dir_result, $expect_dir, "Dirname: $path");
-}
-foreach my $test (@test) {
-    my ($path, undef, $expect_file) = @$test;
-    my (undef, $file_result) = Local::Modulino::split_path($path);
-    is ($file_result, $expect_file, "Basename: $path");
-}
+subtest 'split_path()' => sub {
+    # FIXME: What *should* split_path('.') return?
+    my @test = (
+        [ qw( a/b/c     a/b     c ) ],
+        [ qw( a/b/c/    a/b     c ) ],
+        [ qw( a/b/c///  a/b     c ) ],
+        [ qw( a/b//c/   a/b     c ) ],
+        [ qw( a//b/c    a//b    c ) ],
+        [ qw( /a/b/c    /a/b    c ) ],
+        [ qw( a         .       a ) ],
+        [ qw( /a        /       a ) ],
+    );
+    # We run the function twice, because it looks prettier to report basenames and
+    # dirnames separately in the output.
+    foreach my $test (@test) {
+        my ($path, $expect_dir, undef) = @$test;
+        my ($dir_result, undef) = Local::Modulino::split_path($path);
+        is ($dir_result, $expect_dir, "Dirname: $path");
+    }
+    foreach my $test (@test) {
+        my ($path, undef, $expect_file) = @$test;
+        my (undef, $file_result) = Local::Modulino::split_path($path);
+        is ($file_result, $expect_file, "Basename: $path");
+    }
+};
 
-note 'default_buildscripts()';
-{
+subtest 'default_buildscripts()' => sub {
     my %tests = (
         'hej.a.b.c' => [
             'default.a.b.c.fix',
@@ -428,10 +436,9 @@ note 'default_buildscripts()';
         is_deeply([ Local::Modulino::possible_buildscripts($_) ], $expect,
                   "Files: $_");
     }
-}
+};
 
-note 'Local::Paths::relpath()';
-{
+subtest 'Local::Paths::relpath()' => sub {
     my @test = (
         [qw( /x/y/z.txt  /           x/y/z.txt )],
         [qw( /x/y/z.txt  /x            y/z.txt )],
@@ -445,10 +452,9 @@ note 'Local::Paths::relpath()';
         my $got = Local::Paths::relpath($file, $dir);
         is($got, $result, "$result");
     }
-}
+};
 
-note 'Local::Paths::clean()';
-{
+subtest 'Local::Paths::clean()' => sub {
     my @test = (
         './a'        => 'a',
         '../a'       => '../a',
@@ -479,10 +485,9 @@ note 'Local::Paths::clean()';
         my ($_, $expect) = splice(@test, 0, 2);
         is(Local::Paths::clean($_), $expect, "Path: $_");
     }
-}
+};
 
-note "Local::Store, simple use";
-{
+subtest "Local::Store, simple use" => sub {
     my $test = new Local::Store(dir => 'storage');
     my ($x, $y);
 
@@ -513,23 +518,23 @@ note "Local::Store, simple use";
         $x = $test->get('file', $_);
         is  ($x, $expected{$_}, "get() with one field in scalar context: $_");
     }
-}
+};
 
 ###############################################################################
 ##                                                                           ##
-##  External Tests (Running the Program, Testing Build Results)              ##
+##  Grey-Box Tests (Testing Build Results & State Storage Content)           ##
 ##                                                                           ##
 ###############################################################################
 note
-    "========================================\n" .
-    " External Tests (Testing Build Results)\n" .
-    "========================================";
+    "================================================\n" .
+    " Grey-Box Tests (Build Results + State Storage)\n" .
+    "================================================";
 
 note '=== Passing Bad Args ===';
 enter_dir("$testdir/02-external-passing-bad-args");
 
-note "No '.fixrc'";
 run_fix_test(
+    name   => "No '.fixrc'",
     exit   => 254,
     errmsg => nl("fix: Current dir not in a fix worktree",
                  "(Use 'touch .fixrc' where you want your worktree root.)"),
@@ -538,23 +543,23 @@ run_fix_test(
 
 write_file('.fixrc' => '');
 
-note "No argument given";
 run_fix_test(
+    name   => "No argument given",
     exit   => 254,
     errmsg => nl("fix: No target specified"),
     args   => [qw()],
 );
 
-note "Bad command line option";
 run_fix_test(
+    name   => "Bad command line option",
     exit   => 254,
     errmsg => nl("fix: Unknown option: '--BAD-OPTION'",
                  "fix: No target specified"),
     args   => [qw( --BAD-OPTION )],
 );
 
-note "Two bad command line options";
 run_fix_test(
+    name   => "Two bad command line options",
     exit   => 254,
     errmsg => nl("fix: Unknown option: '--BAD-OPTION'",
                  "fix: Unknown option: '--BAD-OPTION-2'",
@@ -562,16 +567,16 @@ run_fix_test(
     args   => [qw( --BAD-OPTION --BAD-OPTION-2 )],
 );
 
-note "Option '--source' on command line";
 run_fix_test(
+    name   => "Option '--source' on command line",
     exit   => 254,
     errmsg => nl("fix: Cannot use '--source' outside buildscript"),
     args   => [qw( --source NON-EXISTING-TARGET )],
 );
 
-note "Non-existing buildscript";
 # FIXME: Test output on standard error
 run_fix_test(
+    name   => "Non-existing buildscript",
     exit   => 254,
     args   =>  [qw( NON-EXISTING-TARGET )],
     stats  => [[qw( NON-EXISTING-TARGET )]],
@@ -585,10 +590,10 @@ run_fix_test(
     },
 );
 
-note "Buildscript outside work tree";
 write_file('../outside.fix', '');
 # FIXME: Test output on standard error
 run_fix_test(
+    name   => "Buildscript outside work tree",
     exit   => 254,
     args   =>  [qw( ../outside )],
     stats  => [[qw( ../outside )]],
@@ -602,9 +607,9 @@ run_fix_test(
     },
 );
 
-note "Buildscript with exit status = 1";
 # FIXME: Test output on standard error
 run_fix_test(
+    name   => "Buildscript with exit status = 1",
     exit   => 1,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -622,9 +627,9 @@ run_fix_test(
     },
 );
 
-note "Buildscript with exit status = 2";
 # FIXME: Test output on standard error
 run_fix_test(
+    name   => "Buildscript with exit status = 2",
     exit   => 2,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -642,9 +647,9 @@ run_fix_test(
     },
 );
 
-note "Buildscript with command returning false";
 # FIXME: Test output on standard error
 run_fix_test(
+    name   => "Buildscript with command returning false",
     exit   => 1,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -662,9 +667,9 @@ run_fix_test(
     },
 );
 
-note "Buildscript with non-existing command";
 # FIXME: Test output on standard error
 run_fix_test(
+    name   => "Buildscript with non-existing command",
     exit   => 127,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -686,8 +691,8 @@ note '=== Building with Default Buildscripts ===';
 enter_dir("$testdir/03-external-default-buildscripts");
 write_file('.fixrc' => '');
 
-note 'Build using "1.txt.fix" rule';
 run_fix_test(
+    name   => "Build using '1.txt.fix' rule",
     exit   => 0,
     args   =>  [qw( 1.txt )],
     stats  => [[qw( 1.txt )]],
@@ -706,8 +711,8 @@ run_fix_test(
 );
 rmtree([ ".$name", '1.txt', '1.txt.fix' ]);    # erase generated files
 
-note 'Build using "default.txt.fix" rule';
 run_fix_test(
+    name   => "Build using 'default.txt.fix' rule",
     exit   => 0,
     args   =>  [qw( 1.txt )],
     stats  => [[qw( 1.txt )]],
@@ -726,8 +731,8 @@ run_fix_test(
 );
 rmtree([ ".$name", '1.txt', 'default.txt.fix' ]);  # erase generated files
 
-note 'Build using "default.fix" rule';
 run_fix_test(
+    name   => "Build using 'default.fix' rule",
     exit   => 0,
     args   =>  [qw( 1.txt )],
     stats  => [[qw( 1.txt )]],
@@ -752,9 +757,9 @@ note '=== Building with No Explicit Dependencies ===';
 enter_dir("$testdir/04-external-no-explicit-deps");
 write_file('.fixrc' => '');
 
-note 'Buildscript outputting $1 + $2';
 rmtree([ '1', '1.fix' ]);  # erase generated files
 run_fix_test(
+    name   => "Buildscript outputting \$1 + \$2",
     exit   => 0,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -772,8 +777,8 @@ run_fix_test(
     },
 );
 
-note "Rerun without changes";
 run_fix_test(
+    name   => "Rerun without changes",
     exit   => 0,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -791,10 +796,10 @@ run_fix_test(
     },
 );
 
-note "Rerun after target was externally modified";
 # (Won't generate tempfile, since build isn't attempted at all.)
 write_file('1', nl('XXX'));                    # modify target file
 run_fix_test(
+    name   => "Rerun after target was externally modified",
     exit   => 253,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -813,9 +818,9 @@ run_fix_test(
     },
 );
 
-note "Rerun after target was deleted";
 delete_file('1');
 run_fix_test(
+    name   => "Rerun after target was deleted",
     exit   => 0,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -833,8 +838,8 @@ run_fix_test(
     },
 );
 
-note "Rerun after buildscript was changed, but give same output";
 run_fix_test(
+    name   => "Rerun after buildscript was changed, but give same output",
     exit   => 0,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -853,8 +858,8 @@ run_fix_test(
     },
 );
 
-note "Rerun after buildscript was changed, and give new output";
 run_fix_test(
+    name   => "Rerun after buildscript was changed, and give new output",
     exit   => 0,
     args   =>  [qw( 1 )],
     stats  => [[qw( 1 )]],
@@ -870,8 +875,8 @@ run_fix_test(
     },
 );
 
-note 'Writing to tempfile explicitly (not STDOUT)';
 run_fix_test(
+    name   => "Writing to tempfile explicitly (not STDOUT)",
     exit   => 0,
     args   =>  [qw( test.txt )],
     stats  => [[qw( test.txt )]],
@@ -889,12 +894,12 @@ run_fix_test(
 
 ###############################################################################
 
-note '=== Source Dependency ===';
+note '=== Source Dependencies ===';
 enter_dir("$testdir/05-external-source-deps");
 write_file('.fixrc' => '');
 
-note "Source dependency";
 run_fix_test(
+    name   => "Source dependency",
     exit   => 0,
     args   =>  [qw( indented.txt )],
     stats  => [[qw( indented.txt )], [qw( --source source.txt )]],
@@ -912,8 +917,8 @@ run_fix_test(
     },
 );
 
-note "Source dependency, rebuild without change";
 run_fix_test(
+    name   => "Source dependency, rebuild without change",
     exit   => 0,
     args   =>  [qw( indented.txt )],
     stats  => [[qw( indented.txt )]],
@@ -931,8 +936,8 @@ run_fix_test(
     },
 );
 
-note "Source dependency, rebuild with source change";
 run_fix_test(
+    name   => "Source dependency, rebuild with source change",
     exit   => 0,
     args   =>  [qw( indented.txt )],
     stats  => [[qw( indented.txt )], [qw( --source source.txt )]],
@@ -952,12 +957,12 @@ run_fix_test(
 
 ###############################################################################
 
-note '=== Checksum Dependencies (a.txt -> b.txt) ===';
+note '=== Checksum-Based Dependencies (a.txt -> b.txt) ===';
 enter_dir("$testdir/06-external-dep-checksums");
 write_file('.fixrc' => '');
 
-note "Initial build from 'a.txt'";
 run_fix_test(
+    name   => "Initial build from 'a.txt'",
     exit   => 0,
     args   =>  [qw( a.txt )],
     stats  => [[qw( a.txt )], [qw( b.txt )]],
@@ -982,8 +987,8 @@ run_fix_test(
     },
 );
 
-note "Rebuild of modified 'b.txt'";
 run_fix_test(
+    name   => "Rebuild of modified 'b.txt'",
     exit   => 0,
     args   =>  [qw( b.txt )],
     stats  => [[qw( b.txt )]],
@@ -999,9 +1004,9 @@ run_fix_test(
     },
 );
 
-note "Rebuild from 'a.txt'";
 # This will fail unless dependencies include checksums.
 run_fix_test(
+    name   => "Rebuild from 'a.txt'",
     exit   => 0,
     args   =>  [qw( a.txt )],
     stats  => [[qw( a.txt )], [qw( b.txt )]],
@@ -1032,8 +1037,8 @@ note '=== Multiple Dependencies ===';
 enter_dir("$testdir/07-external-multiple-deps");
 write_file('.fixrc' => '');
 
-note "First run of buildscript with dependencies";
 run_fix_test(
+    name   => "First run of buildscript with dependencies",
     exit   => 0,
     args   =>  [qw( ab12 )],
     stats  => [[qw( ab12 )], [qw(ab 12)], [qw(a b)], [qw(1 2)]],
@@ -1085,8 +1090,8 @@ run_fix_test(
     },
 );
 
-note "Rerun without change";
 run_fix_test(
+    name   => "Rerun without change",
     exit   => 0,
     args   =>  [qw( ab12 )],
     stats  => [[qw( ab12 )]],
@@ -1138,8 +1143,8 @@ run_fix_test(
     },
 );
 
-note "Rerun after change of subtarget '2'";
 run_fix_test(
+    name   => "Rerun after change of subtarget '2'",
     exit   => 0,
     args   =>  [qw( ab12 )],
     stats  => [[qw( ab12 )], [qw(1 2)], [qw(ab 12)]],
@@ -1191,9 +1196,9 @@ run_fix_test(
     },
 );
 
-note "Rerun after a dependency '12' was deleted";
 delete_file('12');
 run_fix_test(
+    name   => "Rerun after a dependency '12' was deleted",
     exit   => 0,
     args   =>  [qw( ab12 )],
     stats  => [[qw( ab12 )], [qw(1 2)]],
@@ -1245,9 +1250,9 @@ run_fix_test(
     },
 );
 
-note "Rerun after a dependency '1' was deleted";
 delete_file('1');
 run_fix_test(
+    name   => "Rerun after a dependency '1' was deleted",
     exit   => 0,
     args   =>  [qw( ab12 )],
     stats  => [[qw( ab12 )]],
@@ -1299,11 +1304,11 @@ run_fix_test(
     },
 );
 
-note "Rerun after dependency target '1' externally modified";
 # (Won't generate tempfile, since build isn't attempted at all.)
 # FIXME: When graceful abort is added, check runstate of NO_RUNSTATE targets.
 write_file('1', nl('XXX'));                    # modify target file
 run_fix_test(
+    name   => "Rerun after dependency target '1' externally modified",
     exit   => 253,
     args   =>  [qw( ab12 )],
     stats  => [[qw( ab12 )]],
@@ -1359,10 +1364,10 @@ run_fix_test(
 ###############################################################################
 
 note '=== Target Outside Current Dir ===';
-
-note "Building target in parent dir";
 delete_file('1');
+
 run_fix_test(
+    name   => "Building target in parent dir",
     exit   => 0,
     args   =>  [qw( ../ab12 )],
     stats  => [[qw(    ab12 )]],
@@ -1421,8 +1426,8 @@ run_fix_test(
     },
 );
 
-note "Building target in subdir";
 run_fix_test(
+    name   => "Building target in subdir",
     exit   => 0,
     args   =>  [qw( abc/ab12 )],
     stats  => [[qw( abc/ab12      )],

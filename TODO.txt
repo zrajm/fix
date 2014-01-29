@@ -1,7 +1,7 @@
 -*- org -*-
 
 * GitHub
-** TODO Write a README.md for GitHub
+** TODO Expand GitHub README.md
    All the awesomeness of djb's 'redo':
 
    * Atomic builds -- Failed builds never overwrite earlier successful ones.
@@ -600,3 +600,5 @@
    git log --follow --oneline "$(git tag|tail -n1)".. fix
 ** DONE Add test for version number
    CLOSED: [2014-01-29 Wed 04:29]
+** DONE Add GitHub README.md
+   CLOSED: [2014-01-29 Wed 06:04]

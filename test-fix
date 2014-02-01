@@ -1496,7 +1496,7 @@ chdir $Dir;
 SKIP: {
     skip("\$VERSION test - since no .git dir was found", 1) unless -d '.git';
     # get latest major & minor version numbers from last version tag in git
-    my ($major, $minor) = (`git tag --list 'v*'`)[-1] =~ m#^v(\d+)\.(\d+)\n$#;
+    my ($major, $minor) = (`git tag -l 'v*'`)[-1] =~ m#^v(\d+)\.(\d+)\n$#;
     # patch number = number of commits since last version tag
     my $patch =()= `git log --follow --oneline "v$major.$minor".. fix`;
     # check if 'fix' has been modified since last commit

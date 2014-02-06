@@ -12,26 +12,9 @@ This is an Emacs org-mode file.
 ** TODO Apenwarr redo's tests
 * Main program
 ** TODO Milestone: v1.0
-*** TODO Read config file '.fixrc' before running build
-    This should be a .ini type config file (just like git's). It will always be
-    read before any buildscript is invoked, and can be used to set up paths,
-    aliases etc. Here's an example (adapted from git(1)):
+*** TODO v1.0: Options to specify script dir, target dir, and source dir dirs
+    Included in milestone for version 1.0.
 
-        #
-        # A '#' or ';' character indicates a comment.
-        #
-
-        ; Source, script and target directories.
-        [core]
-            ; Recommended defaults.
-            scriptdir = fix
-            targetdir = build
-            pathadd   = bin
-
-        [alias]
-            all   = ./all
-            clean = --clean
-*** TODO Options to specify script tree, target tree, and source tree dirs
     Each fix project live inside a single worktree directory (at the base of
     which the '.fixrc' file resides).
 
@@ -41,14 +24,12 @@ This is an Emacs org-mode file.
     following options in '.fixrc' (all DIRs is relative to the worktree root,
     and may not reside outside the worktree):
 
-        script-tree = DIR
-        source-tree = DIR
-        target-tree = DIR
-        path-prepend = DIR     (?)
+        scriptdir = DIR
+        sourcedir = DIR
+        targetdir = DIR
 
-    (The 'path-prepend' option is used to tuck on an extra directory at the
-    beginning $PATH.) In the most extreme case (having a separate dir for each
-    thing), the worktree could look like this:
+    In the most extreme case (having a separate dir for each thing), the
+    worktree could look like this:
 
         work/
          \_ .fixrc      # config file
@@ -57,9 +38,9 @@ This is an Emacs org-mode file.
          \_ source/     # source files
          \_ target/     # build targets
 
-    Now, lets assume you have just build a target ('index.html') using a build
-    script ('default.html.fix') and a source ('index.md'). The tree would look
-    like this (ignoring the fix config files):
+    Now, lets assume you have just build a target ('index.html') using a
+    buildscript ('default.html.fix') and a source ('index.md'). The tree would
+    look like this (ignoring the fix config files):
 
         work/
          \_ script/
@@ -69,7 +50,7 @@ This is an Emacs org-mode file.
          \_ target/
              \_ index.html
 
-    If you didn't have the separate script, source, and target trees, you would
+    If you didn't have the separate script, source, and target dirs, you would
     instead be looking at a directory structure like this:
 
         work/
@@ -77,15 +58,15 @@ This is an Emacs org-mode file.
          \_ index.html
          \_ index.md
 
-    When you invoke 'fix TARGET', it will automatically look for the buildscript
-    in the target tree (or in the worktree, if target tree hasn't been
-    specified), 'fix --source FILE' will search for source dependencies in the
-    source tree, and output written by buildscripts will be written in the
-    target tree.
+    When you invoke 'fix TARGET', it will automatically look for the
+    buildscript in the target dir (or in the worktree, if target dir hasn't
+    been specified), 'fix --source FILE' will search for source dependencies in
+    the source dir, and output written by buildscripts will be written in the
+    target dir.
 
-    When a buildscript runs, its working directory will be in the source tree,
+    When a buildscript runs, its working directory will be in the source dir,
     so that the following will work, regardless of whether you use a separate
-    source tree or not. (If your buildscripts are running commands that are
+    source dir or not. (If your buildscripts are running commands that are
     particular to your project, you can add their directory to your $PATH in
     '.fixrc', which is read before each build.)
 
@@ -123,19 +104,9 @@ This is an Emacs org-mode file.
 
         $1 - (full path to) temporary output file
         $2 - filename (without path) of target file buing built
+*** TODO v1.0: Dependence on non-existing buildscripts
+    Included in milestone for version 1.0.
 
-    A nice (recommended) way to set your project up is to use the following in
-    your '.fixrc'.
-
-        [path]
-            scriptdir = fix
-            targetdir = build
-            pathadd   = bin
-
-    This will cause fix to look for buildfiles in the 'fix/' directory, write
-    generated targets in 'build/' and add the 'bin/' directory in your worktree
-    root to the beginning of your $PATH.
-*** TODO Dependence on non-existing buildscripts
     If 'abc/TARGET.txt' was generated using buildscript 'default.fix', it needs
     rebuilding if any of the higher priority buildscripts are ever created.
 
@@ -144,6 +115,10 @@ This is an Emacs org-mode file.
         abc/default.fix
         default.txt.fix
         default.fix
+** TODO Config variable 'core.addPath' should be allowed to occur several times
+   Currently only one value of 'core.addPath can be specified in the config
+   file (though this isn't all that damaging, since one may give several paths
+   separated by ':').
 ** TODO Break out file functions
    File functions should not exist in multiple incarnations. The following
    should be combined:
@@ -311,6 +286,10 @@ This is an Emacs org-mode file.
    Not relative to work_tree.
 ** TODO Display progress using relative paths
    Relative to the user's PWD, not work_tree, or anything else.
+** TODO Make config file format more like git's
+*** TODO Config file: Handle multiple occurrences of variable
+*** TODO Config file: Lines ending in \ should be continued on the next line
+*** TODO Config file: Allow partially quoted strings
 * Someday/maybe
 ** TODO Code review using Perl critic
    Simplify and standardize all code.
@@ -632,3 +611,45 @@ This is an Emacs org-mode file.
    Inline documentation should only contain stuff that you need to know when
    *using* fix + links to the GitHub repo and its wiki. Info on background,
    inspiration etc. should reside exclusively on the wiki.
+** DONE v1.0: Read config file '.fixrc' before running build
+   CLOSED: [2014-02-06 Thu 06:56]
+   Included in milestone for version 1.0.
+
+   This should be a .ini type config file (just like git's). It will always be
+   read before any buildscript is invoked, and can be used to set up paths,
+   aliases etc. Here's an example (adapted from git(1)):
+
+       #
+       # A '#' or ';' character indicates a comment.
+       #
+
+       ; Source, script and target directories.
+       [core]
+           ; Recommended defaults.
+           scriptdir = fix
+           targetdir = build
+           addpath   = bin
+
+       [alias]
+           all   = ./all
+           clean = --clean
+** DONE v1.0: Add '--add-path=DIR' option
+   CLOSED: [2014-02-06 Thu 14:53]
+   Included in milestone for version 1.0.
+
+   And the corresponding 'core.addPath' config file variable.
+** DONE Config file: Allow 'variable = value' after '[section]' (on same line)
+   CLOSED: [2014-02-06 Thu 15:06]
+** DONE Config file: Don't allow single quotes
+   CLOSED: [2014-02-06 Thu 15:07]
+** DONE Config file: Simplify escaping to be same as git's
+   CLOSED: [2014-02-06 Thu 15:37]
+   Quoting should me more like described in git-config(1) (under
+   "CONFIGURATION FILE > Syntax").
+
+   Only allow the following escape sequences (beside \" and \\): \n for
+   newline character (NL), \t for horizontal tabulation (HT, TAB) and \b for
+   backspace (BS). No other char escape sequence, nor octal char sequences are
+   valid.
+** DONE Config file: 'variable' alone on line should set value to true
+   CLOSED: [2014-02-06 Thu 15:39]

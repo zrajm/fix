@@ -22,26 +22,11 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.6.7";
+our $VERSION       = "0.6.8";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
-our ($Keep, $Run);
-our %Opt = (
-    debug     => !!$ENV{FIX_DEBUG},            # -D/--debug $FIX_DEBUG
-    fix_cmd   =>   $ENV{FIX_CMD}       //= abspath(__FILE__),
-    fix_dir   =>   $ENV{FIX_DIR}       // '',  # '.fix' dir
-    work_tree =>   $ENV{FIX_WORK_TREE} // '',  # worktree root
-    # force   => !!$ENV{FIX_FORCE},            # -f/--force $FIX_FORCE
-    level     =>   $ENV{FIX_LEVEL}     += 1,   # child level (mother = 1)
-    parent    =>   $ENV{FIX_PARENT}    // '',  # parent target
-    pid       =>   $ENV{FIX_PID}       //= $$, # PID of mother process
-    shell     =>   '/bin/dash',
-    source    =>   0,
-    stats     => !!$ENV{FIX_STATS},            # --stats $FIX_STATS
-    xtrace    => !!$ENV{FIX_XTRACE},           # -x/--xtrace $FIX_XTRACE
-    verbose   => !!$ENV{FIX_VERBOSE},          # -v/--verbose $FIX_VERBOSE
-);
+our ($Keep, $Run, %Opt);
 
 ###############################################################################
 ##                                                                           ##
@@ -331,16 +316,17 @@ sub man {
     # Return absolute path ($path is relative to $basedir, or current dir).
     sub abspath {
         my ($path, $basedir) = @_;
+        return current() if not defined($path);
         $basedir //= current();
         clean($path =~ m#^/# ? $path : join('/', $basedir, $path));
     }
     # Return relative path (relative to $basedir, or current dir). $path and
     # $basedir may be absolute or relative (to the current dir).
     sub relpath {
-        my ($path, $basedir) = map { abspath($_) } @_;
-        $basedir //= current();
-        my @path = split('/', $path,    -1);
-        my @base = split('/', $basedir, -1);
+        my ($path, $basedir) = @_;
+        return '.' if not defined($path);
+        my @path = split('/', abspath($path),                 -1);
+        my @base = split('/', abspath($basedir // current()), -1);
         while (@path and @base                 # remove all identical dirs
                 and $path[0] eq $base[0]) {
             shift(@path);
@@ -471,6 +457,19 @@ sub set_source_state {
     );
 }
 
+# Returns a __DIE__ handler function, which reinstates previously existing
+# __DIE__ handler before it calls die() itself. Take coderef as argument.
+# Whatever is returned by coderef function will be the error message.
+sub subdie {
+    my $code = shift();
+    my $old  = $SIG{__DIE__};
+    return sub {
+        chomp(my @arg = @_);
+        local $SIG{__DIE__} = $old;
+        $code->(@arg);
+    };
+}
+
 sub read_file {
     my ($file) = @_;
     open(my $in, "<:utf8", $file)
@@ -512,6 +511,56 @@ sub checksum_file {
     use Encode qw(encode_utf8);
     use Digest::SHA qw(sha1_base64);
     sha1_base64(encode_utf8(read_file($file)));
+}
+
+{
+    # Simple git escape codes.
+    my %x = ('"' => '"', '\\' => '\\', 'n' => "\n", 't' => "\t", 'b' => "\b");
+    my $double = qr{"((?:[^\"\\]|\\.)*)"};
+    my $word   = qr{([A-Za-z][A-Za-z0-9-]*)};
+
+    sub unesc { my $_ = shift(); s{\\(.)}{ $x{$1} // $1 }gex; $_ }
+    sub trim  { my $_ = shift(); s{\s+$}{};                   $_ }
+
+    # Read .ini style config file, return hashref with its content.
+    sub read_config {
+        my ($file) = @_;
+        open(my $cfg, "<:utf8", $file)
+            or die "Cannot open config file '$file' for reading: $!\n";
+        local $SIG{__DIE__} = subdie(sub {
+            $! = 254;
+            die "Bad config '" . relpath($file, $Opt{pwd}) . "': @_ in line $.\n";
+        });
+        my ($s, %cfg);
+      LINE: while (<$cfg>) {
+            chomp;
+            my ($len, $n) = length($_);        # line length, property name
+          START: {
+                m{\G \s*               }gcx;
+                pos() == $len               and              next LINE;
+                m{\G [#;]              }gcx and              next LINE;
+                m{\G       $word       }gcx and $n = lc($1), goto ASSIGN;
+                m{\G \[\s* $word \s*\] }gcx and $s = lc($1), goto START;
+                die "Neither '[section]' nor 'variable = value'\n";
+            }
+          ASSIGN: {
+                defined $s           or  die "No '[section]' found\n";
+                m{\G \s*        }gcx;
+                pos() == $len        and $cfg{$s}{$n} =       '1', goto EOF;
+                m{\G \s* \= \s* }gcx or  die "Not 'variable = value'\n";
+                m{\G $double    }gcx and $cfg{$s}{$n} = unesc($1), goto EOF;
+                m{\G ([^;#]*)   }gcx and $cfg{$s}{$n} =  trim($1), goto EOF;
+                die "This cannot happen\n";
+            }
+          EOF: {
+                m{\G \s*  }gcx;
+                pos() == $len  and next LINE;
+                m{\G [#;] }gcx and next LINE;
+                die "Unknown stuff after '[section]' or 'variable = value'\n";
+            }
+        }
+        return %cfg;
+    }
 }
 
 # Add the currently running fix instance to (first dir in) $PATH (which is
@@ -796,6 +845,22 @@ sub update_targets {
 # as in rest of fix).
 sub getopts {
     my @arg = (my @orgarg) = @_;
+    %Opt = (
+        fix_cmd   =>   $ENV{FIX_CMD}       //= abspath(__FILE__),
+        debug     => !!$ENV{FIX_DEBUG},
+        fix_dir   =>   $ENV{FIX_DIR}       // '',
+        # force   => !!$ENV{FIX_FORCE},
+        level     =>   $ENV{FIX_LEVEL}     += 1,
+        parent    =>   $ENV{FIX_PARENT}    // '',
+        pid       =>   $ENV{FIX_PID}       //= $$,
+        pwd       =>   $ENV{FIX_PWD}       //= abspath('.'),
+        stats     => !!$ENV{FIX_STATS},
+        verbose   => !!$ENV{FIX_VERBOSE},
+        work_tree =>   $ENV{FIX_WORK_TREE} // '',
+        xtrace    => !!$ENV{FIX_XTRACE},
+        shell     =>   '/bin/dash',
+        source    =>   0,
+    );
     use Getopt::Long qw(
         GetOptionsFromArray :config
         posix_default bundling gnu_compat no_ignore_case permute
@@ -807,13 +872,17 @@ sub getopts {
     local $SIG{__WARN__} = sub {
         my ($_) = @_;
         $warn = TRUE;
-        s{(\boption[: ]+)(\S+)}{
+        s{(\boption[: ]+)([-\w]+)}{
             my $x = length($2) == 1 ? '-' : '--';
             "$1'$x$2'";
         }ie;
         warn "$NAME: $_";
     };
+    my @path;
     GetOptionsFromArray(\@arg,
+        'add-path=s' => sub {         ### DIR add DIR to $PATH before building
+            push @path, abspath(pop(@_), $Opt{pwd});
+        },
         'debug|D'  => sub {           ### debug output + make build shells verbose
             $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
         },
@@ -838,7 +907,8 @@ sub getopts {
     foreach (qw( help man version )) { eval $_ if $Opt{$_} }
     warn "No target specified\n" if @arg == 0;
     if (not is_child()) {
-        warn "Cannot use '--source' outside buildscript\n" if $Opt{source};
+        warn "Option '--source' can only be used inside buildscript\n"
+            if $Opt{source};
         if ($Opt{fix_dir} eq '') {             # set FIX_DIR and WORK_TREE
             if (my $rcfile = find_parent_path('.', '/', '.fixrc')) {
                 my $dir    = split_path($rcfile);
@@ -857,7 +927,24 @@ sub getopts {
             warn "State storage on disk has old format, full rebuild needed\n" .
                 "(Erase '.fix' directory in worktree root and run again.)\n";
         }
+        if ($Opt{work_tree}) {
+            eval {
+                my %cfg = read_config("$Opt{work_tree}/.fixrc");
+                if (defined(my $addpath = delete $cfg{core}{addpath})) {
+                    push @path, abspath($addpath, $Opt{work_tree});
+                }
+                # Check for invalid config values
+                foreach my $section (sort keys %cfg) {
+                    foreach my $var (sort keys %{ $cfg{$section} }) {
+                        warn "Unknown variable '$var' under [$section]\n"
+                            if exists $cfg{$section}{$var};
+                    }
+                }
+            };
+            if ($@) { warn $@ }
+        }
     }
+    $ENV{PATH} = join(':', @path, $ENV{PATH}); # --add-path + core.addPath
     quit(254, "Try '$NAME --help' for more information.") if $warn;
     $Run = new Local::Store(
         dir        => "$Opt{fix_dir}/run",
@@ -954,6 +1041,19 @@ successful build.
 
 =over 8
 
+=item B<--add-path>=I<DIR>[:...]
+
+Prepend I<DIR> to the environment variable $PATH. If this option is used more
+than once, then all paths are added (in the given order). I<DIR> may be
+absolute or relative to the current working directory. (This can also be set
+with config file variable B<core.addPath>. If both are used, those on given on
+the command line will be placed first.)
+
+Currently, B<core.addPath> can only be specified once in the config file
+(though any number may be given on the command line). Both the command line
+option, and the config file variable allows multiple I<DIR>s to be separated
+with ':', however.
+
 =cut
 
 # =item B<-a>, B<--always>
@@ -1019,6 +1119,12 @@ Write some global build statistics to F<.fix/stats>, and also add
 'build_status' information for each processed file in the runstate directory
 (F<.fix/run/>). This is primarily intended for testing, and should not normally
 be used. (For brevity this option is not included in the B<--help> info.)
+
+This option can also be enabled by setting the environment variable $FIX_STATS
+(to anything except empty or zero). Regardless of whether B<--verbose> or
+$FIX_STATS was used, this causes the $FIX_STATS to be set inside all run
+buildscripts (which is how this setting is passed down to all child instances
+of B<fix> run from within those buildscripts).
 
 =item B<-v>, B<--verbose>
 
@@ -1297,11 +1403,21 @@ point $FIX_DIR to a directory where you have valuable data.
 
 See B<--debug>.
 
+=cut
+
+# =item B<$FIX_FORCE>
+#
+# See B<--force>.
+
+=pod
+
 =item B<$FIX_LEVEL>
 
-Incremented by one each time a build process is invoked (a dependency is
-built). This is chiefly used to indent the output messages the proper amount.
-(Analogous to the shell's $SHLVL.)
+Indicating the 'depth' of the current fix process. For the mother process
+$FIX_LEVEL is set to '1', but it is incremented by each invoked child. (I.e.
+$FIX_LEVEL '2' is a child of the mother process, '3' the grandchild etc.) This
+is chiefly used to set the indentation level in status messages. (Analogous to
+the shell's $SHLVL.)
 
 =item B<$FIX_PARENT>
 
@@ -1311,6 +1427,18 @@ process) will have this variable set to the name of its parent target.
 =item B<$FIX_PID>
 
 The process identification number of the mother process.
+
+=item B<$FIX_PWD>
+
+Absolute (logical) path of the user's current directory, as it was when fix was
+invoked on the command line. This intentionally does not change during
+recursive invocations of fix (and hence, from inside a buildscript this can
+quite often differ from $PWD). Filenames in status output and error messages
+are all be expressed as relative paths, relative to this directory.
+
+=item B<$FIX_STATS>
+
+See B<--stats>.
 
 =item B<$FIX_VERBOSE>
 
@@ -1331,6 +1459,84 @@ defaults to the current directory.
 
 The mother process makes sure $FIX_WORK_TREE is an absolute path before passing
 it on to its children.
+
+=back
+
+=head1 CONFIGURATION FILE
+
+When first invoked, fix looks for a F<.fixrc> file in the current dir, then in
+successive parent directories, in order to find the worktree root. If the root
+of the filesystem (C</>) is reached without a F<.fixrc> file being found, fix
+aborts with an error message (telling the user to create the file).
+
+The config file intentionally B<does not> reside inside F<.fix> dir (used for
+build metadata). This is to separate the essential F<.fixrc> file, from the
+non-essential F<.fix> dir. (Deleting the F<.fix> directory will lead to nothing
+worse than a slow build next time - full rebuild is forced), while deleting
+F<.fixrc> will stop your project from being built at all.
+
+If you're using git, you should commit F<.fixrc> to your repository, and add a
+line saying C</.fix> to your F<.gitignore> file.
+
+The config file format is the same as for git (a simple C<.ini> type format).
+The variables are divided into sections, each containing variables and their
+values. It is perfectly valid to have an empty config file.
+
+=head2 Syntax
+
+Here is an sample config file:
+
+    # .fixrc
+    [core]
+        ; Some recommended values.
+        scriptdir = fix
+        targetdir = build
+        addpath   = bin
+
+Whitespace (and indentation and blank lines) are ignored (except for spaces
+inside quoted strings). Comments may be put anywhere, begin with C<;> or C<#>
+and continues to the end of the line.
+
+B<Section and variable names> look the same, they are not case-sensitive, may
+only contain alphanumeric characters and C<->, and must start with an
+alphabetic character. Some variables may appear multiple times.
+
+B<Sections> starts with the section name in square brackets, and continues
+until the next section begins.
+
+B<Subsections> exists in git (see git-config(1)) but are not used with fix.
+
+B<Variables> must belong to a section (meaning that a config file must always
+start with a section name). A variable is set by a line in the form C<name =
+value> (or just C<name>, without any equal sign, in which case the value is set
+to C<true>). A variable may be set more than once (= multivalued variable).
+
+B<Unquoted variable values> will have leading and trailing whitespace trimmed,
+but whitespace within the value is kept as-is.
+
+B<Double quoted variable values> preserves all space, and comment characters
+(i.e. C<#> or C<;>) inside the value, and may also, double quoted values may
+contain the following special escape characters:
+
+   \\ -- backslash
+   \" -- double quote
+   \n -- newline (NL)
+   \t -- horizontal tabulation (HT, TAB)
+   \b -- backspace
+
+   (No other escape characters are implemented.)
+
+=head2 Variables
+
+Most config file values can be overridden by the corresponding environment
+variable or command line option. Relative filenames are relative to the
+worktree root.
+
+=over 4
+
+=item B<core.addPath>
+
+See B<--add-path>.
 
 =back
 

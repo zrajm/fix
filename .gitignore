@@ -4,6 +4,7 @@
 *~
 *.bak
 *.tmp
+/wiki
 
 # Fix files in working tree root.
 /.fix

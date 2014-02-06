@@ -4,22 +4,6 @@ This is an Emacs org-mode file.
 
 * GitHub
 ** TODO Expand GitHub README.md
-   All the awesomeness of djb's 'redo':
-
-   * Atomic builds -- Failed builds never overwrite earlier successful ones.
-   * Fast -- Builds what is minimally required.
-   * Simple -- Buildscripts written in shell, no new syntax to learn.
-   * Content-based dependencies -- Doesn't care about file timestamps.
-   * Spaces in filenames -- or whatever other funny characters you want.
-
-   And beyond:
-
-   * Self-contained -- Perl is the only requirement.
-   * Separation -- Sources, buildscripts, and targets can be in separate dirs.
-   * Configurability -- $PATH, alias etc can be configured in '.fixrc'
-   * Gittyness -- You need only be *somewhere* in a worktree to run it, not in
-     the same dir as a 'Makefile'.
-   * Robustness -- Builds correctly (though slower) if metadata is deleted.
 * Testing
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
@@ -27,26 +11,26 @@ This is an Emacs org-mode file.
 ** TODO Test for B<--xtrace>
 ** TODO Apenwarr redo's tests
 * Main program
-** [0%] Release version 1.0
+** TODO Milestone: v1.0
 *** TODO Read config file '.fixrc' before running build
     This should be a .ini type config file (just like git's). It will always be
     read before any buildscript is invoked, and can be used to set up paths,
     aliases etc. Here's an example (adapted from git(1)):
 
-           #
-           # A '#' or ';' character indicates a comment.
-           #
+        #
+        # A '#' or ';' character indicates a comment.
+        #
 
-           ; Source, script and target directories.
-           [path]
-               ; Recommended defaults.
-               scriptdir = fix
-               targetdir = build
-               pathadd   = bin
+        ; Source, script and target directories.
+        [core]
+            ; Recommended defaults.
+            scriptdir = fix
+            targetdir = build
+            pathadd   = bin
 
-           [alias]
-               all   = ./all
-               clean = --clean
+        [alias]
+            all   = ./all
+            clean = --clean
 *** TODO Options to specify script tree, target tree, and source tree dirs
     Each fix project live inside a single worktree directory (at the base of
     which the '.fixrc' file resides).
@@ -184,7 +168,7 @@ This is an Emacs org-mode file.
    this time around too...
 ** TODO Is something corresponding to 'redo-ifcreate' necessary?
 ** TODO Use PID lockfile avoid double invocations
-** TODO Aliases
+** TODO Implement aliases
    I want to be able to write 'fix all' anywhere in the worktree hierarchy, and
    have it have the same effect. How about creating aliases with a section like
    this in '.fixrc'?
@@ -199,6 +183,15 @@ This is an Emacs org-mode file.
 
    Alias names would just be an alphanumeric word, so build a file with the
    same name, one would use an explicit relative path (e.g. 'fix ./help').
+
+   Apenwarr does not produce an output file if the file written is zero bytes
+   in length, but this is a bit of an odd special case which fix does not have
+   to care about if there is alias capability.
+
+   There should be an alias to execute on plain 'fix' (without arguments). How
+   should this be indicated in the config? By having an alias called 'default',
+   maybe? (Since this is what the default rules are called, it is not very
+   likely that a user would name a target 'default'.)
 ** TODO Logging
    Write each buildscripts STDERR to file, and, if build fails, output content
    of the failing scripts STDERR, before terminating.
@@ -252,14 +245,9 @@ This is an Emacs org-mode file.
    were rebuild). -- Visualizing what parts of a dependency tree has been
    checked, and in which way, should help in optimizing the main loop. I wants
    this! :)
-** TODO Add option '--target'(?) to specify target directory
-   Mention this in POD (under 'buildscript' in GLOSSARY), when implemented.
-
-   Fix should support having separate directories for source files,
-   buildscripts and target files. E.g. you should be able to say something like
-   '--target=publish', in order to have all generated targets produced in
-   'publish' (a directory which would then contain *only* generated targets, no
-   buildscripts, nor sources).
+** TODO Add option '--status'
+   List which target(s) will be rebuilt in the next rebuild (without actually
+   rebuilding anything).
 ** TODO Add option '--watch'(?) to monitor and rebuild on changes
    Option name '--watch' or '--auto' maybe? Would use inotifywait to look for
    changes and rebuild, whenever something is written.
@@ -281,11 +269,33 @@ This is an Emacs org-mode file.
 ** TODO Parallel builds
    Fork and run parallel 'fix' for each argument given.
 ** TODO Magic numbers (#!) in buildscripts
-   The following post on the Google Group for redo, suggests that all .do files
+   All buildscripts should have a '#!' line at the beginning, and have execute
+   permissions (--x--x--x) turned on.
+
+   [[ https://groups.google.com/forum/#!topic/redo-list/yeBwxcXvm8c][A solution to the portability (and a bunch of other) problems]]
+
+   The above post on the Google Group for redo, suggests that all .do files
    should be "opaque executables". (Arguing that this would be a killer app for
    redo, allowing everyone to write build scripts *in their own language*.)
 
-   [[ https://groups.google.com/forum/#!topic/redo-list/yeBwxcXvm8c][A solution to the portability (and a bunch of other) problems]]
+   [[http://homepage.ntlworld.com/jonathan.deboynepollard/FGA/introduction-to-redo.html#ImplementationProblems][Pollard's critique of the #! processing in apenwarr redo]]:
+
+   This is an unfortunate byproduct of its assuming that "do" files are Bourne
+   shell scripts and only requiring #! when they are not. It passes all "do"
+   scripts directly to the Bourne shell, and thus has to check for #! and do
+   its own #! processing duplicating, not necessarily exactly or correctly,
+   what the kernel does. In particular, the #! implementation in Pennarun redo
+   as of 2012 has several of the well-known and widely documented #! security
+   holes that have long since been closed in actual operating system kernel
+   implementations of the same mechanism, including the script filename race
+   condition. It also has an incorrect magic number check and an additional
+   PATH security hole caused by how it attempts to run the Bourne shell.
+
+   A better approach would have been to use the Unix philosophy as it stood: a
+   program to be run is just run, with execve(), as-is; "do" scripts are
+   expected to all have #! to identify their particular interpreters; the
+   system relies on the operating system kernel's processing of #! and doesn't
+   roll its own one badly; and there is no hardwiring of one particular shell.
 ** TODO Abort more gracefully
    Abort should not exit brutally (e.g. causing stats to be broken except for
    the file causing the abort), but recurse gracefully back again.
@@ -302,6 +312,31 @@ This is an Emacs org-mode file.
 ** TODO Display progress using relative paths
    Relative to the user's PWD, not work_tree, or anything else.
 * Someday/maybe
+** TODO Code review using Perl critic
+   Simplify and standardize all code.
+** TODO Compare fix with other build systems in 'Build System Shootout'
+   https://github.com/ndmitchell/build-shootout
+** TODO Rethink keepstate storage lookups
+   The below idea does not work well with stat fingerprints, but maybe it can
+   be modified to do so?
+
+   What if, instead of using the source/target filename as the file/lookup name
+   in the keepstore, one used the sha1sum? And likewise with dependencies.
+   (This would make it *very* fast to check if deps need to be rebuilt -- a
+   single stat is all that is needed to answer whether a dependency exists and
+   is up-to-date.)
+
+       # .fix/b282f06fc2cb678ccf84e3ae8b1317be81252391
+       name = abc/target.txt
+       deps = fad4699ef2f5c08e2699618c50310fb39b742a27 \
+              2c0f8562db8543857de01b0cabc88b978ebfb63d
+       type = target
+
+   When building, full keepstate should be written upon completion of compile.
+   And thereafter the old keepstate file should be removed. (This would mean
+   that we can skip writing keepstate when one already exist -- if checksum is
+   the same, then everything else about it is the same too. We still have to
+   write to tempfile, in order to get update atomic, though.)
 ** TODO Stat fingerprints in dependencies & targets
    Currently stat fingerprints are only used in the runstate and keepstate.
    Could it accelerate stuff more generally if we used it when examining
@@ -356,43 +391,14 @@ This is an Emacs org-mode file.
 ** TODO What about cyclic dependencies?
 ** TODO Should '--verbose' trigger '-v' option for buildscript shells?
    Seems excessive. Maybe only --debug should trigger this?
-** TODO Don't create target file when buildscript doesn't output anything
-   Is this a good idea, or will it confuse the user?
-
-   Apenwarr redo generates no output file if nothing was written by a rule. Is
-   this good? Should we do this too? (Note, however, that apenwarr redo also
-   does not attempt to regenerate the non-existing output, unless any
-   dependencies have changed. 'redo-ifchange target' works to build the target
-   the first time, but after that it does not run unless changes were made in
-   the dependencies.)
-
-   This in itself is good for a target like 'all', but how about something like
-   'clean'?
 ** TODO Remove 'File::Path' dependency(?)
    Is this really motivated? -- If so, need to replace 'mkpath' and 'rmtree'
    with own functions.
 ** TODO Allow a buildfile to generate target dirs and symlinks
-* Inspiration
-  Info about other redo, or redo inspired, implementations.
-** [[http://neilmitchell.blogspot.se/2012/02/four-interesting-build-tools.html][Four Interesting Build Tools]] (by Neil Mitchell, on blogspot, 2012-02-28)
-   A brief informative and inspiring overview of the four modern build tools
-   'redo', 'ninja', 'tup' and 'fabricate', summing up their respective
-   approaches and weighing the pros and cons of each.
-** [[http://pozorvlak.livejournal.com/159621.html?nojs=1][A quick introduction to redo]] (by pozorvlak, on Livejournal, 2011-01-14)
-** [[http://pozorvlak.livejournal.com/159126.html?nojs=1][Redo from scratch]] (by pozorvlak, on Livejournal, 2011-01-12)
-** [[https://github.com/apenwarr/redo/tree/master/Documentation][Redo manpages]] (by Avery Pennarun, on GitHub)
-** [[https://groups.google.com/forum/#!topic/redo-list/HEITPe64D1Q][Announcing `gup`, a fork of redo]] (by Tim Cuthbertson, on Redo Google Group)
-   Summary: Redo has a problem in that, if it is run with its statefiles
-   deleted, and there are previously generated targets still lying around, then
-   those generated targets are taken for source files, and are (silently) not
-   rebuilt. This is non-obvious, and requires manual intervention to fix. Gup
-   solves this problem.
-** [[https://github.com/gfxmonk/gup][Gup - A better make, inspired by djb's redo.]] (by Tim Cuthbertson, on GitHub)
-** [[http://gfxmonk.net/][Announcing the gup build tool]] (by Tim Cuthbertson, own website, 2013-12-26)
-** [[https://github.com/gittup/tup][Tup on GitHub]] (by Mike Shal, on GitHub, 2009)
-** [[http://gittup.org/tup/][Tup]] (by Mike Shal, own website)
-** [[http://chadaustin.me/2010/06/scalable-build-systems-an-analysis-of-tup/][Scalable Build Systems: An Analysis of Tup]] (by Chad Austin, own website)
-** [[https://github.com/jekor/redo][djb's "redo" in Haskell]] (by Chris Forno, on GitHub)
+   A buildscript should be able to produce a directory, with content, or a
+   symlink, and this should be handled properly (with changes properly detected
+   etc) just like for normal files. (This would require checksumming the link
+   name, and some representation of the dictionary content.)
 * DONE (chronological order)
 ** DONE fix-test: Tests statefile contents.
    CLOSED: [2014-01-10 Fri 12:00]
@@ -621,3 +627,8 @@ This is an Emacs org-mode file.
    State store should have a format version number, and fix should refuse to
    read the files in '.fix' if it will not be able to make sense of them
    anyway.
+** DONE Remove philosophical stuff from inline documentation
+   CLOSED: [2014-02-06 Thu 06:39]
+   Inline documentation should only contain stuff that you need to know when
+   *using* fix + links to the GitHub repo and its wiki. Info on background,
+   inspiration etc. should reside exclusively on the wiki.

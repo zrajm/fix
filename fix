@@ -22,7 +22,7 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.6.8";
+our $VERSION       = "0.6.9";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -81,7 +81,7 @@ sub usage {
             my $arg   = $4;
             my $desc  = $5;
             # if option takes arg, and 1st word in description is uppercase,
-            # use that uppercase word in long description description
+            # use that uppercase word in long description
             if ($arg and $desc =~ s/([A-Z0-9]+)\s*//) {
                 $long .= $arg eq ":" ? "[=$1]" : "=$1";
             }
@@ -880,7 +880,7 @@ sub getopts {
     };
     my @path;
     GetOptionsFromArray(\@arg,
-        'add-path=s' => sub {         ### DIR add DIR to $PATH before building
+        'exec-path=s' => sub {        ### DIR add DIR to $PATH before building
             push @path, abspath(pop(@_), $Opt{pwd});
         },
         'debug|D'  => sub {           ### debug output + make build shells verbose
@@ -892,7 +892,7 @@ sub getopts {
         'help|h|?'  => \$Opt{help},   ### display this help and exit
         'man|M'     => \$Opt{man},    ### display program manpage and exit
         'source'    => \$Opt{source}, ### declare source dependencies
-        'stats'     => sub{           ##  save stats in .fix dir
+        'stats'     => sub {          ##  save stats in .fix dir (for testing)
             $Opt{stats} = $ENV{FIX_STATS} = TRUE;
         },
         'verbose|v' => sub {          ### output status info while building
@@ -927,11 +927,13 @@ sub getopts {
             warn "State storage on disk has old format, full rebuild needed\n" .
                 "(Erase '.fix' directory in worktree root and run again.)\n";
         }
+        push(@path, abspath(delete $ENV{FIX_EXEC_PATH}, $Opt{pwd}))
+            if exists $ENV{FIX_EXEC_PATH};
         if ($Opt{work_tree}) {
             eval {
                 my %cfg = read_config("$Opt{work_tree}/.fixrc");
-                if (defined(my $addpath = delete $cfg{core}{addpath})) {
-                    push @path, abspath($addpath, $Opt{work_tree});
+                if (defined(my $execpath = delete $cfg{core}{execpath})) {
+                    push @path, abspath($execpath, $Opt{work_tree});
                 }
                 # Check for invalid config values
                 foreach my $section (sort keys %cfg) {
@@ -944,7 +946,7 @@ sub getopts {
             if ($@) { warn $@ }
         }
     }
-    $ENV{PATH} = join(':', @path, $ENV{PATH}); # --add-path + core.addPath
+    $ENV{PATH} = join(':', @path, $ENV{PATH}); # --exec-path + core.execPath
     quit(254, "Try '$NAME --help' for more information.") if $warn;
     $Run = new Local::Store(
         dir        => "$Opt{fix_dir}/run",
@@ -1035,24 +1037,15 @@ successful build.
 
 =head1 OPTIONS
 
+Fix's behavior can specified using config file variables, by environment
+variables, and by options on the command line. (The latter takes precedence
+over the former.) Not all forms are applicable to all options.
+
 =cut
 
 # Mandatory arguments for long options are mandatory for short options too.
 
-=over 8
-
-=item B<--add-path>=I<DIR>[:...]
-
-Prepend I<DIR> to the environment variable $PATH. If this option is used more
-than once, then all paths are added (in the given order). I<DIR> may be
-absolute or relative to the current working directory. (This can also be set
-with config file variable B<core.addPath>. If both are used, those on given on
-the command line will be placed first.)
-
-Currently, B<core.addPath> can only be specified once in the config file
-(though any number may be given on the command line). Both the command line
-option, and the config file variable allows multiple I<DIR>s to be separated
-with ':', however.
+=over 4
 
 =cut
 
@@ -1082,6 +1075,24 @@ This option can also be enabled by setting the environment variable $FIX_DEBUG
 $FIX_DEBUG was used, this causes the $FIX_DEBUG to be set inside all run
 buildscripts (which is how this setting is passed down to all child instances
 of B<fix> run from within those buildscripts).
+
+=item B<--exec-path>=I<DIR>[:...]
+
+This option prepends one or more I<DIR>(s) to the environment variable $PATH
+(more than one path may be specified by separating them with ':'). Option may
+also be used multiple times, in which case all the paths are added in the order
+of occurrence. I<DIR> may be absolute or relative to the current working
+directory.
+
+Can also be set by config file variable B<core.execPath>, or environment
+variable $FIX_EXEC_PATH. (These, unlike the command line option, can only be
+specified only once.) If all three are used, they are put in the following
+order in $PATH: B<--exec-path>, $FIX_EXEC_PATH, B<core.execPath>.
+
+This option is useful when you have scripts or programs that do not reside in
+your normal $PATH (e.g. scripts specific to one build project). You never need
+to add fix itself, as this is done automatically. This option is similar, but
+not quite the same as git's B<--exec-path>.
 
 =cut
 
@@ -1403,6 +1414,11 @@ point $FIX_DIR to a directory where you have valuable data.
 
 See B<--debug>.
 
+=item B<$FIX_EXEC_PATH>
+
+See B<--exec-path>. (May be absolute path, or path relative to the current
+working directory.)
+
 =cut
 
 # =item B<$FIX_FORCE>
@@ -1491,7 +1507,7 @@ Here is an sample config file:
         ; Some recommended values.
         scriptdir = fix
         targetdir = build
-        addpath   = bin
+        execpath  = bin
 
 Whitespace (and indentation and blank lines) are ignored (except for spaces
 inside quoted strings). Comments may be put anywhere, begin with C<;> or C<#>
@@ -1529,14 +1545,16 @@ contain the following special escape characters:
 =head2 Variables
 
 Most config file values can be overridden by the corresponding environment
-variable or command line option. Relative filenames are relative to the
-worktree root.
+variable or command line option.
+
+Path names given in the config file are relative to the worktree root (while on
+the command line they are relative to the users current directory).
 
 =over 4
 
-=item B<core.addPath>
+=item B<core.execPath>
 
-See B<--add-path>.
+See B<--exec-path>.
 
 =back
 

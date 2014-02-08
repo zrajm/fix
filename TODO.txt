@@ -5,6 +5,11 @@ This is an Emacs org-mode file.
 * GitHub
 ** TODO Expand GitHub README.md
 * Testing
+** TODO Test relative dirs for --exec-path, $FIX_EXEC_PATH & core.execPath
+   Test that relative dirs are interpreted as relative to:
+     * --exec-path    -- user current dir
+     * $FIX_EXEC_PATH -- user current dir
+     * core.execPath  -- worktree directory
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
 ** TODO Test for B<--verbose>
@@ -12,6 +17,11 @@ This is an Emacs org-mode file.
 ** TODO Apenwarr redo's tests
 * Main program
 ** TODO Milestone: v1.0
+*** TODO v1.0: Add '--fix-dir' option
+*** TODO v1.0: Add '--work-tree' option
+*** TODO v1.0: Add '--script-dir' option
+*** TODO v1.0: Add '--source-dir' option
+*** TODO v1.0: Add '--target-dir' option
 *** TODO v1.0: Options to specify script dir, target dir, and source dir dirs
     Included in milestone for version 1.0.
 
@@ -291,6 +301,20 @@ This is an Emacs org-mode file.
 *** TODO Config file: Lines ending in \ should be continued on the next line
 *** TODO Config file: Allow partially quoted strings
 * Someday/maybe
+** TODO Git wiki as submodule(?)
+   There seem to be a little bit of hassle to get it to work, and keep itself
+   automatically up-to-date when pulling and cloning... :/
+
+   Reference: [[http://brendancleary.com/2013/03/08/including-a-github-wiki-in-a-repository-as-a-submodule/][Including a GitHub Wiki in a Repositor]]
+** TODO Make a fix logo
+   Some cute and fix-y animal? (Though a fox would be somewhat cliché.)
+
+   Some animal that builds stuff? A beaver? An ant? (Termites are kinda ugly,
+   they seem to fit the bill otherwise, though.) Beaver with a chainsaw? (Kinda
+   implies brute force, rather than intelligence/finesse, though.)
+
+   The "Bower" project have a very nifty GitHub page. I'd like something
+   equally (graphically) inspiring.
 ** TODO Code review using Perl critic
    Simplify and standardize all code.
 ** TODO Compare fix with other build systems in 'Build System Shootout'
@@ -653,3 +677,7 @@ This is an Emacs org-mode file.
    valid.
 ** DONE Config file: 'variable' alone on line should set value to true
    CLOSED: [2014-02-06 Thu 15:39]
+** DONE v1.0: Rename '--add-path' -> '--exec-path'
+   CLOSED: [2014-02-08 Sat 10:17]
+   '--exec-path' is the name of git's option with analogous function.
+   Environment variable $FIX_EXEC_PATH should also work.

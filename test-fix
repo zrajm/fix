@@ -873,9 +873,9 @@ enter_dir("greybox-config-file");
         args   =>  [qw( test.txt )],
     );
 
-    write_file('.fixrc' => '[core]addPath=.');
+    write_file('.fixrc' => '[core]execPath=.');
     run_fix_test(
-        name   => "core.addPath",
+        name   => "core.execPath",
         exit   => 0,
         args   =>  [qw( test.txt )],
         stats  => [[qw( test.txt )]],
@@ -894,18 +894,60 @@ enter_dir("greybox-config-file");
     write_file('.fixrc' => '');
     rmtree([ ".$name", 'test.txt' ]);
     run_fix_test(
-        name   => "--add-path",
+        name   => '$FIX_EXEC_PATH',
         exit   => 0,
-        args   =>  [ qw( --add-path=. test2.txt )],
-        stats  => [[ qw( --add-path=. test2.txt )]],
+        args   =>  [qw( test.txt )],
+        stats  => [[qw( test.txt )]],
+        before => sub {        $ENV{FIX_EXEC_PATH} = '.'  },
+        after  => sub { delete $ENV{FIX_EXEC_PATH}        },
         source => {
-            'test2.txt.fix' => nl('echo "$PATH"'),
+            'test.txt.fix' => nl('echo $PATH'),
         },
         result => {
-            'test2.txt' => {
+            'test.txt' => {
                 state => NEW_CONTENT,
-                deps  => [[ 'test2.txt.fix' ]],
+                deps  => [[ 'test.txt.fix' ]],
                 cont  => nl("$dir/.fix/bin:$dir:$ENV{PATH}"),
+            },
+        },
+    );
+
+    write_file('.fixrc' => '');
+    rmtree([ ".$name", 'test.txt' ]);
+    run_fix_test(
+        name   => "--exec-path",
+        exit   => 0,
+        args   =>  [ qw( --exec-path=. test.txt )],
+        stats  => [[ qw( --exec-path=. test.txt )]],
+        source => {
+            'test.txt.fix' => nl('echo "$PATH"'),
+        },
+        result => {
+            'test.txt' => {
+                state => NEW_CONTENT,
+                deps  => [[ 'test.txt.fix' ]],
+                cont  => nl("$dir/.fix/bin:$dir:$ENV{PATH}"),
+            },
+        },
+    );
+
+    write_file('.fixrc' => '[core]execPath=CFG');
+    rmtree([ ".$name", 'test.txt' ]);
+    run_fix_test(
+        name   => '--exec-path + $FIX_EXEC_PATH + core.execPath',
+        exit   => 0,
+        args   =>  [ qw( --exec-path=CMD test.txt )],
+        stats  => [[ qw( --exec-path=CMD test.txt )]],
+        before => sub {        $ENV{FIX_EXEC_PATH} = 'ENV'  },
+        after  => sub { delete $ENV{FIX_EXEC_PATH}          },
+        source => {
+            'test.txt.fix' => nl('echo "$PATH"'),
+        },
+        result => {
+            'test.txt' => {
+                state => NEW_CONTENT,
+                deps  => [[ 'test.txt.fix' ]],
+                cont  => nl("$dir/.fix/bin:$dir/CMD:$dir/ENV:$dir/CFG:$ENV{PATH}"),
             },
         },
     );

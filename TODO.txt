@@ -2,19 +2,6 @@
 
 This is an Emacs org-mode file.
 
-* GitHub
-** TODO Expand GitHub README.md
-* Testing
-** TODO Test relative dirs for --exec-path, $FIX_EXEC_PATH & core.execPath
-   Test that relative dirs are interpreted as relative to:
-     * --exec-path    -- user current dir
-     * $FIX_EXEC_PATH -- user current dir
-     * core.execPath  -- worktree directory
-** TODO Add more tests for file-oriented internal functions
-** TODO Test $FIX_* variables
-** TODO Test for B<--verbose>
-** TODO Test for B<--xtrace>
-** TODO Apenwarr redo's tests
 * Main program
 ** TODO Milestone: v1.0
 *** TODO v1.0: Add '--fix-dir' option
@@ -300,6 +287,17 @@ This is an Emacs org-mode file.
 *** TODO Config file: Handle multiple occurrences of variable
 *** TODO Config file: Lines ending in \ should be continued on the next line
 *** TODO Config file: Allow partially quoted strings
+* Testing
+** TODO Test relative dirs for --exec-path, $FIX_EXEC_PATH & core.execPath
+   Test that relative dirs are interpreted as relative to:
+     * --exec-path    -- user current dir
+     * $FIX_EXEC_PATH -- user current dir
+     * core.execPath  -- worktree directory
+** TODO Add more tests for file-oriented internal functions
+** TODO Test $FIX_* variables
+** TODO Test for B<--verbose>
+** TODO Test for B<--xtrace>
+** TODO Apenwarr redo's tests
 * Someday/maybe
 ** TODO Git wiki as submodule(?)
    There seem to be a little bit of hassle to get it to work, and keep itself

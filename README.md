@@ -1,12 +1,13 @@
 # Fix
 
 Fix is my take on a build system. It's written in Perl, and runs on GNU/Linux.
-Apart its dependency on Perl it tries hard to be very minimalistic. (There are
-no other dependencies.)
+Apart from its dependency on Perl it tries hard to be very minimalistic. (There
+are no other dependencies.)
 
 It is mostly inspired by `redo` and `git` (for a more complete list of sources
 of inspirations, see “[Inspiration and
-References.](//zrajm/fix/wiki/Inspiration-and-References)” on the wiki).
+References.](//github.com/zrajm/fix/wiki/Inspiration-and-References)” on the
+wiki).
 
 As you can see it is not quite finished yet, but if you want to have a sense of
 where it is going, you can have a look at its [GitHub wiki

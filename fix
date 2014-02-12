@@ -1,4 +1,5 @@
 #!/usr/bin/perl
+# -*- ispell-dictionary: "american" -*-
 package Local::Modulino; #[http://www.drdobbs.com/scripts-as-modules/184416165]
 use strict;
 use warnings;
@@ -22,7 +23,7 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.6.9";
+our $VERSION       = "0.6.10";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -35,12 +36,13 @@ our ($Keep, $Run, %Opt);
 ###############################################################################
 
 sub version {
-    print "$NAME $VERSION\n",
-        "Copyright (C) $YEAR zrajm <zrajm\@klingonska.org>\n",
-        "License CC BY-SA v3.0: Creative Commons Attribution-Share Alike 3.0\n",
-        "    <http://creativecommons.org/licenses/by-sa/3.0/>\n" .
-        "You are free to share and modify this program, as long as you use\n" .
-        "the same license, and give due credit to its original author.\n";
+    local $, = "\n";
+    say "$NAME $VERSION",
+        "Copyright (C) $YEAR zrajm <zrajm\@klingonska.org>",
+        "License CC BY-SA v3.0: Creative Commons Attribution-Share Alike 3.0",
+        "    <http://creativecommons.org/licenses/by-sa/3.0/>",
+        "You are free to share and modify this program, as long as you use",
+        "the same license, and give due credit to its original author.";
     exit;
 }
 
@@ -73,7 +75,7 @@ sub usage {
                            \|([^\n'"=|:]*?)    #   keep first shortopt
                         (?:\| [^\n'"=|:]+)*    #     (ignore more shortopts)
                     )?
-                    (?:\+|([:=])[^\n'"=]*)?    #   optarg
+                    (?:\+|([:=])[^\n'"=]*)?    #   option argument
                     \1 [^#]*                   # end quote
                 |.*?)?(?<!\#)\#\#\#\s+(.*)$/xmg) { # description
             my $long  = $2 ? "--$2"  : "";
@@ -112,11 +114,11 @@ sub man {
     die "Cannot run 'man': $!\n" unless defined $pid;
     system('pod2man', __FILE__);               # output manpage on STDOUT
     if ($? == -1) {                            # on exec FAILURE
-        kill 'TERM', $pid;                     #   kill man(1) child and die()
+        kill 'TERM', $pid;                     #   kill man child and die()
         die "Cannot execute 'pod2man': $!\n";
     };
-    close STDOUT;                              # don't make man(1) wait for more
-    wait();                                    # wait until user exits man(1)
+    close STDOUT;                              # don't make man wait for more
+    wait();                                    # wait until user exits man
     exit;
 }
 
@@ -190,23 +192,23 @@ sub man {
 
     sub _write_file {
         my ($file, @data) = @_;
-        my $tmpfile = "$file--writing";
+        my $tempfile = "$file--writing";
         # create full path of file, before writing file
-        if (my ($dir) = $tmpfile =~ m#^(.*)/#) {
+        if (my ($dir) = $tempfile =~ m#^(.*)/#) {
             die "Cannot create dir '$dir': File already exists\n"
                 if -e $dir and not -d $dir;
             unless (-d $dir or mkpath($dir)) {
                 die "Cannot create dir '$dir'\n";
             }
         }
-        open(my $out, ">:utf8", $tmpfile)
-            or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
+        open(my $out, ">:utf8", $tempfile)
+            or die "Cannot open tempfile '$tempfile' for writing: $!\n";
         print $out @data
-            or die "Cannot write to tempfile '$tmpfile': $!\n";
+            or die "Cannot write to tempfile '$tempfile': $!\n";
         close($out)
-            or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
-        rename($tmpfile, $file)
-            or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
+            or die "Cannot close tempfile '$tempfile' after writing: $!\n";
+        rename($tempfile, $file)
+            or die "Cannot rename tempfile '$tempfile' -> '$file': $!\n";
     }
 
     # Reread state file if its stat fingerprint has changed last read/write.
@@ -273,8 +275,8 @@ sub man {
 ###############################################################################
 
 # Package used here to contain Cwd functions from leaking out into the 'main::'
-# namespace, where it would be very easy to accidentaly use it. We don't want
-# cwd()! It gives *physical* insteado of *logical* paths! (Bugs ohoy!) :(
+# namespace, where it would be very easy to accidentally use it. We don't want
+# cwd()! It gives *physical* instead of *logical* paths! (Bugs ahoy!) :(
 {
     package Local::Paths;
     BEGIN {
@@ -336,19 +338,19 @@ sub man {
         return join('/', ('..') x scalar(@base), @path);
     }
     # Searches for each of the named files, first in DIR, then the dir above
-    # that, etc. all the way up to the specified TOPDIR. Return name of found
-    # file, or empty string on failure.
+    # that, etc. all the way up to the specified CEILING_DIR. Return name of
+    # found file, or empty string on failure.
     sub find_parent_path {
-        my ($dir, $topdir, @file) = @_;
-        ($dir, $topdir) = (abspath($dir), abspath($topdir));
-        die "Start dir '$dir' must be inside top dir '$topdir'\n"
-            unless $topdir eq '/' or $dir =~ m#^\Q$topdir\E($|/)#;
+        my ($dir, $ceiling_dir, @file) = @_;
+        ($dir, $ceiling_dir) = (abspath($dir), abspath($ceiling_dir));
+        die "Start dir '$dir' must be inside top dir '$ceiling_dir'\n"
+            unless $ceiling_dir eq '/' or $dir =~ m#^\Q$ceiling_dir\E($|/)#;
         while (1) {
             foreach (@file) {                  # look for each file
                 my $file = "$dir/$_";
                 return $file if -e $file;
             }
-            return '' if $dir eq $topdir;
+            return '' if $dir eq $ceiling_dir;
             $dir = do {
                 my $next = clean("$dir/..");
                 return '' if $dir eq $next;
@@ -393,7 +395,7 @@ sub info {
     my ($msg) = @_;
     say STDERR "\e[32m$NAME " . ("  " x ($Opt{level} - 1)) . "\e[1m$msg\e[m";
 }
-# Display verbose msg in mother process, or all processes with --verbose/--debug
+# Display verbose msg in mother process or all processes with --verbose/--debug
 sub verb { (is_child() or $Opt{debug} or $Opt{verbose}) and info @_ }
 sub debug {
     return unless $Opt{debug};
@@ -407,8 +409,8 @@ sub quit {
 
 sub is_child { $Opt{parent} ne '' }
 sub store_version_on_disk {
-    my $file = "$Opt{fix_dir}/store_version";
-    if (-e $Opt{fix_dir}) {
+    my $file = "$Opt{fixdir}/store_version";
+    if (-e $Opt{fixdir}) {
         return read_file($file) if -e $file;
         return '';
     }
@@ -416,8 +418,8 @@ sub store_version_on_disk {
     return $STORE_VERSION;
 }
 
-sub  strip_worktree { relpath(shift(), $Opt{work_tree}) }
-sub prefix_worktree { abspath(shift(), $Opt{work_tree}) }
+sub  strip_worktree { relpath(shift(), $Opt{worktree}) }
+sub prefix_worktree { abspath(shift(), $Opt{worktree}) }
 
 # Set runstate value for '--stats'. If value already set, don't change it.
 sub did {
@@ -480,9 +482,9 @@ sub read_file {
 
 sub write_file {
     my ($file, @data) = @_;
-    my $tmpfile = "$file--writing";
+    my $tempfile = "$file--writing";
     # create full path of file, before writing file
-    if (my $dir = split_path($tmpfile)) {
+    if (my $dir = split_path($tempfile)) {
         die "Cannot create dir '$dir': File already exists\n"
             if -e $dir and not -d $dir;
         unless (-d $dir or mkpath($dir)) {
@@ -490,14 +492,14 @@ sub write_file {
             return undef;
         }
     }
-    open(my $out, ">:utf8", $tmpfile)
-        or die "Cannot open tempfile '$tmpfile' for writing: $!\n";
+    open(my $out, ">:utf8", $tempfile)
+        or die "Cannot open tempfile '$tempfile' for writing: $!\n";
     print $out @data
-        or die "Cannot write to tempfile '$tmpfile': $!\n";
+        or die "Cannot write to tempfile '$tempfile': $!\n";
     close($out)
-        or die "Cannot close tempfile '$tmpfile' after writing: $!\n";
-    rename($tmpfile, $file)
-        or die "Cannot rename tempfile '$tmpfile' -> '$file': $!\n";
+        or die "Cannot close tempfile '$tempfile' after writing: $!\n";
+    rename($tempfile, $file)
+        or die "Cannot rename tempfile '$tempfile' -> '$file': $!\n";
 }
 
 sub rename_file {
@@ -529,7 +531,8 @@ sub checksum_file {
             or die "Cannot open config file '$file' for reading: $!\n";
         local $SIG{__DIE__} = subdie(sub {
             $! = 254;
-            die "Bad config '" . relpath($file, $Opt{pwd}) . "': @_ in line $.\n";
+            die "Bad config '" . relpath($file, $Opt{pwd}) . "': " .
+                "@_ in line $.\n";
         });
         my ($s, %cfg);
       LINE: while (<$cfg>) {
@@ -581,16 +584,16 @@ sub add_fix_to_path {
             mkpath($bindir)
                 or die "$NAME: Cannot create dir '$bindir'\n";
         }
-        symlink($Opt{fix_cmd}, $link)
+        symlink($Opt{cmd}, $link)
             or die "$NAME: Cannot create symlink '$link': $!\n";
     }
     my $full = abspath($bindir);
     # FIXME: A directory in $PATH *cannot* contain a colon (stupid, I know).
-    # Therefore the cwd cannot contain a colon (we could fix this this by
-    # having this stuff in /tmp, I guess).
+    # Therefore the cwd cannot contain a colon (we could fix this by having
+    # this stuff in /tmp, I guess).
     if ($full =~ /:/) {                        # guard for stupid system bug
-        die "$NAME: Colon not allowed in current dir path ('" .
-            abspath('.') . "')\n";
+        die "$NAME: Colon not allowed in current dir path " .
+            "('" . abspath() . "')\n";
     }
     $ENV{PATH} = "$full:$ENV{PATH}";           # add dir to path
 }
@@ -615,7 +618,8 @@ sub restore_stdout {
     my ($prev) = @_;
     close(STDOUT);
     open(STDOUT, '>&', $prev->{handle})
-        or die "Cannot restore STDOUT after redirect to file '$prev->{file}': $!\n";
+        or die "Cannot restore STDOUT after redirect " .
+            "to file '$prev->{file}': $!\n";
     close($prev->{handle});
     select STDOUT;
     local $| = $prev->{flush};                 # restore buffering
@@ -663,18 +667,18 @@ sub possible_buildscripts {
     map { join('.', @p[ 0 .. $_ ]) . '.fix' } reverse 0 .. $#p;
 }
 
-# Returns (relative) path of fixfile for the specified target, or empty string
-# if no fixfile could be found.
+# Returns (relative) path of buildscript for the specified target, or empty
+# string if no buildscript could be found.
 #
 # If 'TARGET.fix' couldn't be found, this will look for each possible default
-# fixfile, first in the current directory, then in directory above that, etc.
-# until we reach root. (The last file looked at is '/default.fix' which is
+# buildscript, first in the current directory, then in directory above that,
+# etc. until we reach root. (The last file looked at is '/default.fix' which is
 # probably a bit naive.)
 sub find_buildscript {
     my ($target) = @_;
     return "$target.fix" if -e "$target.fix";
     return find_parent_path(
-        '.', $Opt{work_tree}, possible_buildscripts($target),
+        '.', $Opt{worktree}, possible_buildscripts($target),
     );
 }
 
@@ -702,7 +706,8 @@ sub build_target {
     info(strip_worktree($target));
     if (-f $target and has_changed($target)) {
         $Run->set($target,      ABORT => strip_worktree($target));
-        $Run->set($Opt{parent}, ABORT => strip_worktree($target)) if is_child();
+        $Run->set($Opt{parent}, ABORT => strip_worktree($target))
+            if is_child();
         did($target, 'wont_overwrite');
         quit(253, strip_worktree($target) .
             ": Target externally modified, aborting");
@@ -714,7 +719,8 @@ sub build_target {
     );
 
     my $builddir = split_path($buildscript);
-    chdir($builddir) or die "Cannot cd to buildscript dir '$builddir': $!\n";
+    chdir($builddir)
+        or die "Cannot change dir to buildscript dir '$builddir': $!\n";
 
     my $outfile = "$target--fixing";
     my ($close, $exit, $errno) = redir_stdout($outfile, sub {
@@ -793,7 +799,7 @@ sub update_targets {
   TARGET: foreach my $target (@target) {
         my ($target, $checksum) = @$target;
         debug("Updating target: $target");
-        if ($target !~ m#^\Q$Opt{work_tree}\E($|/)#) {
+        if ($target !~ m#^\Q$Opt{worktree}\E($|/)#) {
             quit(254, "Target '$target' is outside fix's work tree");
         }
         my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
@@ -846,20 +852,20 @@ sub update_targets {
 sub getopts {
     my @arg = (my @orgarg) = @_;
     %Opt = (
-        fix_cmd   =>   $ENV{FIX_CMD}       //= abspath(__FILE__),
-        debug     => !!$ENV{FIX_DEBUG},
-        fix_dir   =>   $ENV{FIX_DIR}       // '',
-        # force   => !!$ENV{FIX_FORCE},
-        level     =>   $ENV{FIX_LEVEL}     += 1,
-        parent    =>   $ENV{FIX_PARENT}    // '',
-        pid       =>   $ENV{FIX_PID}       //= $$,
-        pwd       =>   $ENV{FIX_PWD}       //= abspath('.'),
-        stats     => !!$ENV{FIX_STATS},
-        verbose   => !!$ENV{FIX_VERBOSE},
-        work_tree =>   $ENV{FIX_WORK_TREE} // '',
-        xtrace    => !!$ENV{FIX_XTRACE},
-        shell     =>   '/bin/dash',
-        source    =>   0,
+        cmd      =>   $ENV{FIX_CMD},           # set by mother
+        debug    => !!$ENV{FIX_DEBUG},
+        fixdir  =>    $ENV{FIX_DIR},          # set by mother
+        # force  => !!$ENV{FIX_FORCE},
+        level    =>   $ENV{FIX_LEVEL}     += 1,
+        parent   =>   $ENV{FIX_PARENT}    // '',
+        pid      =>   $ENV{FIX_PID},           # set by mother
+        pwd      =>   $ENV{FIX_PWD},           # set by mother
+        shell    =>   '/bin/dash',
+        source   =>   0,
+        stats    => !!$ENV{FIX_STATS},
+        verbose  => !!$ENV{FIX_VERBOSE},
+        worktree =>   $ENV{FIX_WORK_TREE},    # set by mother
+        xtrace   => !!$ENV{FIX_XTRACE},
     );
     use Getopt::Long qw(
         GetOptionsFromArray :config
@@ -880,11 +886,11 @@ sub getopts {
     };
     my @path;
     GetOptionsFromArray(\@arg,
+        'debug|D'  => sub {           ### debug output + verbose buildscripts
+            $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
+        },
         'exec-path=s' => sub {        ### DIR add DIR to $PATH before building
             push @path, abspath(pop(@_), $Opt{pwd});
-        },
-        'debug|D'  => sub {           ### debug output + make build shells verbose
-            $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
         },
         # 'force|f'  => sub {         ## overwrite manually edited files
         #     $Opt{force} = $ENV{FIX_FORCE} = TRUE;
@@ -909,31 +915,33 @@ sub getopts {
     if (not is_child()) {
         warn "Option '--source' can only be used inside buildscript\n"
             if $Opt{source};
-        if ($Opt{fix_dir} eq '') {             # set FIX_DIR and WORK_TREE
+        $Opt{pid} = $ENV{FIX_PID} = $$;
+        $Opt{pwd} = $ENV{FIX_PWD} = abspath();
+        $Opt{cmd} = $ENV{FIX_CMD} = abspath(__FILE__);
+        if (defined $Opt{fixdir}) {            # fixdir set by user
+            $Opt{fixdir}   = $ENV{FIX_DIR}       = abspath($Opt{fixdir});
+            $Opt{worktree} = $ENV{FIX_WORK_TREE} = abspath($Opt{worktree});
+        } else {                               # fixdir not set by user
             if (my $rcfile = find_parent_path('.', '/', '.fixrc')) {
-                my $dir    = split_path($rcfile);
-                $Opt{work_tree} = $ENV{FIX_WORK_TREE} = "$dir";
-                $Opt{fix_dir}   = $ENV{FIX_DIR}       = "$dir/.fix";
+                my $dir        = split_path($rcfile);
+                $Opt{fixdir}   = $ENV{FIX_DIR}       = "$dir/.fix";
+                $Opt{worktree} = $ENV{FIX_WORK_TREE} = "$dir";
             } else {
                 warn "Current dir not in a fix worktree\n" .
-                    "(Use 'touch .fixrc' where you want your worktree root.)\n";
+                    "(Use 'touch .fixrc' where you want the worktree root.)\n";
             }
-        } else {
-            $Opt{work_tree} = $ENV{FIX_WORK_TREE} = abspath('.')
-                if $Opt{work_tree} eq '';
-            $Opt{fix_dir}   = $ENV{FIX_DIR}       = abspath($Opt{fix_dir});
         }
-        if ($Opt{fix_dir} and store_version_on_disk() ne $STORE_VERSION) {
-            warn "State storage on disk has old format, full rebuild needed\n" .
+        if ($Opt{fixdir} and store_version_on_disk() ne $STORE_VERSION) {
+            warn "State storage on disk in old format, full rebuild needed\n" .
                 "(Erase '.fix' directory in worktree root and run again.)\n";
         }
         push(@path, abspath(delete $ENV{FIX_EXEC_PATH}, $Opt{pwd}))
             if exists $ENV{FIX_EXEC_PATH};
-        if ($Opt{work_tree}) {
+        if ($Opt{worktree}) {
             eval {
-                my %cfg = read_config("$Opt{work_tree}/.fixrc");
+                my %cfg = read_config("$Opt{worktree}/.fixrc");
                 if (defined(my $execpath = delete $cfg{core}{execpath})) {
-                    push @path, abspath($execpath, $Opt{work_tree});
+                    push @path, abspath($execpath, $Opt{worktree});
                 }
                 # Check for invalid config values
                 foreach my $section (sort keys %cfg) {
@@ -949,22 +957,22 @@ sub getopts {
     $ENV{PATH} = join(':', @path, $ENV{PATH}); # --exec-path + core.execPath
     quit(254, "Try '$NAME --help' for more information.") if $warn;
     $Run = new Local::Store(
-        dir        => "$Opt{fix_dir}/run",
+        dir        => "$Opt{fixdir}/run",
         namefilter => \&strip_worktree,
     );
     $Keep = new Local::Store(
-        dir        => "$Opt{fix_dir}/keep",
+        dir        => "$Opt{fixdir}/keep",
         namefilter => \&strip_worktree,
     );
     if ($Opt{stats}) {                         # write '--stats'
-        my $stats = new Local::Store(dir => $Opt{fix_dir});
+        my $stats = new Local::Store(dir => $Opt{fixdir});
         $stats->delete('stats')                #   mother deletes earlier stats
             unless is_child();
         $stats->set('stats',                   #   count fix invocations
             run_count   => sub { (shift() // 0) + 1 },
             run_targets => sub {               #   save args for each call
                 my @arg = map {
-                    m#^-# ? $_ : relpath($_, $Opt{work_tree});
+                    m#^-# ? $_ : relpath($_, $Opt{worktree});
                 } @orgarg;
                 [ @{ shift() // [] }, \@arg ];
             },
@@ -996,7 +1004,7 @@ sub run {
     );
     unless (is_child()) {                      # MOTHER PROCESS
         $Run->delete('');                      #   delete previous runstate
-        add_fix_to_path($Opt{fix_dir});
+        add_fix_to_path($Opt{fixdir});
     }
     my @dep = map { [ $_ => $Keep->get($_, 'checksum') // '' ] } @target;
     update_targets($Opt{level}, @dep);
@@ -1107,6 +1115,9 @@ not quite the same as git's B<--exec-path>.
 #
 # If you want to be careful about such cleanups, take a look at B<--clean> and
 # B<--list> instead.
+#
+# Option is similar to git-checkout --force which "is used to throw away local
+# changes."
 
 =item B<-h>, B<--help>
 
@@ -1374,27 +1385,12 @@ buildscripts. B<A buildscript should never change the content of these
 variables> - though in most cases (all but $FIX_PARENT) it is fine to set these
 variables from the command line when invoking B<fix>.
 
+=head2 User Settable Environment Variables
+
+Some environment variables may be set by user, before invoking fix. (It is not
+recommended to change any $FIX_* variables from inside a buildscripts.)
+
 =over 4
-
-=item B<$FIX_CMD>
-
-Normally, you do not need to use this environment variable, since B<fix>, when
-invoked, always makes sure that that it's binary is first in $PATH, but this
-variable contains the name, and full path, of the currently running B<fix>
-instance.
-
-You can use this as a command in your buildscripts, to recursively invoke
-B<fix>. A buildscript could, for example, look like this:
-
-    $FIX_CMD a b
-    cat a b | sed 's/^/>/'
-
-The first line invokes C<fix a b> (thereby declaring F<a> and F<b> to be
-dependencies of this script). The second line outputs the content of F<a> and
-F<b>, and adds a C<E<gt>> sign to the beginning of each line.
-
-If you started B<fix> by executing a symlink to B<fix>, rather than the actual
-B<fix> program, then the name of the symlink will be the name in this variable.
 
 =item B<$FIX_DIR>
 
@@ -1427,31 +1423,6 @@ working directory.)
 
 =pod
 
-=item B<$FIX_LEVEL>
-
-Indicating the 'depth' of the current fix process. For the mother process
-$FIX_LEVEL is set to '1', but it is incremented by each invoked child. (I.e.
-$FIX_LEVEL '2' is a child of the mother process, '3' the grandchild etc.) This
-is chiefly used to set the indentation level in status messages. (Analogous to
-the shell's $SHLVL.)
-
-=item B<$FIX_PARENT>
-
-The name of the parent target. All dependencies (i.e. all but the mother
-process) will have this variable set to the name of its parent target.
-
-=item B<$FIX_PID>
-
-The process identification number of the mother process.
-
-=item B<$FIX_PWD>
-
-Absolute (logical) path of the user's current directory, as it was when fix was
-invoked on the command line. This intentionally does not change during
-recursive invocations of fix (and hence, from inside a buildscript this can
-quite often differ from $PWD). Filenames in status output and error messages
-are all be expressed as relative paths, relative to this directory.
-
 =item B<$FIX_STATS>
 
 See B<--stats>.
@@ -1475,6 +1446,65 @@ defaults to the current directory.
 
 The mother process makes sure $FIX_WORK_TREE is an absolute path before passing
 it on to its children.
+
+=back
+
+=head2 Set by Fix Itself
+
+These variables should not be set by the user, but their content may be
+inspected from inside buildscripts.
+
+=over 4
+
+=item B<$FIX_CMD>
+
+Normally, you do not need to use this environment variable (since B<fix>, when
+invoked, always makes sure that it's binary is in the first dir in $PATH) but
+this variable contains the name, and full path, of the currently running B<fix>
+instance.
+
+You can use this as a command in your buildscripts, to recursively invoke
+B<fix>. A buildscript could, for example, look like this:
+
+    $FIX_CMD a b
+    cat a b | sed 's/^/>/'
+
+The first line invokes C<fix a b> (thereby declaring F<a> and F<b> to be
+dependencies of this script). The second line outputs the content of F<a> and
+F<b>, and adds a C<E<gt>> sign to the beginning of each line.
+
+If you started B<fix> by executing a symlink to B<fix>, rather than the actual
+B<fix> program, then the name of the symlink will be the name in this variable.
+
+=item B<$FIX_LEVEL>
+
+Indicating the 'depth' of the current fix process. For the mother process
+$FIX_LEVEL is set to '1', but it is incremented by each invoked child. (I.e.
+$FIX_LEVEL '2' is a child of the mother process, '3' the grandchild etc.) This
+is chiefly used to set the indentation level in status messages. (Analogous to
+the shell's $SHLVL.)
+
+=item B<$FIX_PARENT>
+
+Set inside a buildscript that is a dependency of another buildscript.
+$FIX_PARENT will contain the target for the buildscript that invoked it (for
+the mother process this will be empty).
+
+NB: The $FIX_PARENT variable is used internally to determine whether the
+running instance of fix is the mother process or not, so this variable is
+especially sensitive and might cause breakage if accidentally set.
+
+=item B<$FIX_PID>
+
+The process identification number of the mother process.
+
+=item B<$FIX_PWD>
+
+Absolute (logical) path of the user's current directory, as it was when fix was
+invoked on the command line. This intentionally does not change during
+recursive invocations of fix (and hence, from inside a buildscript this can
+quite often differ from $PWD). Filenames in status output and error messages
+are all be expressed as relative paths, relative to this directory.
 
 =back
 
@@ -1525,7 +1555,7 @@ B<Subsections> exists in git (see git-config(1)) but are not used with fix.
 B<Variables> must belong to a section (meaning that a config file must always
 start with a section name). A variable is set by a line in the form C<name =
 value> (or just C<name>, without any equal sign, in which case the value is set
-to C<true>). A variable may be set more than once (= multivalued variable).
+to C<true>). A variable may be set more than once (= multi-valued variable).
 
 B<Unquoted variable values> will have leading and trailing whitespace trimmed,
 but whitespace within the value is kept as-is.
@@ -1608,7 +1638,7 @@ In the state storage all paths are relative to the working tree root.
 
 =head1 AUTHOR
 
-Written by Zrajm C Akfohg <zrajm@klingonska.org>, 2012-2014.
+Written by zrajm <zrajm@klingonska.org>, 2012-2014.
 
 This program is distributed under a Creative Commons Attribution-ShareAlike 3.0
 license (CC BY-SA 3.0) [http://creativecommons.org/licenses/by-sa/3.0/].
@@ -1626,5 +1656,3 @@ The current version of this program is always available from its GitHub
 repository at <https://github.com/zrajm/fix>.
 
 =cut
-
-#[eof]

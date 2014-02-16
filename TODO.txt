@@ -287,6 +287,16 @@ This is an Emacs org-mode file.
 *** TODO Config file: Handle multiple occurrences of variable
 *** TODO Config file: Lines ending in \ should be continued on the next line
 *** TODO Config file: Allow partially quoted strings
+** TODO Don't store state for a failing build, just abort
+** TODO More clear error message when buildscript fails
+   A 'default.fix' buildscript executing the non-existing command "foo" will
+   give the following somewhat obscure message.
+
+       /home/zrajm/fix/script/default.fix: 1: \
+           /home/zrajm/fix/script/default.fix: foo: not found
+
+   It's not exactly clear what's going on here, and the error message should at
+   least provide a clear context, to assist the user in remedying the error.
 * Testing
 ** TODO Test relative dirs for --exec-path, $FIX_EXEC_PATH & core.execPath
    Test that relative dirs are interpreted as relative to:

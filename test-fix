@@ -709,7 +709,7 @@ write_file('.fixrc' => '');
 run_fix_test(
     name   => "Incorrect '.fix/store_version'",
     exit   => 254,
-    errmsg => nl("fix: State storage on disk in old format, full rebuild needed",
+    errmsg => nl("fix: State storage disk format has changed, full rebuild needed",
                  "(Erase '.fix' directory in worktree root and run again.)"),
     args   => [qw( 1 )],
     before => sub {   mkdir(".$name"); write_file('.fix/store_version', '') },

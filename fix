@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.6.11";
+our $VERSION       = "0.6.12";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -853,20 +853,20 @@ sub update_targets {
 sub getopts {
     my @arg = (my @orgarg) = @_;
     %Opt = (
-        cmd      =>   $ENV{FIX_CMD},           # set by mother
-        debug    => !!$ENV{FIX_DEBUG},
-        fixdir  =>    $ENV{FIX_DIR},          # set by mother
-        # force  => !!$ENV{FIX_FORCE},
-        level    =>   $ENV{FIX_LEVEL}     += 1,
-        parent   =>   $ENV{FIX_PARENT}    // '',
-        pid      =>   $ENV{FIX_PID},           # set by mother
-        pwd      =>   $ENV{FIX_PWD},           # set by mother
-        shell    =>   '/bin/dash',
-        source   =>   0,
-        stats    => !!$ENV{FIX_STATS},
-        verbose  => !!$ENV{FIX_VERBOSE},
-        worktree =>   $ENV{FIX_WORK_TREE},    # set by mother
-        xtrace   => !!$ENV{FIX_XTRACE},
+        cmd       =>   $ENV{FIX_CMD},          # set by mother
+        debug     => !!$ENV{FIX_DEBUG},
+        fixdir    =>   $ENV{FIX_DIR},          # set by mother
+        # force   => !!$ENV{FIX_FORCE},
+        level     =>   $ENV{FIX_LEVEL}  += 1,
+        parent    =>   $ENV{FIX_PARENT} // '',
+        pid       =>   $ENV{FIX_PID},          # set by mother
+        pwd       =>   $ENV{FIX_PWD},          # set by mother
+        shell     =>   '/bin/dash',
+        source    =>   0,
+        stats     => !!$ENV{FIX_STATS},
+        verbose   => !!$ENV{FIX_VERBOSE},
+        worktree  =>   $ENV{FIX_WORK_TREE},    # set by mother
+        xtrace    => !!$ENV{FIX_XTRACE},
     );
     use Getopt::Long qw(
         GetOptionsFromArray :config
@@ -885,13 +885,13 @@ sub getopts {
         }ie;
         warn "$NAME: $_";
     };
-    my @path;
+    my @execpath;
     GetOptionsFromArray(\@arg,
         'debug|D'  => sub {           ### debug output + verbose buildscripts
             $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
         },
         'exec-path=s' => sub {        ### DIR add DIR to $PATH before building
-            push @path, abspath(pop(@_), $Opt{pwd});
+            push @execpath, abspath(pop(@_), $Opt{pwd});
         },
         # 'force|f'  => sub {         ## overwrite manually edited files
         #     $Opt{force} = $ENV{FIX_FORCE} = TRUE;
@@ -920,34 +920,34 @@ sub getopts {
         $Opt{pwd} = $ENV{FIX_PWD} = abspath();
         $Opt{cmd} = $ENV{FIX_CMD} = abspath(__FILE__);
         if (defined $Opt{fixdir}) {            # fixdir set by user
-            $Opt{fixdir}   = $ENV{FIX_DIR}       = abspath($Opt{fixdir});
-            $Opt{worktree} = $ENV{FIX_WORK_TREE} = abspath($Opt{worktree});
+            $Opt{fixdir}   = abspath($Opt{fixdir});
+            $Opt{worktree} = abspath($Opt{worktree});
         } else {                               # fixdir not set by user
             if (my $rcfile = find_parent_path('.', '/', '.fixrc')) {
                 my $dir        = split_path($rcfile);
-                $Opt{fixdir}   = $ENV{FIX_DIR}       = "$dir/.fix";
-                $Opt{worktree} = $ENV{FIX_WORK_TREE} = "$dir";
+                $Opt{fixdir}   = "$dir/.fix";
+                $Opt{worktree} = "$dir";
             } else {
-                warn "Current dir not in a fix worktree\n" .
+                warn "Current dir not in a fix worktree\n",
                     "(Use 'touch .fixrc' where you want the worktree root.)\n";
             }
         }
         if ($Opt{fixdir} and store_version_on_disk() ne $STORE_VERSION) {
-            warn "State storage on disk in old format, full rebuild needed\n" .
+            warn "State storage disk format has changed, full rebuild needed\n",
                 "(Erase '.fix' directory in worktree root and run again.)\n";
         }
-        push(@path, abspath(delete $ENV{FIX_EXEC_PATH}, $Opt{pwd}))
+        push(@execpath, abspath(delete $ENV{FIX_EXEC_PATH}, $Opt{pwd}))
             if exists $ENV{FIX_EXEC_PATH};
         if ($Opt{worktree}) {
             eval {
                 my %cfg = read_config("$Opt{worktree}/.fixrc");
                 if (defined(my $execpath = delete $cfg{core}{execpath})) {
-                    push @path, abspath($execpath, $Opt{worktree});
+                    push @execpath, abspath($execpath, $Opt{worktree});
                 }
-                # Check for invalid config values
+                # Check for unknown config variables
                 foreach my $section (sort keys %cfg) {
                     foreach my $var (sort keys %{ $cfg{$section} }) {
-                        warn "Unknown variable '$var' under [$section]\n"
+                        warn "Unknown variable '$var' in section [$section]\n"
                             if exists $cfg{$section}{$var};
                     }
                 }
@@ -955,8 +955,10 @@ sub getopts {
             if ($@) { warn $@ }
         }
     }
-    $ENV{PATH} = join(':', @path, $ENV{PATH}); # --exec-path + core.execPath
     quit(254, "Try '$NAME --help' for more information.") if $warn;
+    $ENV{PATH}           = join(':', @execpath, $ENV{PATH});
+    $ENV{FIX_DIR}        = $Opt{fixdir};
+    $ENV{FIX_WORK_TREE}  = $Opt{worktree};
     $Run = new Local::Store(
         dir        => "$Opt{fixdir}/run",
         namefilter => \&strip_worktree,
@@ -1124,7 +1126,7 @@ not quite the same as git's B<--exec-path>.
 
 Output a brief description of options etc on standard output, then exit.
 
-=item B<-M>, B<--manpage>
+=item B<-M>, B<--man>
 
 Display this manpage, then exit. This option extracts the Perl POD (Plain Old
 Documentation) documentation from the program and displays it using man(1).
@@ -1459,10 +1461,9 @@ inspected from inside buildscripts.
 
 =item B<$FIX_CMD>
 
-Normally, you do not need to use this environment variable (since B<fix>, when
-invoked, always makes sure that it's binary is in the first dir in $PATH) but
-this variable contains the name, and full path, of the currently running B<fix>
-instance.
+This environment variable contains the full path of the currently running
+B<fix> executable. Normally, you do not need to use $FIX_CMD, since B<fix>
+always makes sure that its binary can be found in the first dir in $PATH.
 
 You can use this as a command in your buildscripts, to recursively invoke
 B<fix>. A buildscript could, for example, look like this:
@@ -1575,11 +1576,12 @@ contain the following special escape characters:
 
 =head2 Variables
 
-Most config file values can be overridden by the corresponding environment
-variable or command line option.
+Config file values can be overridden by the corresponding environment variable
+or command line option.
 
-Path names given in the config file are relative to the worktree root (while on
-the command line they are relative to the users current directory).
+In the config file, paths specified may be absolute or relative to the worktree
+root. (Relative paths in environment variables or command line options, on the
+other hand, are counted as relative to user's current directory).
 
 =over 4
 
@@ -1657,3 +1659,5 @@ The current version of this program is always available from its GitHub
 repository at <https://github.com/zrajm/fix>.
 
 =cut
+
+#[eof]

@@ -6,60 +6,14 @@ This is an Emacs org-mode file.
 ** TODO Milestone: v1.0
 *** TODO v1.0: Add '--fix-dir' option
 *** TODO v1.0: Add '--work-tree' option
-*** TODO v1.0: Add '--script-dir' option
-*** TODO v1.0: Add '--source-dir' option
-*** TODO v1.0: Add '--target-dir' option
-*** TODO v1.0: Options to specify script dir, target dir, and source dir dirs
+*** TODO v1.0: Add '--source-tree' option
+*** TODO v1.0: Add '--target-tree' option
+    The value of this option is implicitly prepended to all build arguments. So
+    that if 'targettree = build', then 'fix test.txt' will be equivalent to
+    'fix build/test.txt'. (If this value is not set, then the current worktree
+    path is prepended instead.)
+*** TODO v1.0: Options to specify scripttree, targettree, and sourcetree dirs
     Included in milestone for version 1.0.
-
-    Each fix project live inside a single worktree directory (at the base of
-    which the '.fixrc' file resides).
-
-    In the default case the sources, targets and buildscripts all live in one
-    directory, but one or more of these may be put into separate directories
-    inside the worktree. Where these are directories are is specified using the
-    following options in '.fixrc' (all DIRs is relative to the worktree root,
-    and may not reside outside the worktree):
-
-        scriptdir = DIR
-        sourcedir = DIR
-        targetdir = DIR
-
-    In the most extreme case (having a separate dir for each thing), the
-    worktree could look like this:
-
-        work/
-         \_ .fixrc      # config file
-         \_ .fix/       # stored state (you should never edit these)
-         \_ script/     # buildscripts (= .fix-files)
-         \_ source/     # source files
-         \_ target/     # build targets
-
-    Now, lets assume you have just build a target ('index.html') using a
-    buildscript ('default.html.fix') and a source ('index.md'). The tree would
-    look like this (ignoring the fix config files):
-
-        work/
-         \_ script/
-             \_ default.html.fix
-         \_ source/
-             \_ index.md
-         \_ target/
-             \_ index.html
-
-    If you didn't have the separate script, source, and target dirs, you would
-    instead be looking at a directory structure like this:
-
-        work/
-         \_ default.html.fix
-         \_ index.html
-         \_ index.md
-
-    When you invoke 'fix TARGET', it will automatically look for the
-    buildscript in the target dir (or in the worktree, if target dir hasn't
-    been specified), 'fix --source FILE' will search for source dependencies in
-    the source dir, and output written by buildscripts will be written in the
-    target dir.
 
     When a buildscript runs, its working directory will be in the source dir,
     so that the following will work, regardless of whether you use a separate
@@ -297,6 +251,9 @@ This is an Emacs org-mode file.
 
    It's not exactly clear what's going on here, and the error message should at
    least provide a clear context, to assist the user in remedying the error.
+** TODO Build metadata update should reflect scripttree changes
+   If scripttree changes between builds, the build metadata does not update
+   properly. (There's a NOTA BENE in the docs about this.)
 * Testing
 ** TODO Test relative dirs for --exec-path, $FIX_EXEC_PATH & core.execPath
    Test that relative dirs are interpreted as relative to:
@@ -689,3 +646,5 @@ This is an Emacs org-mode file.
    CLOSED: [2014-02-08 Sat 10:17]
    '--exec-path' is the name of git's option with analogous function.
    Environment variable $FIX_EXEC_PATH should also work.
+** DONE v1.0: Add '--script-tree' option
+   CLOSED: [2014-02-16 Sun 18:59]

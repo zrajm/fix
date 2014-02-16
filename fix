@@ -15,7 +15,7 @@ $Data::Dumper::Indent   = 1;
 $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Terse    = 1;
 
-import Local::Paths qw( abspath relpath find_parent_path );
+import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 
 ###############################################################################
 ##                                                                           ##
@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.6.12";
+our $VERSION       = "0.7.0";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -282,7 +282,7 @@ sub man {
     BEGIN {
         use Exporter 'import';
         our @ISA       = qw(Exporter);
-        our @EXPORT_OK = qw(abspath relpath find_parent_path);
+        our @EXPORT_OK = qw(abspath relpath rebase_path find_parent_path);
     }
     # Current working directory. Returns environment variable '$PWD' (= logical
     # path) if available, and falls back to returning Perl's cwd() if that
@@ -336,6 +336,14 @@ sub man {
         }
         pop @base if @base and $base[-1] eq '';# happens if $basedir = '/'
         return join('/', ('..') x scalar(@base), @path);
+    }
+    # Return absolute path after rewriting $path, so that is is relative to
+    # $new_basedir, instead of $old_basedir.
+    sub rebase_path {
+        my ($path, $old_basedir, $new_basedir) = @_;
+        return ($old_basedir eq $new_basedir)
+            ? abspath($path)
+            : abspath(relpath($path, $old_basedir), $new_basedir);
     }
     # Searches for each of the named files, first in DIR, then the dir above
     # that, etc. all the way up to the specified CEILING_DIR. Return name of
@@ -605,6 +613,10 @@ sub redirect_stdout {
     my $prev = { flush => $|, handle => undef, file => $file };
     open($prev->{handle}, '>&', 'STDOUT')
         or die "Cannot copy old STDOUT before redirect to '$file': $!\n";
+    if (not -d (my $dir = split_path($file))) {
+        mkpath($dir)
+            or die "Cannot create dir '$dir' for STDOUT redirect: $!\n";
+    }
     open(STDOUT, '>', $file)
         or die "Cannot redirect STDOUT to file '$file': $!\n";
     select STDOUT;
@@ -676,11 +688,12 @@ sub possible_buildscripts {
 # probably a bit naive.)
 sub find_buildscript {
     my ($target) = @_;
-    return "$target.fix" if -e "$target.fix";
-    my $dir         = split_path($target);
-    my $ceiling_dir = $Opt{worktree};
+    my $script = rebase_path("$target.fix", $Opt{worktree}, $Opt{scripttree});
+    return $script if -e $script;
+    my $dir         = split_path($script);
+    my $ceiling_dir = $Opt{scripttree} // $Opt{worktree};
     my @possible    = possible_buildscripts($target);
-    return find_parent_path($dir, $Opt{worktree}, @possible);
+    return find_parent_path($dir, $ceiling_dir, @possible);
 }
 
 # NB: $file must exist for has_changed() to give meaningful result
@@ -801,7 +814,8 @@ sub update_targets {
         my ($target, $checksum) = @$target;
         debug("Updating target: $target");
         if ($target !~ m#^\Q$Opt{worktree}\E($|/)#) {
-            quit(254, "Target '$target' is outside fix's work tree");
+            quit(254, "Target '" . strip_worktree($target) . "' is outside " .
+                     "fix's work tree");
         }
         my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
         $type //= '';
@@ -853,20 +867,21 @@ sub update_targets {
 sub getopts {
     my @arg = (my @orgarg) = @_;
     %Opt = (
-        cmd       =>   $ENV{FIX_CMD},          # set by mother
-        debug     => !!$ENV{FIX_DEBUG},
-        fixdir    =>   $ENV{FIX_DIR},          # set by mother
-        # force   => !!$ENV{FIX_FORCE},
-        level     =>   $ENV{FIX_LEVEL}  += 1,
-        parent    =>   $ENV{FIX_PARENT} // '',
-        pid       =>   $ENV{FIX_PID},          # set by mother
-        pwd       =>   $ENV{FIX_PWD},          # set by mother
-        shell     =>   '/bin/dash',
-        source    =>   0,
-        stats     => !!$ENV{FIX_STATS},
-        verbose   => !!$ENV{FIX_VERBOSE},
-        worktree  =>   $ENV{FIX_WORK_TREE},    # set by mother
-        xtrace    => !!$ENV{FIX_XTRACE},
+        cmd        =>   $ENV{FIX_CMD},         # set by mother
+        debug      => !!$ENV{FIX_DEBUG},
+        fixdir     =>   $ENV{FIX_DIR},         # set by mother
+        # force    => !!$ENV{FIX_FORCE},
+        level      =>   $ENV{FIX_LEVEL}  += 1,
+        parent     =>   $ENV{FIX_PARENT} // '',
+        pid        =>   $ENV{FIX_PID},         # set by mother
+        pwd        =>   $ENV{FIX_PWD},         # set by mother
+        scripttree =>   $ENV{FIX_SCRIPT_TREE}, # set by mother
+        shell      =>   '/bin/dash',
+        source     =>   0,
+        stats      => !!$ENV{FIX_STATS},
+        verbose    => !!$ENV{FIX_VERBOSE},
+        worktree   =>   $ENV{FIX_WORK_TREE},   # set by mother
+        xtrace     => !!$ENV{FIX_XTRACE},
     );
     use Getopt::Long qw(
         GetOptionsFromArray :config
@@ -899,6 +914,8 @@ sub getopts {
         'help|h|?'  => \$Opt{help},   ### display this help and exit
         'man|M'     => \$Opt{man},    ### display program manpage and exit
         'source'    => \$Opt{source}, ### declare source dependencies
+        'script-tree=s'               ### DIR script tree root for build project
+            => \$Opt{scripttree},
         'stats'     => sub {          ##  save stats in .fix dir (for testing)
             $Opt{stats} = $ENV{FIX_STATS} = TRUE;
         },
@@ -919,6 +936,7 @@ sub getopts {
         $Opt{pid} = $ENV{FIX_PID} = $$;
         $Opt{pwd} = $ENV{FIX_PWD} = abspath();
         $Opt{cmd} = $ENV{FIX_CMD} = abspath(__FILE__);
+        $Opt{scripttree} = abspath($Opt{scripttree}) if defined $Opt{scripttree};
         if (defined $Opt{fixdir}) {            # fixdir set by user
             $Opt{fixdir}   = abspath($Opt{fixdir});
             $Opt{worktree} = abspath($Opt{worktree});
@@ -944,6 +962,9 @@ sub getopts {
                 if (defined(my $execpath = delete $cfg{core}{execpath})) {
                     push @execpath, abspath($execpath, $Opt{worktree});
                 }
+                if (defined(my $scripttree = delete $cfg{core}{scripttree})) {
+                    $Opt{scripttree} //= abspath($scripttree, $Opt{worktree});
+                }
                 # Check for unknown config variables
                 foreach my $section (sort keys %cfg) {
                     foreach my $var (sort keys %{ $cfg{$section} }) {
@@ -956,9 +977,10 @@ sub getopts {
         }
     }
     quit(254, "Try '$NAME --help' for more information.") if $warn;
-    $ENV{PATH}           = join(':', @execpath, $ENV{PATH});
-    $ENV{FIX_DIR}        = $Opt{fixdir};
-    $ENV{FIX_WORK_TREE}  = $Opt{worktree};
+    $ENV{PATH}            = join(':', @execpath, $ENV{PATH});
+    $ENV{FIX_DIR}         = $Opt{fixdir};
+    $ENV{FIX_SCRIPT_TREE} = $Opt{scripttree} //= $Opt{worktree};
+    $ENV{FIX_WORK_TREE}   = $Opt{worktree};
     $Run = new Local::Store(
         dir        => "$Opt{fixdir}/run",
         namefilter => \&strip_worktree,
@@ -1131,12 +1153,24 @@ Output a brief description of options etc on standard output, then exit.
 Display this manpage, then exit. This option extracts the Perl POD (Plain Old
 Documentation) documentation from the program and displays it using man(1).
 
+=item B<--script-tree>=I<DIR> (Default: $FIX_WORK_TREE)
+
+Set root path to the directory tree containing the buildscripts (the C<*.fix>
+files). I<DIR> may be absolute or relative to the current working directory.
+(This value may also be set using config file variable B<core.scriptTree> or
+environment variable $FIX_SCRIPT_TREE.)
+
+B<NOTA BENE>: The build metadata currently does not track changes in scripttree
+very well. As long as you the same value for all invocations (and delete the
+F<.fix> directory, and do a full rebuild whenever you change it) you should be
+fine.
+
 =item B<--source>
 
-Used in buildscripts to register B<source dependencies> (it cannot be used
-outside buildscripts). With this option, the arguments given on the command
-line refer to source files to register as dependencies, instead of targets to
-be built. (See also C<Dependencies> below.)
+Can only be used inside buildscripts to register B<source dependencies>. With
+this option, the arguments given on the command line refer to source files to
+register as dependencies, instead of targets to be built. (See also
+C<Dependencies> below.)
 
 =item B<--stats>
 
@@ -1426,6 +1460,11 @@ working directory.)
 
 =pod
 
+=item B<$FIX_SCRIPT_TREE>
+
+See B<--script-tree>. This variable is always set, but when the option hasn't
+been explicitly set by the user it will have the same value as $FIX_WORK_TREE.
+
 =item B<$FIX_STATS>
 
 See B<--stats>.
@@ -1537,9 +1576,9 @@ Here is an sample config file:
     # .fixrc
     [core]
         ; Some recommended values.
-        scriptdir = fix
-        targetdir = build
-        execpath  = bin
+        scripttree = fix
+        targettree = build
+        execpath   = bin
 
 Whitespace (and indentation and blank lines) are ignored (except for spaces
 inside quoted strings). Comments may be put anywhere, begin with C<;> or C<#>
@@ -1589,9 +1628,66 @@ other hand, are counted as relative to user's current directory).
 
 See B<--exec-path>.
 
+=item B<core.scriptTree>
+
+See B<--script-tree>.
+
 =back
 
 =head1 FILES
+
+=head2 Build Project Directory Structure
+
+All of the files belonging to a build project resides in fix's worktree. This
+worktree may (or may not) have separate sub-trees for:
+
+=over 3
+
+=item a) source files
+
+=item c) buildscript files (C<.fix> files)
+
+=item b) target files
+
+=back
+
+Let's look at a very simple sample project, with only one buildscript,
+F<default.html.fix>, which generates HTML from Markdown; and one source file,
+F<index.md>, which contains some Markdown source. After running C<fix
+index.html> your worktree would look like this (ignoring the dotfiles for
+brevity):
+
+    work/
+     \_ default.html.fix
+     \_ index.html
+     \_ index.md
+
+Sources, buildscripts and targets all reside in the same directory -- as your
+project grows, this one dir may grow cluttered, and uncomfortable for you. If
+you decide to try to clean stuff up a bit, you can add the following to your
+(previously empty) F<.fixrc> file:
+
+    # .fixrc
+    [core]
+        scripttree = fix
+        targettree = build
+
+Fix now expects to find source files in the worktree (just like before), but
+buildscripts are expected to reside in the subdir F<fix/>, and targets will be
+written to F<build/>.
+
+So this is what your worktree would look like after erasing F<index.html>,
+moving F<default.html.fix> into the new buildscript dir, F<fix/>, and
+re-running C<fix index.html>.
+
+    work/
+     \_ index.md
+     \_ fix/
+         \_ default.html.fix
+     \_ build/
+         \_ index.html
+
+Neat, eh?
 
 =head2 Buildscripts
 

@@ -10,7 +10,7 @@ END {
 }
 use Test::More;
 use Cwd qw/cwd realpath/;
-use File::Path 'rmtree';
+use File::Path qw( mkpath rmtree );
 use Carp 'confess';
 $SIG{__DIE__} = \&Carp::confess;
 
@@ -57,6 +57,15 @@ sub write_file {
     my %arg = @_;
     foreach my $file (keys %arg) {
         my $outfile = "$file--tmp";
+        # create full path of file before writing file
+        if (my ($dir) = $outfile =~ m#^(.*)/#) {
+            die "Cannot create dir '$dir': File already exists\n"
+                if -e $dir and not -d $dir;
+            unless (-d $dir or mkpath($dir)) {
+                warn "Cannot create dir '$dir'\n";
+                return undef;
+            }
+        }
         open(my $out, '>', $outfile)
             or die "Cannot open file '$outfile' for writing: $!,";
         print $out $arg{$file};
@@ -70,7 +79,7 @@ sub write_file {
 sub read_file {
     my ($file) = @_;
     open(my $in, '<', $file)
-        or die "Failed to open file '$file' for reading: $!,";
+        or return undef;
     local $/ = undef;
     return <$in>;
 }
@@ -369,7 +378,7 @@ sub catch {
             } else {
                 ok( -e $keep, "Keepstate dir existing: $keep");
                 foreach (key %source) {
-                    my $gotten   = read_file("$keep/$_");
+                    my $gotten   = read_file("$keep/$_") // next;
                     my $expected = keepstate(SOURCE, $source{$_});
                     is($gotten, $expected, "Keepstate content: $keep/$_");
                 }
@@ -1311,7 +1320,7 @@ run_fix_test(
     name   => "Building target in subdir",
     exit   => 0,
     args   =>  [qw( subdir/hello.txt )],
-    stats  => [[qw( subdir/hello.txt      )]],
+    stats  => [[qw( subdir/hello.txt )]],
     after  => sub {
         ok(! -e "subdir/.fix", "Statedir non-existing in subdir: subdir/.fix");
     },
@@ -1330,10 +1339,10 @@ run_fix_test(
 enter_dir("greybox-target-in-subdir");
 write_file('.fixrc' => '');
 run_fix_test(
-    name   => "Building target from default rule",
+    name   => "Building target from default buildscript",
     exit   => 0,
     args   =>  [qw( hello.txt )],
-    stats  => [[qw( hello.txt      )]],
+    stats  => [[qw( hello.txt )]],
     source => {
         'default.txt.fix' => nl('echo "Hello, world!"'),
     },
@@ -1350,10 +1359,10 @@ enter_dir("greybox-target-in-subdir");
 write_file('.fixrc' => '');
 mkdir('subdir') or die "cannot create dir 'subdir',";
 run_fix_test(
-    name   => "Building target from default rule in subdir",
+    name   => "Building target from default buildscript in subdir",
     exit   => 0,
     args   =>  [qw( subdir/hello.txt )],
-    stats  => [[qw( subdir/hello.txt      )]],
+    stats  => [[qw( subdir/hello.txt )]],
     after  => sub {
         ok(! -e "subdir/.fix", "Statedir non-existing in subdir: subdir/.fix");
     },
@@ -1364,6 +1373,122 @@ run_fix_test(
         'subdir/hello.txt' => {
             state => NEW_CONTENT,
             deps  => [[ 'subdir/default.txt.fix' ]],
+            cont  => nl("Hello, world!"),
+        },
+    },
+);
+
+enter_dir("greybox-target-in-subdir");
+write_file('.fixrc' => nl('[core]', 'scriptTree = cfg'));
+run_fix_test(
+    name   => "Building target from default buildscript with core.scriptTree",
+    exit   => 0,
+    args   =>  [qw( hello.txt )],
+    stats  => [[qw( hello.txt )]],
+    source => {
+        'arg/default.txt.fix' => nl('echo argument'),
+        'cfg/default.txt.fix' => nl('echo config'),
+        'env/default.txt.fix' => nl('echo environment'),
+    },
+    result => {
+        'hello.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'cfg/default.txt.fix' ]],
+            cont  => nl("config"),
+        },
+    },
+);
+
+rmtree([ ".$name", 'hello.txt' ]);
+run_fix_test(
+    name   => "Building target with \$FIX_SCRIPT_TREE (overriding config file)",
+    exit   => 0,
+    args   =>  [qw( hello.txt )],
+    stats  => [[qw( hello.txt )]],
+    before => sub {        $ENV{FIX_SCRIPT_TREE} = 'env'  },
+    after  => sub { delete $ENV{FIX_SCRIPT_TREE}          },
+    source => {
+        'arg/default.txt.fix' => nl('echo argument'),
+        'cfg/default.txt.fix' => nl('echo config'),
+        'env/default.txt.fix' => nl('echo environment'),
+    },
+    result => {
+        'hello.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'env/default.txt.fix' ]],
+            cont  => nl("environment"),
+        },
+    },
+);
+
+rmtree([ ".$name", 'hello.txt' ]);
+run_fix_test(
+    name   => "Building target with --script-tree " .
+              "(overriding environment and config file)",
+    exit   => 0,
+    args   =>  [qw( --script-tree=arg hello.txt )],
+    stats  => [[qw( --script-tree=arg hello.txt )]],
+    before => sub {        $ENV{FIX_SCRIPT_TREE} = 'env'  },
+    after  => sub { delete $ENV{FIX_SCRIPT_TREE}          },
+    source => {
+        'arg/default.txt.fix' => nl('echo argument'),
+        'cfg/default.txt.fix' => nl('echo config'),
+        'env/default.txt.fix' => nl('echo environment'),
+    },
+    result => {
+        'hello.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'arg/default.txt.fix' ]],
+            cont  => nl("argument"),
+        },
+    },
+);
+
+###############################################################################
+
+enter_dir("greybox-target-in-subdir");
+write_file('.fixrc' => nl('[core]', 'scriptTree = fix'));
+mkdir('subdir') or die "cannot create dir 'subdir',";
+run_fix_test(
+    name   => "Building target in subdir with core.scriptTree",
+    exit   => 0,
+    args   =>  [qw( subdir/hello.txt )],
+    stats  => [[qw( subdir/hello.txt )]],
+    after  => sub {
+        ok(! -e "subdir/.fix", "Statedir non-existing in subdir: subdir/.fix");
+    },
+    source => {
+        'fix/subdir/hello.txt.fix' => nl('echo "Hello, world!"'),
+    },
+    result => {
+        'subdir/hello.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'fix/subdir/hello.txt.fix' ]],
+            cont  => nl("Hello, world!"),
+        },
+    },
+);
+
+
+enter_dir("greybox-target-in-subdir");
+write_file('.fixrc' => nl('[core]', 'scriptTree = fix'));
+mkdir('subdir') or die "cannot create dir 'subdir',";
+run_fix_test(
+    name   => "Building target from default buildscript in subdir with " .
+              "core.scriptTree",
+    exit   => 0,
+    args   =>  [qw( subdir/hello.txt )],
+    stats  => [[qw( subdir/hello.txt )]],
+    after  => sub {
+        ok(! -e "subdir/.fix", "Statedir non-existing in subdir: subdir/.fix");
+    },
+    source => {
+        'fix/subdir/default.txt.fix' => nl('echo "Hello, world!"'),
+    },
+    result => {
+        'subdir/hello.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'fix/subdir/default.txt.fix' ]],
             cont  => nl("Hello, world!"),
         },
     },

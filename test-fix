@@ -235,7 +235,11 @@ sub catch {
 
         # write source files
         foreach (key %source) {
-            write_file($_ => $source{$_}) if defined $source{$_};
+            next unless defined $source{$_};
+            my $is_buildscript = m#\.fix$#;
+            $source{$_} = "#!/bin/dash\n" . $source{$_} if $is_buildscript;
+            write_file($_ => $source{$_});
+            chmod(0755, $_) or die "Cannot chmod file: $!\n" if $is_buildscript;
         }
 
         my @file = do {
@@ -773,7 +777,7 @@ run_fix_test(
 write_file('../outside.fix', '');
 # FIXME: Test output on standard error
 run_fix_test(
-    name   => "Buildscript outside work tree",
+    name   => "Buildscript outside worktree",
     exit   => 254,
     args   =>  [qw( ../outside )],
     stats  => [[qw( ../outside )]],
@@ -816,26 +820,6 @@ run_fix_test(
     source => {
         '1.fix' => nl('echo FIRST',
                       'exit 2',
-                      'echo SECOND'),
-    },
-    result => {
-        '1' => {
-            state => BUILD_FAIL,
-            deps  => [[ '1.fix' ]],
-            temp  => nl('FIRST'),
-        },
-    },
-);
-
-# FIXME: Test output on standard error
-run_fix_test(
-    name   => "Buildscript with command returning false",
-    exit   => 1,
-    args   =>  [qw( 1 )],
-    stats  => [[qw( 1 )]],
-    source => {
-        '1.fix' => nl('echo FIRST',
-                      'false',
                       'echo SECOND'),
     },
     result => {

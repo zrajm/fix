@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.7.1";
+our $VERSION       = "0.8.0";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -740,16 +740,11 @@ sub build_target {
     my ($close, $exit, $errno) = redir_stdout($outfile, sub {
         local $ENV{FIX_PARENT} = $target;
         local $ENV{FIX_LEVEL}  = $level;
-        my @arg = (
-            $Opt{xtrace} ? '-x' : (),
-            $Opt{debug}  ? '-v' : (),
-            $buildscript,
-            $outfile,
-            $target,
-        );
-        open(my $shell, '|-', $Opt{shell}, '-e', @arg)
-            or die "Cannot execute shell '$Opt{shell}': $!\n";
-        return (close($shell), $?, $!);
+        no warnings 'exec';                    # disable "can't exec" warnings
+        open(my $fh, '|-', $buildscript, $outfile, $target)
+            or die "Cannot execute buildscript '",
+                strip_worktree($buildscript), "': $!\n";
+        return (close($fh), $?, $!);
     });
 
     # NOTE: outfile is kept on failure (so user may inspect it)
@@ -760,7 +755,8 @@ sub build_target {
         $exit >>= 8;
         if ($errno != 0) {
             did($target, 'shell_error');
-            die "Cannot run buildscript '$buildscript': $errno\n";
+            die "Cannot run buildscript '",
+                strip_worktree($buildscript), "': $errno\n";
         }
         my $aborted_target = $Run->get($target, 'ABORT') // '';
         if ($aborted_target eq '') {           # buildscript returned non-zero
@@ -815,7 +811,7 @@ sub update_targets {
         debug("Updating target: $target");
         if ($target !~ m#^\Q$Opt{worktree}\E($|/)#) {
             quit(254, "Target '" . strip_worktree($target) . "' is outside " .
-                     "fix's work tree");
+                     "fix's worktree");
         }
         my ($type, $dep_clusters) = $Keep->get($target, 'type', 'deps');
         $type //= '';
@@ -876,12 +872,10 @@ sub getopts {
         pid        =>   $ENV{FIX_PID},         # set by mother
         pwd        =>   $ENV{FIX_PWD},         # set by mother
         scripttree =>   $ENV{FIX_SCRIPT_TREE}, # set by mother
-        shell      =>   '/bin/dash',
         source     =>   0,
         stats      => !!$ENV{FIX_STATS},
         verbose    => !!$ENV{FIX_VERBOSE},
         worktree   =>   $ENV{FIX_WORK_TREE},   # set by mother
-        xtrace     => !!$ENV{FIX_XTRACE},
     );
     use Getopt::Long qw(
         GetOptionsFromArray :config
@@ -923,9 +917,6 @@ sub getopts {
             $Opt{verbose} = $ENV{FIX_VERBOSE} = TRUE;
         },
         'version|V' => \$Opt{version},### output version information and exit
-        'xtrace|x'  => sub {          ### use xtrace for build shells
-            $Opt{xtrace} = $ENV{FIX_XTRACE} = TRUE;
-        },
     );
     quit(254, "Try '$NAME --help' for more information.") if $warn;
     foreach (qw( help man version )) { eval $_ if $Opt{$_} }
@@ -1098,11 +1089,6 @@ over the former.) Not all forms are applicable to all options.
 Enable debug mode. This makes B<fix> to print quite a lot of diagnostics
 messages throughout its run (more than B<--verbose>).
 
-This will also pass the option C<-v> to the shell of each buildscript. (This
-usually causes the shell to print each I<line> of the script before running it.
-The output usually I<unexpanded>; i.e. variables are shown by name, not by
-content.) Useful when debugging. See also B<--verbose>.
-
 This option can also be enabled by setting the environment variable $FIX_DEBUG
 (to anything except empty or zero). Regardless of whether B<--debug> or
 $FIX_DEBUG was used, this causes the $FIX_DEBUG to be set inside all run
@@ -1200,46 +1186,7 @@ child instances of B<fix> run from within those buildscripts).
 
 Output program version information on standard output, then exit.
 
-=item B<-x>, B<--xtrace>
-
-Pass the option C<-x> to the shell of each buildscript. (This usually causes
-the shell to print, preceded by C<+ >, each I<command> of the script before
-running it. The output usually I<expanded>; i.e. variables are replaced by
-their content.) Useful when debugging. See also B<--verbose>.
-
-This option can also be enabled by setting the environment variable $FIX_XTRACE
-(to anything but the empty string or zero). Regardless of whether B<--xtrace>
-or $FIX_XTRACE was used, this causes the $FIX_XTRACE to be set inside all run
-buildscripts (which is how this setting is passed down to all child instances
-of B<fix> run from within those buildscripts).
-
 =back
-
-=head1 DISCUSSION
-
-=head2 Buildscripts
-
-For building to be atomic, build files should produce output by either
-
-=over 3
-
-=item a)
-
-writing to standard output (preferred method), or
-
-=item b)
-
-writing to a tempfile (the name is determined by B<fix> and passed in as the
-third argument, B<$3>, to the buildscript). When using this method anything
-written to standard output will be ignored.
-
-=back
-
-=cut
-
-# FIXME: Method B is required when generating anything but a standard file
-# (i.e. when a buildscript generate a pipe, symlink or directory). Also note
-# that target updating will only be atomic when generating a single file.
 
 =head1 EXIT STATUS
 
@@ -1284,22 +1231,61 @@ statefile was found to contain unintelligible data etc.
 
 =head1 USAGE
 
-=head2 The Work Tree Root
+=head2 The Worktree Root
 
-The work tree directory, with a F<.fixrc> file at the top level, is where all
-of a project's build files reside. B<Fix> will never attempt to write anything
-outside of the work tree.
+The worktree directory, with a F<.fixrc> file at the top level, is where all of
+a project's build files reside. B<Fix> will never attempt to write anything
+outside of the worktree.
 
-The work tree is defined by the F<.fixrc> file, but B<fix> will also write its
+The worktree is defined by the F<.fixrc> file, but B<fix> will also write its
 statedir (containing all build metadata) in a directory called F<.fix>, in the
-top level of the work tree. If this metadata is ever lost, B<fix> will do a
-full rebuild, when next invoked, to reconstruct it.
+top level of the worktree. If this metadata is ever lost, B<fix> will do a full
+rebuild, when next invoked, to reconstruct it.
 
-=head2 Buildscripts
+=head1 BUILDSCRIPTS
 
 The core of B<fix> is the B<buildscript>. Each buildscript is responsible for
-building a single target, and for declaring its dependencies. Its written as a
-shell script, and called with two arguments:
+building a single target, and the target's dependencies.
+
+A buildscript is a small program. It should be executable (C<chmod +x FILE>),
+and if it is a script of some kind (shell, Perl, whatever) it is must have the
+appropriate shebang line (e.g. C<#!/bin/dash>).
+
+=head2 Buildscript Output
+
+Build output is written to temporary file, and only upon a upon a successful
+build will fix (atomically) rename the tempfile to the actual target. If a
+build fails, the tempfile is left as-is, so that the user may inspect it (in
+trying to determine what went wrong). This also means that a fail rebuild will
+not overwrite output generated by a previous (and successful) build.
+
+For this scheme to work a buildscript must produce its output by either:
+
+=over 4
+
+=over 3
+
+=item B<a)>
+
+writing to its standard output (preferred method), or
+
+=item B<b)>
+
+writing to a tempfile (the name of which is determined by B<fix>, and passed in
+as the first argument [C<$1> in most shells] to the buildscript).
+
+=back
+
+=back
+
+B<NOTA BENE: Mixing the two methods will most likely lead to garbled output.>
+(So don't do that.)
+
+=head2 Buildscript Invocation
+
+When a buildscript in invoked it is passed the following arguments:
+
+=over 4
 
 =over 4
 
@@ -1309,19 +1295,13 @@ shell script, and called with two arguments:
 
 =back
 
-A buildscript is expected to write its target's content either to standard
-output, or to the tempfile given in $1. (Upon a successful build the tempfile
-is atomically renamed to the target, if the build fail the tempfile is kept
-around so that you may inspect it.)
+=back
 
-Dependencies are declared by invoking B<fix>, inside the buildscript, for each
-of the dependencies. B<Fix> thereafter keep track of these dependencies, and
-rebuilds the target if any of the dependencies (or its buildscript) are
-modified.
+=head2 Default Buildscripts
 
 Buildscript are sought first based on target name, then by successively
 removing file name extensions, then lastly by looking in parent directories.
-Given the target 'TARGET.A.B', this would entail looking for the following
+Given the target C<TARGET.A.B>, this would entail looking for the following
 files:
 
     TARGET.A.B.fix
@@ -1335,29 +1315,47 @@ files:
     ../../default.A.fix
     ../../default.fix
 
-The search stops at the root of the work tree (similar to git).
+The search stops at the root of the worktree.
 
-The $FIX_* environment variables discussed below are all set inside the
-buildscripts. You should not modify them, but you're free to read their content
-for whatever purpose.
+=head2 Declaring Target Dependencies
 
-=head2 Dependencies
-
-There are two types of dependencies:
+Dependencies are declared by invoking B<fix>, inside the buildscript, for each
+of the dependencies. Fix thereafter keep track of these dependencies, and
+rebuilds the target if any of the dependencies (or its buildscript) are
+modified. There are two types of dependencies:
 
 =over 4
 
-=item B<Source dependencies>
+=item B<source dependencies>
 
 A dependency on a source file written by the user, not one built by B<fix>.
 Declared (inside buildscript) using: C<B<fix --source> I<FILE>...>.
 
-=item B<Target dependencies>
+=item B<target dependencies>
 
 A dependency on a target generated by B<fix>. Declared (inside the buildscript)
 using: C<B<fix> I<TARGET>...> (without the B<--source> option).
 
 =back
+
+=head2 Example Buildscript
+
+Here is a small example buildscript, called F<index.html.fix> (though it could
+also have been called F<default.html.fix>). This buildscript first declare a
+source dependency on the files F<head.md> and F<foot.md>, then builds
+F<index.md>, then finally concatenates all these files and run them through
+C<markdown> in order to produce HTML output.
+
+    #!/bin/dash
+    fix --source head.md foot.md
+    fix index.md
+    cat head.md index.md foot.md | markdown --html
+
+After this buildscript has run, the target file (F<index.html>) will have been
+built, and fix will have registered its source dependencies (F<head.md>,
+F<foot.md>, and the buildscript itself, F<index.html.fix>) and target
+dependencies (F<index.md> plus any dependencies F<index.md> itself might have,
+recursively).
 
 =cut
 
@@ -1388,29 +1386,15 @@ using: C<B<fix> I<TARGET>...> (without the B<--source> option).
 # whether or not to overwrite the file.)
 #
 # =back
-
-=head1 DIAGNOSTICS
-
-=cut
-
+#
+# =head1 DIAGNOSTICS
+#
 # [[ FIXME: The general rule of thumb is that errors printed to C<STDOUT> or
 # C<STDERR> and intended for the end user are documented in DIAGNOSTICS while
 # errors passed internal to the calling program and intended for other
 # programmers are documented in ERRORS. When documenting a function that sets
 # errno, a full list of the possible errno values should be given here. ]]
-
-=head2 Tips on Debugging
-
-If you enable B<--xtrace> or B<--verbose> for an entire project, the output can
-be quite a mess. The trick is to re-invoke B<fix>, after your build has died
-with an error message, and build only the failing file using B<--xtrace> or
-B<--verbose>. Because the file has previously failed to build, B<fix> is
-guaranteed to try to rebuild it, and because B<fix> is bottom-up, the build is
-guaranteed to be exactly identical to whatever you would've gotten by building
-the entire tree of dependencies.
-
-=cut
-
+#
 # =head1 EXAMPLES
 #
 # FIXME: Should include some useful examples!
@@ -1462,8 +1446,8 @@ working directory.)
 
 =item B<$FIX_SCRIPT_TREE>
 
-See B<--script-tree>. This variable is always set, but when the option hasn't
-been explicitly set by the user it will have the same value as $FIX_WORK_TREE.
+See B<--script-tree>. This variable is always set, but if scriptdir hasn't been
+explicitly set by the user it will have the same value as $FIX_WORK_TREE.
 
 =item B<$FIX_STATS>
 
@@ -1472,10 +1456,6 @@ See B<--stats>.
 =item B<$FIX_VERBOSE>
 
 See B<--verbose>.
-
-=item B<$FIX_XTRACE>
-
-See B<--xtrace>.
 
 =item B<$FIX_WORK_TREE>
 
@@ -1688,11 +1668,6 @@ re-running C<fix index.html>.
          \_ index.html
 
 Neat, eh?
-
-=head2 Buildscripts
-
-A buildscript is simply a small shell script, which outputs something to
-standard output.
 
 =cut
 

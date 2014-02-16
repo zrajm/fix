@@ -1,13 +1,14 @@
 -*- org -*-
 
 This is an Emacs org-mode file.
+(Tags are GitHub issue numbers. See https://github.com/zrajm/fix/issues/)
 
 * Main program
 ** TODO Milestone: v1.0
-*** TODO v1.0: Add '--fix-dir' option
-*** TODO v1.0: Add '--work-tree' option
-*** TODO v1.0: Add '--source-tree' option
-*** TODO v1.0: Add '--target-tree' option
+*** TODO v1.0: Add '--fix-dir' option                                    :#3:
+*** TODO v1.0: Add '--work-tree' option                                  :#4:
+*** TODO v1.0: Add '--source-tree' option                                :#5:
+*** TODO v1.0: Add '--target-tree' option                                :#6:
     The value of this option is implicitly prepended to all build arguments. So
     that if 'targettree = build', then 'fix test.txt' will be equivalent to
     'fix build/test.txt'. (If this value is not set, then the current worktree
@@ -55,7 +56,7 @@ This is an Emacs org-mode file.
 
         $1 - (full path to) temporary output file
         $2 - filename (without path) of target file buing built
-*** TODO v1.0: Dependence on non-existing buildscripts
+*** TODO v1.0: Dependence on non-existing buildscripts                   :#7:
     Included in milestone for version 1.0.
 
     If 'abc/TARGET.txt' was generated using buildscript 'default.fix', it needs
@@ -66,6 +67,7 @@ This is an Emacs org-mode file.
         abc/default.fix
         default.txt.fix
         default.fix
+** TODO Rename environment variable $FIX_CMD -> $FIX
 ** TODO Config variable 'core.addPath' should be allowed to occur several times
    Currently only one value of 'core.addPath can be specified in the config
    file (though this isn't all that damaging, since one may give several paths
@@ -194,34 +196,6 @@ This is an Emacs org-mode file.
    itself).
 ** TODO Parallel builds
    Fork and run parallel 'fix' for each argument given.
-** TODO Magic numbers (#!) in buildscripts
-   All buildscripts should have a '#!' line at the beginning, and have execute
-   permissions (--x--x--x) turned on.
-
-   [[ https://groups.google.com/forum/#!topic/redo-list/yeBwxcXvm8c][A solution to the portability (and a bunch of other) problems]]
-
-   The above post on the Google Group for redo, suggests that all .do files
-   should be "opaque executables". (Arguing that this would be a killer app for
-   redo, allowing everyone to write build scripts *in their own language*.)
-
-   [[http://homepage.ntlworld.com/jonathan.deboynepollard/FGA/introduction-to-redo.html#ImplementationProblems][Pollard's critique of the #! processing in apenwarr redo]]:
-
-   This is an unfortunate byproduct of its assuming that "do" files are Bourne
-   shell scripts and only requiring #! when they are not. It passes all "do"
-   scripts directly to the Bourne shell, and thus has to check for #! and do
-   its own #! processing duplicating, not necessarily exactly or correctly,
-   what the kernel does. In particular, the #! implementation in Pennarun redo
-   as of 2012 has several of the well-known and widely documented #! security
-   holes that have long since been closed in actual operating system kernel
-   implementations of the same mechanism, including the script filename race
-   condition. It also has an incorrect magic number check and an additional
-   PATH security hole caused by how it attempts to run the Bourne shell.
-
-   A better approach would have been to use the Unix philosophy as it stood: a
-   program to be run is just run, with execve(), as-is; "do" scripts are
-   expected to all have #! to identify their particular interpreters; the
-   system relies on the operating system kernel's processing of #! and doesn't
-   roll its own one badly; and there is no hardwiring of one particular shell.
 ** TODO Abort more gracefully
    Abort should not exit brutally (e.g. causing stats to be broken except for
    the file causing the abort), but recurse gracefully back again.
@@ -646,5 +620,34 @@ This is an Emacs org-mode file.
    CLOSED: [2014-02-08 Sat 10:17]
    '--exec-path' is the name of git's option with analogous function.
    Environment variable $FIX_EXEC_PATH should also work.
-** DONE v1.0: Add '--script-tree' option
+** DONE v1.0: Add '--script-tree' option                                 :#8:
    CLOSED: [2014-02-16 Sun 18:59]
+** DONE Magic numbers (#!) in buildscripts                               :#9:
+   CLOSED: [2014-02-16 Sun 22:19]
+   All buildscripts should have a '#!' line at the beginning, and have execute
+   permissions (--x--x--x) turned on.
+
+   [[ https://groups.google.com/forum/#!topic/redo-list/yeBwxcXvm8c][A solution to the portability (and a bunch of other) problems]]
+
+   The above post on the Google Group for redo, suggests that all .do files
+   should be "opaque executables". (Arguing that this would be a killer app for
+   redo, allowing everyone to write build scripts *in their own language*.)
+
+   [[http://homepage.ntlworld.com/jonathan.deboynepollard/FGA/introduction-to-redo.html#ImplementationProblems][Pollard's critique of the #! processing in apenwarr redo]]:
+
+   This is an unfortunate byproduct of its assuming that "do" files are Bourne
+   shell scripts and only requiring #! when they are not. It passes all "do"
+   scripts directly to the Bourne shell, and thus has to check for #! and do
+   its own #! processing duplicating, not necessarily exactly or correctly,
+   what the kernel does. In particular, the #! implementation in Pennarun redo
+   as of 2012 has several of the well-known and widely documented #! security
+   holes that have long since been closed in actual operating system kernel
+   implementations of the same mechanism, including the script filename race
+   condition. It also has an incorrect magic number check and an additional
+   PATH security hole caused by how it attempts to run the Bourne shell.
+
+   A better approach would have been to use the Unix philosophy as it stood: a
+   program to be run is just run, with execve(), as-is; "do" scripts are
+   expected to all have #! to identify their particular interpreters; the
+   system relies on the operating system kernel's processing of #! and doesn't
+   roll its own one badly; and there is no hardwiring of one particular shell.

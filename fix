@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.7.0";
+our $VERSION       = "0.7.1";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -38,7 +38,7 @@ our ($Keep, $Run, %Opt);
 sub version {
     local $, = "\n";
     say "$NAME $VERSION",
-        "Copyright (C) $YEAR zrajm <zrajm\@klingonska.org>",
+        "Copyright (C) $YEAR zrajm <fix\@zrajm.org>",
         "License CC BY-SA v3.0: Creative Commons Attribution-Share Alike 3.0",
         "    <http://creativecommons.org/licenses/by-sa/3.0/>",
         "You are free to share and modify this program, as long as you use",
@@ -1707,9 +1707,15 @@ standard output.
 #
 # [[ FIXME: Things to take special care with, sometimes called WARNINGS. ]]
 
-# =head1 BUGS
-#
-# [[ FIXME: Things that are broken or just don't work quite right. ]]
+=head1 BUGS
+
+If you find any bugs, please report them using the GitHub issue tracker:
+<https://github.com/zrajm/fix/issues>.
+
+If that option isn't available for you, you instead send an email to
+<fix@zrajm.org>.
+
+=cut
 
 # =head1 RESTRICTIONS
 #
@@ -1719,25 +1725,9 @@ standard output.
 #
 # [[ FIXME: Miscellaneous commentary. ]]
 
-=head1 INTERNALS
-
-You shouldn't need to read this, unless your modifying B<fix>, maybe.
-
-=over 4
-
-=item Pathnames
-
-Internally all filenames are absolute, logical paths (see pwd(1) for more info
-on logical vs. physical paths). Filenames are converted to absolute paths as
-they're inputted (e.g. from the command line).
-
-In the state storage all paths are relative to the working tree root.
-
-=back
-
 =head1 AUTHOR
 
-Written by zrajm <zrajm@klingonska.org>, 2012-2014.
+Written by zrajm <fix@zrajm.org>, 2012-2014.
 
 This program is distributed under a Creative Commons Attribution-ShareAlike 3.0
 license (CC BY-SA 3.0) [http://creativecommons.org/licenses/by-sa/3.0/].
@@ -1753,6 +1743,8 @@ More information about fix can be found on the fix wiki
 
 The current version of this program is always available from its GitHub
 repository at <https://github.com/zrajm/fix>.
+
+Info on milestones and bugs: <https://github.com/zrajm/fix/issues>.
 
 =cut
 

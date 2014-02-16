@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.6.10";
+our $VERSION       = "0.6.11";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -677,9 +677,10 @@ sub possible_buildscripts {
 sub find_buildscript {
     my ($target) = @_;
     return "$target.fix" if -e "$target.fix";
-    return find_parent_path(
-        '.', $Opt{worktree}, possible_buildscripts($target),
-    );
+    my $dir         = split_path($target);
+    my $ceiling_dir = $Opt{worktree};
+    my @possible    = possible_buildscripts($target);
+    return find_parent_path($dir, $Opt{worktree}, @possible);
 }
 
 # NB: $file must exist for has_changed() to give meaningful result

@@ -1301,6 +1301,76 @@ run_fix_test(
 
 ###############################################################################
 
+note '=== Target it Subdir ===';
+
+enter_dir("greybox-target-in-subdir");
+write_file('.fixrc' => '');
+
+mkdir('subdir') or die "cannot create dir 'subdir',";
+run_fix_test(
+    name   => "Building target in subdir",
+    exit   => 0,
+    args   =>  [qw( subdir/hello.txt )],
+    stats  => [[qw( subdir/hello.txt      )]],
+    after  => sub {
+        ok(! -e "subdir/.fix", "Statedir non-existing in subdir: subdir/.fix");
+    },
+    source => {
+        'subdir/hello.txt.fix' => nl('echo "Hello, world!"'),
+    },
+    result => {
+        'subdir/hello.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'subdir/hello.txt.fix' ]],
+            cont  => nl("Hello, world!"),
+        },
+    },
+);
+
+enter_dir("greybox-target-in-subdir");
+write_file('.fixrc' => '');
+run_fix_test(
+    name   => "Building target from default rule",
+    exit   => 0,
+    args   =>  [qw( hello.txt )],
+    stats  => [[qw( hello.txt      )]],
+    source => {
+        'default.txt.fix' => nl('echo "Hello, world!"'),
+    },
+    result => {
+        'hello.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'default.txt.fix' ]],
+            cont  => nl("Hello, world!"),
+        },
+    },
+);
+
+enter_dir("greybox-target-in-subdir");
+write_file('.fixrc' => '');
+mkdir('subdir') or die "cannot create dir 'subdir',";
+run_fix_test(
+    name   => "Building target from default rule in subdir",
+    exit   => 0,
+    args   =>  [qw( subdir/hello.txt )],
+    stats  => [[qw( subdir/hello.txt      )]],
+    after  => sub {
+        ok(! -e "subdir/.fix", "Statedir non-existing in subdir: subdir/.fix");
+    },
+    source => {
+        'subdir/default.txt.fix' => nl('echo "Hello, world!"'),
+    },
+    result => {
+        'subdir/hello.txt' => {
+            state => NEW_CONTENT,
+            deps  => [[ 'subdir/default.txt.fix' ]],
+            cont  => nl("Hello, world!"),
+        },
+    },
+);
+
+###############################################################################
+
 note '=== Multiple Dependencies ===';
 enter_dir("greybox-multiple-deps");
 write_file('.fixrc' => '');

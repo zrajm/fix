@@ -67,9 +67,12 @@ This is an Emacs org-mode file.
         abc/default.fix
         default.txt.fix
         default.fix
+** TODO Local::Store should remove empty dirs
+   delete() should, after having removed a file, delete the directory it
+   resided in if that dir became empty (all the way up to the storage dir).
 ** TODO Rename environment variable $FIX_CMD -> $FIX
-** TODO Config variable 'core.addPath' should be allowed to occur several times
-   Currently only one value of 'core.addPath can be specified in the config
+** TODO Config variable 'core.execPath' should be allowed to occur several times
+   Currently only one value of 'core.execPath' can be specified in the config
    file (though this isn't all that damaging, since one may give several paths
    separated by ':').
 ** TODO Break out file functions
@@ -151,7 +154,7 @@ This is an Emacs org-mode file.
    needed, nevertheless, it should exist for emergencies.
 ** TODO Add option '--clean'
    Described in POD (uncomment when implemented).
-** TODO Add option '--dirty'(?)                                         :LOW:
+** TODO Add option '--dirty'(?)
    Should be used in buildscript to indicate that it should always be
    considered dirty, and needs to be rebuilt every time. This would be used for
    a target that use outside information that is expected to always change
@@ -208,7 +211,14 @@ This is an Emacs org-mode file.
    Means we could ditch the runstate as well (since its currently only used for
    this).
 ** TODO Error messages should display filename relative to PWD
-   Not relative to work_tree.
+   Not relative to worktree (as it is now).
+
+   debug(), info(), msg(), quit() and friends should allow sprintf-like
+   substitution, where first argument is a string with optional %s in, and the
+   following are filenames. These filenames should be automatically rewritten
+   to be relative to $Opt{pwd} before output. Example:
+
+       debug("Building target: %s", $target);
 ** TODO Display progress using relative paths
    Relative to the user's PWD, not work_tree, or anything else.
 ** TODO Make config file format more like git's
@@ -229,15 +239,19 @@ This is an Emacs org-mode file.
    If scripttree changes between builds, the build metadata does not update
    properly. (There's a NOTA BENE in the docs about this.)
 * Testing
-** TODO Test relative dirs for --exec-path, $FIX_EXEC_PATH & core.execPath
+** TODO Test Local::Store::delete()
+   Both with files as args, and 'delete(".")'.
+** TODO Test that source deps register with '--stats'
+   Add tests checking that source deps and failed source deps are written to
+   the runstate when 'fix --stats --source' is run.
+** TODO Test '--script-tree' outside worktree
+** TODO Test relative dirs for '--exec-path', $FIX_EXEC_PATH & core.execPath
    Test that relative dirs are interpreted as relative to:
      * --exec-path    -- user current dir
      * $FIX_EXEC_PATH -- user current dir
      * core.execPath  -- worktree directory
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
-** TODO Test for B<--verbose>
-** TODO Test for B<--xtrace>
 ** TODO Apenwarr redo's tests
 * Someday/maybe
 ** TODO Git wiki as submodule(?)
@@ -448,10 +462,8 @@ This is an Emacs org-mode file.
    CLOSED: [2014-01-18 Sat 04:18]
 ** DONE Test '.fix/stats' in same way as runstate and keepstate
    CLOSED: [2014-01-18 Sat 16:59]
-
 ** DONE --stats should output all command line options (not just targets)
    CLOSED: [2014-01-18 Sat 17:28]
-
 ** DONE Add --source option + docs for it
    CLOSED: [2014-01-18 Sat 17:29]
 ** DONE Test '--source' option
@@ -651,3 +663,5 @@ This is an Emacs org-mode file.
    expected to all have #! to identify their particular interpreters; the
    system relies on the operating system kernel's processing of #! and doesn't
    roll its own one badly; and there is no hardwiring of one particular shell.
+** DONE Local::Store should now allow writing outside specified path
+   CLOSED: [2014-03-20 Thu 16:03]

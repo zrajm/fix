@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.8.0";
+our $VERSION       = "0.8.1";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -114,7 +114,7 @@ sub man {
     die "Cannot run 'man': $!\n" unless defined $pid;
     system('pod2man', __FILE__);               # output manpage on STDOUT
     if ($? == -1) {                            # on exec FAILURE
-        kill 'TERM', $pid;                     #   kill man child and die()
+        kill TERM => $pid;                     #   kill man child and die
         die "Cannot execute 'pod2man': $!\n";
     };
     close STDOUT;                              # don't make man wait for more
@@ -135,6 +135,7 @@ sub man {
     $Data::Dumper::Indent   = 1;
     $Data::Dumper::Sortkeys = 1;
     $Data::Dumper::Terse    = 1;
+    import Local::Paths 'abspath';
 
     # Usage: new Local::Store(dir => DIR, namefilter => CODEREF);
     #
@@ -211,10 +212,20 @@ sub man {
             or die "Cannot rename tempfile '$tempfile' -> '$file': $!\n";
     }
 
+    # Turn filename into storage path, return undef if outside store dir.
+    sub _file_name {
+        my ($self, $file) = @_;
+        my $_ = abspath(
+            $self->{namefilter}($file),
+            $self->{dir}
+        );
+        return m#^\Q$self->{dir}/# ? $_ : undef;
+    }
+
     # Reread state file if its stat fingerprint has changed last read/write.
     sub _read_state {
         my ($self, $file) = @_;
-        my $full = "$self->{dir}/" . $self->{namefilter}($file);
+        my $full = $self->_file_name($file) // return {};
         my ($state, $print) = @$self{ qw/ state print / };
         if (-f $full) {                        # state file exists
             my $print2 = _read_file_fingerprint($full);
@@ -228,7 +239,7 @@ sub man {
 
     sub _write_state {
         my ($self, $file) = @_;
-        my $full = "$self->{dir}/" . $self->{namefilter}($file);
+        my $full = $self->_file_name($file) // return {};
         my ($state, $print) = @$self{ qw/ state print / };
         _write_file($full, Dumper($state->{$file}));
         $print->{$file} = _read_file_fingerprint($full);
@@ -260,10 +271,17 @@ sub man {
         $self->_write_state($file);
     }
 
-    # Deletes named files. Give argument '' to delete entire storage.
+    # Deletes named files. Use single argument '.' to delete entire storage.
     sub delete {
         my ($self, @file) = @_;
-        rmtree("$self->{dir}/$_") foreach @file;
+        if (@file ~~ [ '.' ]) {
+            rmtree($self->{dir});
+        } else {
+            foreach (@file) {
+                my $full = $self->_file_name($_);
+                rmtree($full);
+            }
+        }
         return $self;
     }
 }
@@ -1019,7 +1037,7 @@ sub run {
         __DIE__  => sub { die  msg(ERROR, @_) },
     );
     unless (is_child()) {                      # MOTHER PROCESS
-        $Run->delete('');                      #   delete previous runstate
+        $Run->delete('.');                     #   delete previous runstate
         add_fix_to_path($Opt{fixdir});
     }
     my @dep = map { [ $_ => $Keep->get($_, 'checksum') // '' ] } @target;

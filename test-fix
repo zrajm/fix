@@ -2,13 +2,28 @@
 use strict;
 use warnings;
 use 5.10.1;
+
+my $in_main = 1;
 END {
-    warn
-        "# #################################\n" .
-        "# ##  THERE WERE FAILING TESTS!  ##\n" .
-        "# #################################\n" if $?;
+    if ($? and $in_main) {
+        warn
+            "# #################################\n" .
+            "# ##  THERE WERE FAILING TESTS!  ##\n" .
+            "# #################################\n";
+    }
 }
-use Test::More;
+
+# load Test::Most module
+# (gracefully suggesting missing Debian package on failure)
+BEGIN {
+    my $in_main = undef;
+    eval { require Test::Most }
+        or die "Cannot load required perl module Test::Most\n",
+            "Install module (on Debian/Ubuntu) with:\n\n",
+            "    apt-get install libtest-most-perl\n\n";
+    Test::Most->import();
+}
+
 use Cwd qw/cwd realpath/;
 use File::Path qw( mkpath rmtree );
 use Carp 'confess';
@@ -19,11 +34,37 @@ BEGIN {
     ($Dir) = realpath(__FILE__) =~ m#^(.*)/#;
     require "$Dir/fix";                        # load 'fix' as a module
     Local::Modulino->import();
-    *subtest = sub {                           # compatibility replacement
-        my ($name, $code) = @_;                #   for Test::More's subtest()
-        $code->();
-        note $name;
-    } unless exists &subtest;
+}
+
+# Workarounds for 'Test::More::subtest()'
+BEGIN {
+    sub no_implicit_done_testing_in_subtest {  # return true if implicit
+        open(my $o, ">&STDOUT");               #   'done_testing()' is
+        open(my $e, ">&STDERR");               #   missing in 'subtest()'
+        open(STDOUT, ">/dev/null");
+        open(STDERR, ">/dev/null");
+        my $ok = subtest(_ => sub { pass() });
+        Test::More->builder->reset();
+        open(STDOUT, ">&", $o);
+        open(STDERR, ">&", $e);
+        return !$ok;
+    }
+    if (not exists &subtest) {
+        *subtest = sub {                       # subtest() missing in
+            my ($name, $code) = @_;            #   Test::More
+            $code->();
+            note $name;
+        };
+    } elsif (no_implicit_done_testing_in_subtest()) {
+        no warnings 'redefine';
+        *subtest = sub($&) {                   # implicit done_testing()
+            my ($name, $code) = @_;            #   missing in subtest()
+            Test::More::subtest($name, sub {
+                $code->();
+                done_testing();
+            });
+        };
+    }
 }
 
 our $name  = 'fix';
@@ -408,6 +449,7 @@ sub catch {
 
 # check if there is an 'exit' statement in this file
 my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit.*;/m;
+die_on_fail;
 
 ###############################################################################
 ##                                                                           ##

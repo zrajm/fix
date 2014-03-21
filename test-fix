@@ -325,23 +325,23 @@ sub catch {
 
             # check statsfile
             if (@stats == 0) {
-                ok(!-e $stats, "Statsfile non-existing: $stats");
+                ok(!-e $stats, "Should not exist: $stats");
             } else {
-                ok( -e $stats, "Statsfile existing: $stats");
+                ok( -e $stats, "Should exist: $stats");
                 my $gotten   = read_file($stats);
                 my $expected = statsstate(@stats);
-                is($gotten, $expected, "Statsfile content: $stats");
+                is($gotten, $expected, "Content: $stats");
             }
 
             # check sourcefiles
             {
                 foreach (key %source) {
-                    ok(! -f $_, "Sourcefile non-existing: $_")
+                    ok(! -f $_, "Should not exist: $_")
                         if not defined $source{$_};
                 }
                 my @source = grep { defined $source{$_} } key(%source);
-                ok(   -f $_,            "Sourcefile existing: $_" ) for @source;
-                is($pre{$_}, $post{$_}, "Sourcefile unchanged: $_") for @source;
+                ok(   -f $_,            "Should exist: $_" ) for @source;
+                is($pre{$_}, $post{$_}, "Unchanged: $_") for @source;
             }
 
             # check tempfiles
@@ -352,12 +352,12 @@ sub catch {
                 );
                 foreach (@tempfile) {
                     my $file = "$_--fixing";
-                    ok(! -f $file, "Tempfile non-existing: $file");
+                    ok(! -f $file, "Should not exist: $file");
                 }
                 @tempfile = grep { defined $result{$_}{temp} } key(%result);
                 foreach (@tempfile) {
                     my $file = "$_--fixing";
-                    ok(  -f $file, "Tempfile existing: $file");
+                    ok(  -f $file, "Should exist: $file");
                 }
                 foreach (@tempfile) {
                     my $file = "$_--fixing";
@@ -367,7 +367,7 @@ sub catch {
                     my $file = "$_--fixing";
                     my $gotten   = read_file($file);
                     my $expected = $result{$_}{temp};
-                    is($gotten, $expected, "Tempfile content: $file");
+                    is($gotten, $expected, "Content: $file");
                 }
             }
 
@@ -375,21 +375,21 @@ sub catch {
             {
                 my @target;
                 @target = grep { not defined $result{$_}{cont} } key(%result);
-                ok(!-f $_, "Target non-existing: $_") for @target;
+                ok(!-f $_, "Should not exist: $_") for @target;
                 @target = grep {     defined $result{$_}{cont} } key(%result);
-                ok( -f $_, "Target existing: $_"    ) for @target;
+                ok( -f $_, "Should exist: $_"    ) for @target;
                 foreach (@target) {            # rewritten targets
                     my $state = $result{$_}{state};
-                    isnt($pre{$_}, $post{$_}, "Target updated: $_")
+                    isnt($pre{$_}, $post{$_}, "Should be updated: $_")
                         if $target_rewritten{$state} == TRUE;
                 }
                 foreach (@target) {            # unmodified targets
                     my $state = $result{$_}{state};
-                    is($pre{$_}, $post{$_}, "Target unchanged: $_")
+                    is($pre{$_}, $post{$_}, "Should be unchanged: $_")
                         if $target_rewritten{$state} == FALSE;
                 }
                 foreach (@target) {            # if modified, check content
-                    is(read_file($_), $result{$_}{cont}, "Target content: $_")
+                    is(read_file($_), $result{$_}{cont}, "Content: $_")
                         if $pre{$_} ne $post{$_};
                 }
             }
@@ -397,15 +397,15 @@ sub catch {
             # check runstate
             my @runstate = grep { $result{$_}{state} ne NO_RUNSTATE } key(%result);
             if (@runstate == 0) {              # no targets generated
-                ok(!-e $run, "Runstate dir non-existing: $run");
+                ok(!-e $run, "Should not exist: $run/");
             } else {                           # targets were generated
-                ok( -e $run, "Runstate dir existing: $run");
+                ok( -e $run, "Should exist: $run/");
                 foreach (key %result) {
-                    ok(!-f "$run/$_", "Runstate non-existing: $run/$_")
+                    ok(!-f "$run/$_", "Should not exist: $run/$_")
                         if $result{$_}{state} eq NO_RUNSTATE;
                 }
                 foreach (@runstate) {
-                    ok( -f "$run/$_", "Runstate existing: $run/$_");
+                    ok( -f "$run/$_", "Should exist: $run/$_");
                 }
                 foreach (@runstate) {
                     my $gotten   = read_file("$run/$_");
@@ -413,19 +413,19 @@ sub catch {
                         $result{$_}{state},
                         ($result{$_}{abort} ? (ABORT => $result{$_}{abort}) : ()),
                     );
-                    is($gotten, $expected, "Runstate content: $run/$_");
+                    is($gotten, $expected, "Content: $run/$_");
                 }
             }
 
             # check keepstate
             if (@runstate == 0) {
-                ok(!-e $keep, "Keepstate dir non-existing: $keep");
+                ok(!-e $keep, "Should not exist: $keep/");
             } else {
-                ok( -e $keep, "Keepstate dir existing: $keep");
+                ok( -e $keep, "Should exist: $keep/");
                 foreach (key %source) {
                     my $gotten   = read_file("$keep/$_") // next;
                     my $expected = keepstate(SOURCE, $source{$_});
-                    is($gotten, $expected, "Keepstate content: $keep/$_");
+                    is($gotten, $expected, "Content: $keep/$_");
                 }
                 foreach (key %result) {
                     my $gotten   = read_file("$keep/$_");
@@ -434,7 +434,7 @@ sub catch {
                         $result{$_}{deps},
                         \%source, \%result
                     );
-                    is($gotten, $expected, "Keepstate content: $keep/$_");
+                    is($gotten, $expected, "Content: $keep/$_");
                 }
             }
         };

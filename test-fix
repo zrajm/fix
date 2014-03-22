@@ -1362,6 +1362,11 @@ run_fix_test(
             deps  => [[ 'indented.txt.fix' ], [ 'source.txt' ]],
             cont  => nl('> some other text'),
         },
+        'source.txt' => {
+            type  => SOURCE,
+            state => SRC_REGIST,
+            cont  => nl('some other text'),
+        },
     },
 );
 

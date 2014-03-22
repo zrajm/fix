@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.8.1";
+our $VERSION       = "0.8.2";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -433,7 +433,7 @@ sub quit {
     die $msg // "", "\n";
 }
 
-sub is_child { $Opt{parent} ne '' }
+sub is_child { defined $Opt{parent} }
 sub store_version_on_disk {
     my $file = "$Opt{fixdir}/store_version";
     if (-e $Opt{fixdir}) {
@@ -788,7 +788,7 @@ sub build_target {
             ABORT => $aborted_target,
         ) if is_child();
         did($target, 'buildscript_error');
-        exit $exit;
+        exit ($exit || 255);
     }
 
     my $old_checksum = $Keep->get($target, 'checksum') // '';
@@ -828,6 +828,10 @@ sub update_targets {
         my ($target, $checksum) = @$target;
         debug("Updating target: $target");
         if ($target !~ m#^\Q$Opt{worktree}\E($|/)#) {
+            $Run->set($target,      ABORT => strip_worktree($target));
+            $Run->set($Opt{parent}, ABORT => strip_worktree($target))
+                if is_child();
+            # did($target, 'target_outside_worktree');
             quit(254, "Target '" . strip_worktree($target) . "' is outside " .
                      "fix's worktree");
         }
@@ -843,7 +847,11 @@ sub update_targets {
         }
         my $buildscript = find_buildscript($target);
         if (not -f $buildscript) {
-            quit(254, "No rule to make target '" .
+            $Run->set($target,      ABORT => strip_worktree($target));
+            $Run->set($Opt{parent}, ABORT => strip_worktree($target))
+                if is_child();
+            did($target, 'buildscript_not_found');
+            quit(254, "No buildscript to make target '" .
                 strip_worktree($target) . "'");
         }
         if ($type eq '') {                     # target is not known by fix
@@ -880,13 +888,14 @@ sub update_targets {
 # as in rest of fix).
 sub getopts {
     my @arg = (my @orgarg) = @_;
+    END { kill TERM => getppid() if $? > 0 and is_child() }
     %Opt = (
         cmd        =>   $ENV{FIX_CMD},         # set by mother
         debug      => !!$ENV{FIX_DEBUG},
         fixdir     =>   $ENV{FIX_DIR},         # set by mother
         # force    => !!$ENV{FIX_FORCE},
         level      =>   $ENV{FIX_LEVEL}  += 1,
-        parent     =>   $ENV{FIX_PARENT} // '',
+        parent     =>   $ENV{FIX_PARENT},
         pid        =>   $ENV{FIX_PID},         # set by mother
         pwd        =>   $ENV{FIX_PWD},         # set by mother
         scripttree =>   $ENV{FIX_SCRIPT_TREE}, # set by mother
@@ -1027,15 +1036,29 @@ __PACKAGE__->run(@ARGV) unless caller();
 sub run {
     my ($class, @target) = @_;
     @target = getopts(@target);
-    if ($Opt{source}) {                        #   '--source' = don't build
-        set_source_state($_) foreach @target;
-        add_deps($Opt{parent}, @target);
-        exit 0;
-    }
     %SIG = (
         __WARN__ => sub { warn msg(WARN,  @_) },
         __DIE__  => sub { die  msg(ERROR, @_) },
     );
+    if ($Opt{source}) {                        #   '--source' = don't build
+        my $warn = FALSE;
+        $Opt{level} ++;
+        foreach my $file (@target) {
+            if (-e $file) {
+                set_source_state($file);
+                add_deps($Opt{parent}, @target);
+                did($file, 'source_dep_registered');
+            } else {
+                $warn = TRUE;
+                print STDERR msg ERROR, strip_worktree($file) .
+                    ": Source dependency not found";
+                $Run->set($file,        ABORT => strip_worktree($file));
+                $Run->set($Opt{parent}, ABORT => strip_worktree($file));
+                did($file, 'source_dep_not_found');
+            }
+        }
+        exit ($warn ? 254 : 0);
+    }
     unless (is_child()) {                      # MOTHER PROCESS
         $Run->delete('.');                     #   delete previous runstate
         add_fix_to_path($Opt{fixdir});

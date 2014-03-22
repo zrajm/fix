@@ -235,6 +235,7 @@ This is an Emacs org-mode file.
 
    It's not exactly clear what's going on here, and the error message should at
    least provide a clear context, to assist the user in remedying the error.
+** TODO Should .fix/store_version contain targetTree/scriptTree(?)
 ** TODO Build metadata update should reflect scripttree changes
    If scripttree changes between builds, the build metadata does not update
    properly. (There's a NOTA BENE in the docs about this.)
@@ -665,3 +666,5 @@ This is an Emacs org-mode file.
    roll its own one badly; and there is no hardwiring of one particular shell.
 ** DONE Local::Store should now allow writing outside specified path
    CLOSED: [2014-03-20 Thu 16:03]
+** DONE 'fix --source FILE' should fail if FILE does not exists         :#10:
+   CLOSED: [2014-03-22 Sat 16:38]

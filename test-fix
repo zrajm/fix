@@ -216,9 +216,12 @@ sub UNCHANGED   { 'wont_rebuild' }
 sub WONT_OVERWR { 'wont_overwrite' }
 sub SHELL_FAIL  { 'shell_error' }
 sub BUILD_FAIL  { 'buildscript_error' }
+sub NOT_FOUND   { 'buildscript_not_found' }
 sub KEPT_PREV   { 'rebuilt_but_kept_previous' }
 sub REPL_ERASED { 'rebuilt_replaced_deleted' }
 sub NEW_CONTENT { 'rebuilt_new_content' }
+sub SRC_NOT_FOUND { 'source_dep_not_found' }
+sub SRC_REGIST  { 'source_dep_registered' }
 sub runstate {
     my ($build_status, $abort_status, $abort_target) = @_;
     my %x;
@@ -254,9 +257,20 @@ sub catch {
         SHELL_FAIL  ,=> FALSE,
         BUILD_FAIL  ,=> FALSE,
         KEPT_PREV   ,=> FALSE,
+        SRC_REGIST  ,=> FALSE,
         REPL_ERASED ,=> TRUE,
         NEW_CONTENT ,=> TRUE,
     );
+    my @args;
+    END {
+        if (@args) {
+            note '-' x 60;
+            note "FAILED";
+            note "  Dir: $ENV{PWD}";
+            note "  Cmd: fix @args";
+            note '-' x 60;
+        }
+    }
     sub run_fix_test {
         my %arg = @_;
         $arg{before} //= sub {};
@@ -272,7 +286,7 @@ sub catch {
         my %result = %{ $arg{result} // {} };
         my %source = %{ $arg{source} // {} };
         my @stats  = @{ $arg{stats}  // [] };
-        my @args   = @{ $arg{args}   // [] };
+        @args      = @{ $arg{args}   // [] };
 
         # write source files
         foreach (key %source) {
@@ -307,7 +321,7 @@ sub catch {
 
         my $stderr = read_file('stderr.txt');  # check stderr output
         delete_file('stderr.txt');
-        subtest "$arg{name}\n" . "Ran: fix @args\n" . "Dir: $ENV{PWD}" => sub {
+        subtest $arg{name} => sub {
 
             unlike($stderr, qr/Use of uninitialized value/,
                 "No Perl warning 'uninitialized value'");
@@ -341,7 +355,7 @@ sub catch {
                 }
                 my @source = grep { defined $source{$_} } key(%source);
                 ok(   -f $_,            "Should exist: $_" ) for @source;
-                is($pre{$_}, $post{$_}, "Unchanged: $_") for @source;
+                is($pre{$_}, $post{$_}, "Should be unchanged: $_") for @source;
             }
 
             # check tempfiles
@@ -418,8 +432,17 @@ sub catch {
             }
 
             # check keepstate
-            if (@runstate == 0) {
-                ok(!-e $keep, "Should not exist: $keep/");
+            my @keepstate = grep { not exists $result{$_}{abort} } key(%result);
+            if (@keepstate == 0) {
+                # Source files with defined content which are in the worktree.
+                my @source = grep {
+                    defined($source{$_}) and not m#^\.\./#;
+                } key %source;
+                if (@source) {
+                    ok( -e $keep, "Should exist: $keep/");
+                } else {
+                    ok(!-e $keep, "Should not exist: $keep/");
+                }
             } else {
                 ok( -e $keep, "Should exist: $keep/");
                 foreach (key %source) {
@@ -428,16 +451,22 @@ sub catch {
                     is($gotten, $expected, "Content: $keep/$_");
                 }
                 foreach (key %result) {
-                    my $gotten   = read_file("$keep/$_");
-                    my $expected = keepstate(TARGET,
-                        $result{$_}{cont},
-                        $result{$_}{deps},
-                        \%source, \%result
-                    );
-                    is($gotten, $expected, "Content: $keep/$_");
+                    my $keepfile = "$keep/$_";
+                    if (exists $result{$_}{abort}) {
+                        is($pre{$_}, $post{$_}, "Should be unchanged: $_");
+                    } else {
+                        my $gotten   = read_file($keepfile);
+                        my $type     = $result{$_}{type} // TARGET;
+                        my $expected = keepstate($type,
+                            $result{$_}{cont},
+                            $result{$_}{deps},
+                            \%source, \%result
+                        );
+                        is($gotten, $expected, "Content: $keepfile");
+                    }
                 }
             }
-        };
+        } and @args = ();
     }
 }
 
@@ -447,9 +476,32 @@ sub catch {
 ##                                                                           ##
 ###############################################################################
 
+sub help {
+    $in_main = undef;
+    print <<EOF;
+Usage: test-fix [ --continue | --help ]
+Run the fix test suite.
+
+Options:
+  -h, --help      display this help and exit
+  -a, --all       run all tests (don't abort on first failure)
+
+EOF
+    { exit }
+}
+
+use Getopt::Long qw(:config posix_default gnu_compat no_ignore_case permute);
+my $die_level = 'never';
+
+my $die_on_fail = 1;
+GetOptions(
+    'all|a'    => sub { $die_on_fail = 0 },
+    'help|h|?' => \&help,
+);
+die_on_fail if $die_on_fail;
+
 # check if there is an 'exit' statement in this file
 my $exit_statement_in_test_script = read_file(__FILE__) =~ /^\s*exit.*;/m;
-die_on_fail;
 
 ###############################################################################
 ##                                                                           ##
@@ -811,12 +863,12 @@ run_fix_test(
     },
     result => {
         'NON-EXISTING-TARGET' => {
-            state => NO_RUNSTATE,
+            abort => 'NON-EXISTING-TARGET',
+            state => NOT_FOUND,
         },
     },
 );
 
-write_file('../outside.fix', '');
 # FIXME: Test output on standard error
 run_fix_test(
     name   => "Buildscript outside worktree",
@@ -828,6 +880,9 @@ run_fix_test(
     },
     result => {
         '../outside' => {
+            # No file given in 'abort', since '../outside.txt'
+            # cannot be stored in keepstate.
+            abort => '',
             state => NO_RUNSTATE,
         },
     },
@@ -1202,6 +1257,48 @@ enter_dir("greybox-source-deps");
 write_file('.fixrc' => '');
 
 run_fix_test(
+    name   => "Non-existing target dependency",
+    exit   => 255,
+    args   =>  [qw( indented.txt )],
+    stats  => [[qw( indented.txt )], [qw( NON-EXISTING-TARGET )]],
+    source => {
+        'indented.txt.fix' => nl('fix NON-EXISTING-TARGET'),
+    },
+    result => {
+        'indented.txt' => {
+            abort => 'NON-EXISTING-TARGET',
+            state => BUILD_FAIL,
+            deps  => [[ 'indented.txt.fix' ]],
+        },
+        'NON-EXISTING-TARGET' => {
+            abort => 'NON-EXISTING-TARGET',
+            state => NOT_FOUND,
+        },
+    },
+);
+
+run_fix_test(
+    name   => "Non-existing source dependency",
+    exit   => 255,
+    args   =>  [qw( indented.txt )],
+    stats  => [[qw( indented.txt )], [qw( --source NON-EXISTING-SOURCE )]],
+    source => {
+        'indented.txt.fix' => nl('fix --source NON-EXISTING-SOURCE'),
+    },
+    result => {
+        'indented.txt' => {
+            abort => 'NON-EXISTING-SOURCE',
+            state => BUILD_FAIL,
+            deps  => [[ 'indented.txt.fix' ]],
+        },
+        'NON-EXISTING-SOURCE' => {
+            abort => 'NON-EXISTING-SOURCE',
+            state => SRC_NOT_FOUND,
+        },
+    },
+);
+
+run_fix_test(
     name   => "Source dependency",
     exit   => 0,
     args   =>  [qw( indented.txt )],
@@ -1216,6 +1313,11 @@ run_fix_test(
             state => NEW_CONTENT,
             deps  => [[ 'indented.txt.fix' ], [ 'source.txt' ]],
             cont  => nl('> some text'),
+        },
+        'source.txt' => {
+            type  => SOURCE,
+            state => SRC_REGIST,
+            cont  => nl('some text'),
         },
     },
 );
@@ -1235,6 +1337,11 @@ run_fix_test(
             state => UNCHANGED,
             deps  => [[ 'indented.txt.fix' ], [ 'source.txt' ]],
             cont  => nl('> some text'),
+        },
+        'source.txt' => {
+            type  => SOURCE,
+            state => NO_RUNSTATE,
+            cont  => nl('some text'),
         },
     },
 );

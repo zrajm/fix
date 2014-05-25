@@ -790,6 +790,13 @@ subtest "read_config()" => sub {
     }
 };
 
+# Abort all tests unless 'fix' can be executed
+# FIXME: hide standard output/error
+my $exit = system $fix, '--version';
+isnt($exit, -1, q|Must be able to execute 'fix' script|);
+BAIL_OUT q|Greybox testing cannot commence 'fix' script isn't executable!|
+    if $exit == -1;
+
 ###############################################################################
 ##                                                                           ##
 ##  Grey-Box Tests (Testing Build Results & State Storage Content)           ##

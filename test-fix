@@ -250,6 +250,7 @@ sub catch {
 {
     sub TRUE  { 1 }
     sub FALSE { 0 }
+    my $shebang = which('dash');
     my %target_rewritten = (
         NO_RUNSTATE ,=> FALSE,      # unmodified targets, no runstate generated
         UNCHANGED   ,=> FALSE,
@@ -271,6 +272,18 @@ sub catch {
             note '-' x 60;
         }
     }
+
+    # Return list of possible paths for given executable. (Like shell command
+    # 'which -a <CMD>'.)
+    sub which {
+        my ($executable) = @_;
+        my @path = map {
+            my $path = "$_/$executable";
+            -x $path ? $path : ();
+        } split /:/, $ENV{PATH};
+        return wantarray ? @path : $path[0];
+    }
+
     sub run_fix_test {
         my %arg = @_;
         $arg{before} //= sub {};
@@ -292,7 +305,7 @@ sub catch {
         foreach (key %source) {
             next unless defined $source{$_};
             my $is_buildscript = m#\.fix$#;
-            $source{$_} = "#!/bin/dash\n" . $source{$_} if $is_buildscript;
+            $source{$_} = "#!$shebang\n" . $source{$_} if $is_buildscript;
             write_file($_ => $source{$_});
             chmod(0755, $_) or die "Cannot chmod file: $!\n" if $is_buildscript;
         }
@@ -779,7 +792,8 @@ subtest "read_config()" => sub {
             Local::Modulino::read_config($file);
         };
         if (exists $config{$file}{error}) {
-            is($err, 'Unknown error 254', "$file: $name: Exit status");
+            # Testing of $err in string context return wrong value on MacOS X.
+            cmp_ok($err, '==', 254, "$file: $name: Exit status");
             is($msg, "Bad config '$file': $config{$file}{error}",
                "$file: $name: Error message");
         } else {

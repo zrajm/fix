@@ -270,6 +270,14 @@ This is an Emacs org-mode file.
 ** TODO Test $FIX_* variables
 ** TODO Apenwarr redo's tests
 * Someday/maybe
+** TODO '--man' option should display manpage, not plain text
+'--man' option should work on MacOS X
+   MacPorts man ("man, version 1.6c" according to "man --version") does not
+   have the '-l' option to read from standard input (or, as far as I can
+   determine from the manpage, any other way of accepting a manpage on stdin).
+
+   So should either use plain text + less, or write manpage to tempfile and
+   display that.
 ** TODO Git wiki as submodule(?)
    There seem to be a little bit of hassle to get it to work, and keep itself
    automatically up-to-date when pulling and cloning... :/
@@ -683,3 +691,12 @@ This is an Emacs org-mode file.
    CLOSED: [2014-03-20 Thu 16:03]
 ** DONE 'fix --source FILE' should fail if FILE does not exists         :#10:
    CLOSED: [2014-03-22 Sat 16:38]
+** DONE '--man' option should work on MacOS X
+   CLOSED: [2014-05-26 Mon 11:03]
+
+   MacPorts man ("man, version 1.6c" according to "man --version") does not
+   support reading of manpage from standard in (the '-l' option on GNU(?) man).
+
+   To be cross platform '--man' now displays its output as a plain text file
+   (piped to 'less' instead of 'man'), which forgoes some of the more
+   fancy-looking stuff, but works.

@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.8.3";
+our $VERSION       = "0.8.4";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -109,14 +109,13 @@ EOF
     exit;
 }
 
+# Display manpage by converting POD into plain text and displaying it in
+# less(1).
 sub man {
-    my $pid = open(STDOUT, '|-', qw/man -l -/);# filter STDOUT through man(1)
-    die "Cannot run 'man': $!\n" unless defined $pid;
-    system('pod2man', __FILE__);               # output manpage on STDOUT
-    if ($? == -1) {                            # on exec FAILURE
-        kill TERM => $pid;                     #   kill man child and die
-        die "Cannot execute 'pod2man': $!\n";
-    };
+    my $pid = open(STDOUT, '|-', 'less');      # filter STDOUT through less(1)
+    die "Cannot run 'less': $!\n" unless defined $pid;
+    use Pod::Text;
+    new Pod::Text->parse_from_file(__FILE__);
     close STDOUT;                              # don't make man wait for more
     wait();                                    # wait until user exits man
     exit;
@@ -1245,6 +1244,32 @@ child instances of B<fix> run from within those buildscripts).
 Output program version information on standard output, then exit.
 
 =back
+
+=head1 DISCUSSION
+
+=head2 Buildscripts
+
+For building to be atomic, build files should produce output by either
+
+=over 3
+
+=item a)
+
+writing to standard output (preferred method), or
+
+=item b)
+
+writing to a tempfile (the name is determined by B<fix> and passed in as the
+third argument, B<$3>, to the buildscript). When using this method anything
+written to standard output will be ignored.
+
+=back
+
+=cut
+
+# FIXME: Method B is required when generating anything but a standard file
+# (i.e. when a buildscript generate a pipe, symlink or directory). Also note
+# that target updating will only be atomic when generating a single file.
 
 =head1 EXIT STATUS
 

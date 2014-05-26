@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.8.2";
+our $VERSION       = "0.8.3";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -755,29 +755,46 @@ sub build_target {
         or die "Cannot change dir to buildscript dir '$builddir': $!\n";
 
     my $outfile = "$target--fixing";
-    my ($close, $exit, $errno) = redir_stdout($outfile, sub {
+    my ($exit, $errno) = redir_stdout($outfile, sub {
         local $ENV{FIX_PARENT} = $target;
         local $ENV{FIX_LEVEL}  = $level;
-        no warnings 'exec';                    # disable "can't exec" warnings
-        open(my $fh, '|-', $buildscript, $outfile, $target)
-            or die "Cannot execute buildscript '",
-                strip_worktree($buildscript), "': $!\n";
-        return (close($fh), $?, $!);
+        my ($exit, $errno) = do {
+            no warnings 'exec';                # silence "can't exec" warnings
+            system($buildscript, $outfile, $target);
+            ($?, $!);
+        };
     });
 
     # NOTE: outfile is kept on failure (so user may inspect it)
     #
     # - Except when a dependency completely failed to run (e.g. its output file
     #   was externally modified) in which case we remove the outfile.
-    if (not $close) {
-        $exit >>= 8;
-        if ($errno != 0) {
-            did($target, 'shell_error');
-            die "Cannot run buildscript '",
-                strip_worktree($buildscript), "': $errno\n";
+    if ($exit == -1) {                         # exec failure
+        # A missing buildscript is detected earlier, when triggered here in can
+        # only mean that we have a buildscript with an invalid shebang.
+        #
+        # FIXME: Does $errno eq 'No such file...' work on all systems?
+        #
+        # $errno == 2 (numerically) and $errno eq "No such file or directory"
+        # (stringwise) both Ubuntu and MacOS X.
+        if ($errno eq 'No such file or directory') {
+            # works on Mac (where numerically: $errno == 2)
+            $errno = "Bad '#!' interpreter in buildscript";
         }
+        did($target, 'shell_error');
+        die "Cannot run buildscript '",
+            strip_worktree($buildscript), "': $errno\n";
+    } elsif ($exit > 0) {                      # non-zero exit status
+        # FIXME: Log that buildscript died by signal
+        # if (my $sig = $exit & 127) {           # caught signal
+        #     # FIXME: Terminate on SIGHUP, SIGTERM, SIGINT, SIGQUIT
+        #     # FIXME: Should we really die on all signals?
+        #     # FIXME: Output signal names (+ number?)
+        #     die "Buildscript killed by signal '$sig'\n";
+        # }
+        $exit >>= 8;
         my $aborted_target = $Run->get($target, 'ABORT') // '';
-        if ($aborted_target eq '') {           # buildscript returned non-zero
+        if ($aborted_target eq '') {
             did($target, 'buildscript_error');
             quit($exit, strip_worktree($target) . ": exit status $exit");
         }
@@ -789,7 +806,7 @@ sub build_target {
         ) if is_child();
         did($target, 'buildscript_error');
         exit ($exit || 255);
-    }
+    }                                          # zero exit status
 
     my $old_checksum = $Keep->get($target, 'checksum') // '';
     my $new_checksum = checksum_file($outfile);

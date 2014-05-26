@@ -5,6 +5,7 @@ This is an Emacs org-mode file.
 
 * Main program
 ** TODO Milestone: v1.0
+*** TODO v1.0: Make shebang MacOS X/Linux agnostic
 *** TODO v1.0: Add '--fix-dir' option                                    :#3:
 *** TODO v1.0: Add '--work-tree' option                                  :#4:
 *** TODO v1.0: Add '--source-tree' option                                :#5:
@@ -67,6 +68,17 @@ This is an Emacs org-mode file.
         abc/default.fix
         default.txt.fix
         default.fix
+** TODO Improve output for when buildscript failed to run
+   Right now the output is:
+
+       fix lolo (previously built)
+       fix lolo
+       fix Cannot run buildscript 'lolo.fix': Permission denied
+
+   (And similarly when the shebang is invalid.) The two first lines should
+   (probably) not be present in the output.
+** TODO Improve error message for when buildscript caught signal
+   Use buildscript with 'kill -SIGNAL $$' in to test this.
 ** TODO Local::Store should remove empty dirs
    delete() should, after having removed a file, delete the directory it
    resided in if that dir became empty (all the way up to the storage dir).
@@ -240,6 +252,9 @@ This is an Emacs org-mode file.
    If scripttree changes between builds, the build metadata does not update
    properly. (There's a NOTA BENE in the docs about this.)
 * Testing
+** TODO Test error message when buildscript have bad shebang
+   "Bad '#!' interpreter in buildscript".
+** TODO Test error message when buildscript has bad permissions
 ** TODO Test Local::Store::delete()
    Both with files as args, and 'delete(".")'.
 ** TODO Test that source deps register with '--stats'

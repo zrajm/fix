@@ -1,7 +1,13 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 use strict;
 use warnings;
 use 5.10.1;
+use lib do {
+    package Local;                             # make 'Cwd' local to scope
+    use Cwd 'realpath';
+    realpath(__FILE__) =~ m#^(.*)/#;           # script's real path
+    "$1/lib/perl5/site_perl";
+};
 
 my $in_main = 1;
 END {
@@ -24,13 +30,14 @@ BEGIN {
     Test::Most->import();
 }
 
-use Cwd qw/cwd realpath/;
 use File::Path qw( mkpath rmtree );
 use Carp 'confess';
 $SIG{__DIE__} = \&Carp::confess;
 
 our $Dir;
 BEGIN {
+    package Local;
+    use Cwd qw/realpath/;
     ($Dir) = realpath(__FILE__) =~ m#^(.*)/#;
     require "$Dir/fix";                        # load 'fix' as a module
     Local::Modulino->import();
@@ -115,6 +122,13 @@ sub write_file {
         rename($outfile, $file)
             or die "Cannot rename file '$outfile' -> '$file' after writing: $!,";
     }
+}
+
+# Write files, then make them executable.
+sub write_exe_file {
+    my %arg = @_;
+    write_file(%arg);
+    chmod(0755, $_) or die "Cannot chmod file '$_': $!\n" foreach keys %arg;
 }
 
 sub read_file {
@@ -306,8 +320,7 @@ sub catch {
             next unless defined $source{$_};
             my $is_buildscript = m#\.fix$#;
             $source{$_} = "#!$shebang\n" . $source{$_} if $is_buildscript;
-            write_file($_ => $source{$_});
-            chmod(0755, $_) or die "Cannot chmod file: $!\n" if $is_buildscript;
+            write_exe_file($_ => $source{$_});
         }
 
         my @file = do {
@@ -808,7 +821,7 @@ subtest "read_config()" => sub {
 # FIXME: hide standard output/error
 my $exit = system $fix, '--version';
 isnt($exit, -1, q|Must be able to execute 'fix' script|);
-BAIL_OUT q|Greybox testing cannot commence 'fix' script isn't executable!|
+BAIL_OUT q|Cannot start greybox testing: 'fix' script isn't executable!|
     if $exit == -1;
 
 ###############################################################################
@@ -972,93 +985,151 @@ run_fix_test(
 note '=== Config File ===';
 enter_dir("greybox-config-file");
 {
-    local $ENV{PATH} = '';
     my $dir = get_dir();
 
-    write_file('.fixrc' => '[core]@');
+    write_file('.fixrc' => nl('[core]', '@'));
     run_fix_test(
         name   => "Invalid '.fixrc'",
         exit   => 254,
         errmsg => nl("fix: Bad config '.fixrc': Neither '[section]' nor " .
-                         "'variable = value' in line 1"),
+                         "'variable = value' in line 2"),
         args   =>  [qw( test.txt )],
     );
 
-    write_file('.fixrc' => '[core]execPath=.');
+    write_file('.fixrc' => nl('[core]', 'execPath = wonkdir'));
+    write_exe_file('wonkdir/wonky' => nl('#!' . which('sh'), 'echo wonkwonk1'));
     run_fix_test(
-        name   => "core.execPath",
+        name   => q|Run script in custom dir using 'execPath' | .
+                  q|option in '.fixrc'|,
         exit   => 0,
         args   =>  [qw( test.txt )],
         stats  => [[qw( test.txt )]],
         source => {
-            'test.txt.fix' => nl('echo $PATH'),
+            'test.txt.fix' => nl('wonky'),
         },
         result => {
             'test.txt' => {
                 state => NEW_CONTENT,
                 deps  => [[ 'test.txt.fix' ]],
-                cont  => nl("$dir/.fix/bin:$dir:$ENV{PATH}"),
+                cont  => nl('wonkwonk1'),
             },
         },
     );
 
     write_file('.fixrc' => '');
     rmtree([ ".$name", 'test.txt' ]);
+    write_exe_file('wonkdir/wonky' => nl('#!' . which('sh'), 'echo wonkwonk2'));
     run_fix_test(
-        name   => '$FIX_EXEC_PATH',
+        name   => q|Run script in custom dir using '$FIX_EXEC_PATH' | .
+                  q|in shell environment|,
         exit   => 0,
         args   =>  [qw( test.txt )],
         stats  => [[qw( test.txt )]],
-        before => sub {        $ENV{FIX_EXEC_PATH} = '.'  },
+        before => sub {        $ENV{FIX_EXEC_PATH} = 'wonkdir'  },
         after  => sub { delete $ENV{FIX_EXEC_PATH}        },
         source => {
-            'test.txt.fix' => nl('echo $PATH'),
+            'test.txt.fix' => nl('wonky'),
         },
         result => {
             'test.txt' => {
                 state => NEW_CONTENT,
                 deps  => [[ 'test.txt.fix' ]],
-                cont  => nl("$dir/.fix/bin:$dir:$ENV{PATH}"),
+                cont  => nl('wonkwonk2'),
             },
         },
     );
 
     write_file('.fixrc' => '');
     rmtree([ ".$name", 'test.txt' ]);
+    write_exe_file('wonkdir/wonky' => nl('#!' . which('sh'), 'echo wonkwonk3'));
     run_fix_test(
-        name   => "--exec-path",
+        name   => q|Run script in custom dir using '--exec-path' option |,
         exit   => 0,
-        args   =>  [ qw( --exec-path=. test.txt )],
-        stats  => [[ qw( --exec-path=. test.txt )]],
+        args   =>  [ qw( --exec-path=wonkdir test.txt )],
+        stats  => [[ qw( --exec-path=wonkdir test.txt )]],
         source => {
-            'test.txt.fix' => nl('echo "$PATH"'),
+            'test.txt.fix' => nl('wonky'),
         },
         result => {
             'test.txt' => {
                 state => NEW_CONTENT,
                 deps  => [[ 'test.txt.fix' ]],
-                cont  => nl("$dir/.fix/bin:$dir:$ENV{PATH}"),
+                cont  => nl('wonkwonk3'),
             },
         },
     );
 
-    write_file('.fixrc' => '[core]execPath=CFG');
+    write_file('.fixrc' => nl('[core]', 'execPath = wonkdir-cfg'));
     rmtree([ ".$name", 'test.txt' ]);
+    write_exe_file('wonkdir-env/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-env'),
+                   'wonkdir-cmd/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-cmd'),
+                   'wonkdir-cfg/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-cfg'));
     run_fix_test(
-        name   => '--exec-path + $FIX_EXEC_PATH + core.execPath',
+        name   => q|Path specified with '--exec-path' should come | .
+                  q|before paths specified on in config or environment|,
         exit   => 0,
-        args   =>  [ qw( --exec-path=CMD test.txt )],
-        stats  => [[ qw( --exec-path=CMD test.txt )]],
-        before => sub {        $ENV{FIX_EXEC_PATH} = 'ENV'  },
+        args   =>  [ qw( --exec-path=wonkdir-cmd test.txt )],
+        stats  => [[ qw( --exec-path=wonkdir-cmd test.txt )]],
+        before => sub {        $ENV{FIX_EXEC_PATH} = 'wonkdir-env' },
         after  => sub { delete $ENV{FIX_EXEC_PATH}          },
         source => {
-            'test.txt.fix' => nl('echo "$PATH"'),
+            'test.txt.fix' => nl('wonky'),
         },
         result => {
             'test.txt' => {
                 state => NEW_CONTENT,
                 deps  => [[ 'test.txt.fix' ]],
-                cont  => nl("$dir/.fix/bin:$dir/CMD:$dir/ENV:$dir/CFG:$ENV{PATH}"),
+                cont  => nl("wonkwonk-cmd"),
+            },
+        },
+    );
+
+    write_file('.fixrc' => nl('[core]', 'execPath = wonkdir-cfg'));
+    rmtree([ ".$name", 'test.txt' ]);
+    write_exe_file('wonkdir-env/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-env'),
+                   'wonkdir-cmd/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-cmd'),
+                   'wonkdir-cfg/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-cfg'));
+    run_fix_test(
+        name   => q|Path specified in config file should come before path | .
+                  q|specified in environment|,
+        exit   => 0,
+        args   =>  [ qw( test.txt )],
+        stats  => [[ qw( test.txt )]],
+        before => sub {        $ENV{FIX_EXEC_PATH} = 'wonkdir-env' },
+        after  => sub { delete $ENV{FIX_EXEC_PATH}          },
+        source => {
+            'test.txt.fix' => nl('wonky'),
+        },
+        result => {
+            'test.txt' => {
+                state => NEW_CONTENT,
+                deps  => [[ 'test.txt.fix' ]],
+                cont  => nl("wonkwonk-env"),
+            },
+        },
+    );
+
+    write_file('.fixrc' => nl('[core]', 'execPath = wonkdir-cfg'));
+    rmtree([ ".$name", 'test.txt' ]);
+    write_exe_file('wonkdir-env/wonky1' => nl('#!' . which('sh'), 'echo wonkwonk2-env'),
+                   'wonkdir-cmd/wonky2' => nl('#!' . which('sh'), 'echo wonkwonk2-cmd'),
+                   'wonkdir-cfg/wonky3' => nl('#!' . which('sh'), 'echo wonkwonk2-cfg'));
+    run_fix_test(
+        name   => q|Path set with $FIX_EXEC_PATH, 'execPath' and | .
+                  q|'--exec-path' should all work at the same time|,
+        exit   => 0,
+        args   =>  [ qw( --exec-path=wonkdir-cmd test.txt )],
+        stats  => [[ qw( --exec-path=wonkdir-cmd test.txt )]],
+        before => sub {        $ENV{FIX_EXEC_PATH} = 'wonkdir-env' },
+        after  => sub { delete $ENV{FIX_EXEC_PATH}          },
+        source => {
+            'test.txt.fix' => nl('wonky1', 'wonky2', 'wonky3'),
+        },
+        result => {
+            'test.txt' => {
+                state => NEW_CONTENT,
+                deps  => [[ 'test.txt.fix' ]],
+                cont  => nl('wonkwonk2-env', 'wonkwonk2-cmd', 'wonkwonk2-cfg'),
             },
         },
     );
@@ -1470,7 +1541,6 @@ run_fix_test(
 ###############################################################################
 
 note '=== Target it Subdir ===';
-
 enter_dir("greybox-target-in-subdir");
 write_file('.fixrc' => '');
 
@@ -1627,7 +1697,6 @@ run_fix_test(
         },
     },
 );
-
 
 enter_dir("greybox-target-in-subdir");
 write_file('.fixrc' => nl('[core]', 'scriptTree = fix'));

@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 # -*- ispell-dictionary: "american" -*-
 package Local::Modulino; #[http://www.drdobbs.com/scripts-as-modules/184416165]
 use strict;
@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.8.4";
+our $VERSION       = "0.8.5";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -1161,14 +1161,14 @@ of occurrence. I<DIR> may be absolute or relative to the current working
 directory.
 
 Can also be set by config file variable B<core.execPath>, or environment
-variable $FIX_EXEC_PATH. (These, unlike the command line option, can only be
-specified only once.) If all three are used, they are put in the following
-order in $PATH: B<--exec-path>, $FIX_EXEC_PATH, B<core.execPath>.
+variable $FIX_EXEC_PATH. (This, unlike the command line option, can only be
+specified once.) If all three are used, they are put in the following order in
+$PATH: B<--exec-path>, $FIX_EXEC_PATH, B<core.execPath>.
 
 This option is useful when you have scripts or programs that do not reside in
 your normal $PATH (e.g. scripts specific to one build project). You never need
-to add fix itself, as this is done automatically. This option is similar, but
-not quite the same as git's B<--exec-path>.
+to add fix itself, as this is done automatically. This option is similar to,
+but not quite the same as git's B<--exec-path>.
 
 =cut
 

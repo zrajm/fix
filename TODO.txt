@@ -68,7 +68,18 @@ This is an Emacs org-mode file.
         abc/default.fix
         default.txt.fix
         default.fix
-** TODO Improve output for when buildscript failed to run
+** TODO Use Module::Builder file structure
+   This allows for splitting tests into different batches, which is nice when
+   trying to figure out what has gone wrong somewhere.
+
+   Putting all tests in `t/` etc.
+
+   The fix program should be usable as-is, but all the extras (e.g. tests, code
+   coverage and such) that require extra infrastructure should be buildable
+   using standard (modern) CPAN methods.
+
+   http://search.cpan.org/~leont/Module-Build-0.4205/lib/Module/Build.pm
+** TODO Make output prettier when buildscript failed to run
    Right now the output is:
 
        fix lolo (previously built)
@@ -252,6 +263,9 @@ This is an Emacs org-mode file.
    If scripttree changes between builds, the build metadata does not update
    properly. (There's a NOTA BENE in the docs about this.)
 * Testing
+** TODO When test fails, display name of subtest()s before bailing out
+   Currently the name of the interrupted subtest is never outputted, which
+   makes it hard to see where the error occurred.
 ** TODO Test error message when buildscript have bad shebang
    "Bad '#!' interpreter in buildscript".
 ** TODO Test error message when buildscript has bad permissions
@@ -268,10 +282,25 @@ This is an Emacs org-mode file.
      * core.execPath  -- worktree directory
 ** TODO Add more tests for file-oriented internal functions
 ** TODO Test $FIX_* variables
+** TODO Add unit tests
+   100% code coverage + negative tests
+** TODO Optimise tests
+   Each test should do less. All state should be created by the test setup code
+   (so tests can be run in random order), and test only one specific thing.
 ** TODO Apenwarr redo's tests
 * Someday/maybe
+** TODO More portable filenames/own filename module
+   Something similar to Path::Class.
+
+   An object oriented module where each dir- and filename is an object that
+   stringifies to the platform-specific filename. This object should have
+   methods for manipulating the filename (cleaning it up, do up down
+   directories etc.).
+
+   More about Path::Class:
+     * https://metacpan.org/release/Path-Class
+     * http://www.perladvent.org/2012/2012-12-01.html
 ** TODO '--man' option should display manpage, not plain text
-'--man' option should work on MacOS X
    MacPorts man ("man, version 1.6c" according to "man --version") does not
    have the '-l' option to read from standard input (or, as far as I can
    determine from the manpage, any other way of accepting a manpage on stdin).
@@ -700,3 +729,14 @@ This is an Emacs org-mode file.
    To be cross platform '--man' now displays its output as a plain text file
    (piped to 'less' instead of 'man'), which forgoes some of the more
    fancy-looking stuff, but works.
+** DONE Add os-agnostic magic numbers
+   CLOSED: [2014-05-29 Thu 20:46]
+   Now use the (more) os-agnostic shebang/magic number:
+
+       #!/usr/bin/env perl
+
+   For this to work $PATH must be set. If not, env will not be able to find the
+   perl interpreter. -- There was a problem when implementing this, wherein
+   some of the 'execPath' tests cleared the $PATH variable which caused fix to
+   fail with the above shebang, but work just fine with either
+   `#!/usr/bin/perl` or `#!/opt/local/bin/perl`. Confusing as hell!

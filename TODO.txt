@@ -5,7 +5,6 @@ This is an Emacs org-mode file.
 
 * Main program
 ** TODO Milestone: v1.0
-*** TODO v1.0: Make shebang MacOS X/Linux agnostic
 *** TODO v1.0: Add '--fix-dir' option                                    :#3:
 *** TODO v1.0: Add '--work-tree' option                                  :#4:
 *** TODO v1.0: Add '--source-tree' option                                :#5:
@@ -249,7 +248,7 @@ This is an Emacs org-mode file.
 *** TODO Config file: Lines ending in \ should be continued on the next line
 *** TODO Config file: Allow partially quoted strings
 ** TODO Don't store state for a failing build, just abort
-** TODO More clear error message when buildscript fails
+** TODO Clearer error message when buildscript fails
    A 'default.fix' buildscript executing the non-existing command "foo" will
    give the following somewhat obscure message.
 
@@ -263,6 +262,11 @@ This is an Emacs org-mode file.
    If scripttree changes between builds, the build metadata does not update
    properly. (There's a NOTA BENE in the docs about this.)
 * Testing
+** TODO Test relative dirs for 'execPath'
+   Test that relative dirs are interpreted as relative to:
+     * --exec-path    -- user current dir
+     * $FIX_EXEC_PATH -- user current dir
+     * core.execPath  -- worktree directory
 ** TODO When test fails, display name of subtest()s before bailing out
    Currently the name of the interrupted subtest is never outputted, which
    makes it hard to see where the error occurred.
@@ -284,6 +288,7 @@ This is an Emacs org-mode file.
 ** TODO Test $FIX_* variables
 ** TODO Add unit tests
    100% code coverage + negative tests
+*** TODO Add more tests for file-oriented internal functions
 ** TODO Optimise tests
    Each test should do less. All state should be created by the test setup code
    (so tests can be run in random order), and test only one specific thing.
@@ -307,6 +312,13 @@ This is an Emacs org-mode file.
 
    So should either use plain text + less, or write manpage to tempfile and
    display that.
+** TODO Zsh completion of target names
+   An option for fix to output all available targets, which then could be used
+   for completion?
+
+   The tricky part would be to list targets built with 'default' rules; but
+   maybe this could be done by looking at source files + available 'default'
+   buildscripts.
 ** TODO Git wiki as submodule(?)
    There seem to be a little bit of hassle to get it to work, and keep itself
    automatically up-to-date when pulling and cloning... :/
@@ -687,7 +699,7 @@ This is an Emacs org-mode file.
    Environment variable $FIX_EXEC_PATH should also work.
 ** DONE v1.0: Add '--script-tree' option                                 :#8:
    CLOSED: [2014-02-16 Sun 18:59]
-** DONE Magic numbers (#!) in buildscripts                               :#9:
+** DONE Shebang (#!) in buildscripts                                     :#9:
    CLOSED: [2014-02-16 Sun 22:19]
    All buildscripts should have a '#!' line at the beginning, and have execute
    permissions (--x--x--x) turned on.
@@ -729,7 +741,7 @@ This is an Emacs org-mode file.
    To be cross platform '--man' now displays its output as a plain text file
    (piped to 'less' instead of 'man'), which forgoes some of the more
    fancy-looking stuff, but works.
-** DONE Add os-agnostic magic numbers
+** DONE v1.0: Make shebang MacOS X/Linux agnostic                       :#11:
    CLOSED: [2014-05-29 Thu 20:46]
    Now use the (more) os-agnostic shebang/magic number:
 

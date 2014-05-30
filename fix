@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.8.7";
+our $VERSION       = "0.8.8";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -906,7 +906,7 @@ sub getopts {
     my @arg = (my @orgarg) = @_;
     END { kill TERM => getppid() if $? != 0 and is_child() }
     %Opt = (
-        cmd        =>   $ENV{FIX_CMD},         # set by mother
+        cmd        =>   $ENV{FIX},             # set by mother
         debug      => !!$ENV{FIX_DEBUG},
         fixdir     =>   $ENV{FIX_DIR},         # set by mother
         # force    => !!$ENV{FIX_FORCE},
@@ -967,9 +967,9 @@ sub getopts {
     if (not is_child()) {
         warn "Option '--source' can only be used inside buildscript\n"
             if $Opt{source};
+        $Opt{cmd} = $ENV{FIX}     = abspath(__FILE__);
         $Opt{pid} = $ENV{FIX_PID} = $$;
         $Opt{pwd} = $ENV{FIX_PWD} = abspath();
-        $Opt{cmd} = $ENV{FIX_CMD} = abspath(__FILE__);
         $Opt{scripttree} = abspath($Opt{scripttree})
             if defined $Opt{scripttree};
         if (defined $Opt{fixdir}) {            # fixdir set by user
@@ -1617,25 +1617,31 @@ inspected from inside buildscripts.
 
 =over 4
 
-=item B<$FIX_CMD>
+=item B<$FIX>
 
 This environment variable contains the full path to the currently running
-B<fix> instance. (Normally, you do not need to use $FIX_CMD, since B<fix>, when
-invoked, always makes sure that that it's binary is in the first element in
-$PATH.)
+B<fix> instance. You can use it to invoke B<fix> from inside your buildscripts.
+A buildscript could, for example, look like this:
 
-You can use this as a command in your buildscripts, to recursively invoke
-B<fix>. A buildscript could, for example, look like this:
-
-    $FIX_CMD a b
+    #!/bin/dash
+    $FIX a b
     cat a b | sed 's/^/>/'
 
 The first line invokes C<fix a b> (thereby declaring F<a> and F<b> to be
-dependencies of this script). The second line outputs the content of F<a> and
-F<b>, and adds a C<E<gt>> sign to the beginning of each line.
+dependencies of this buildscript). The second line outputs the content of F<a>
+and F<b>, and inserts a C<E<gt>> sign at the beginning of each line.
 
-If you started B<fix> by executing a symlink to B<fix>, rather than the actual
-B<fix> program, then the name of the symlink will be the name in this variable.
+Normally, you do not need to do this, since B<fix> when first invoked always
+makes sure that that it's binary is in the first element of your $PATH. But if
+you are on an operating system that require the fix executable have a file
+extension to be recognized as Perl (e.g. DOS or Windows[?] which might expect
+C<fix.pl> or C<fix.plx>) so you might choose to use C<$FIX> over C<fix.plx> for
+aesthetic or platform independence.
+
+If you started B<fix> by executing a symlink to to the actual program, then,
+rather than the name of actual program, the name of the symlink will be in this
+variable (i.e. it will always contain the file name of the file you invoked it
+as).
 
 =item B<$FIX_LEVEL>
 

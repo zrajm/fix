@@ -104,7 +104,6 @@ This is an Emacs org-mode file.
 ** TODO Local::Store should remove empty dirs
    delete() should, after having removed a file, delete the directory it
    resided in if that dir became empty (all the way up to the storage dir).
-** TODO Rename environment variable $FIX_CMD -> $FIX
 ** TODO Config variable 'core.execPath' should be allowed to occur several times
    Currently only one value of 'core.execPath' can be specified in the config
    file (though this isn't all that damaging, since one may give several paths
@@ -746,7 +745,6 @@ This is an Emacs org-mode file.
    CLOSED: [2014-03-22 Sat 16:38]
 ** DONE '--man' option should work on MacOS X
    CLOSED: [2014-05-26 Mon 11:03]
-
    MacPorts man ("man, version 1.6c" according to "man --version") does not
    support reading of manpage from standard in (the '-l' option on GNU(?) man).
 
@@ -764,3 +762,5 @@ This is an Emacs org-mode file.
    some of the 'execPath' tests cleared the $PATH variable which caused fix to
    fail with the above shebang, but work just fine with either
    `#!/usr/bin/perl` or `#!/opt/local/bin/perl`. Confusing as hell!
+** DONE Rename environment variable $FIX_CMD -> $FIX
+   CLOSED: [2014-05-30 Fri 16:15]

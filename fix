@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.8.6";
+our $VERSION       = "0.8.7";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -939,7 +939,7 @@ sub getopts {
     };
     my @execpath;
     GetOptionsFromArray(\@arg,
-        'debug|D'  => sub {           ### debug output + verbose buildscripts
+        'debug|D'     => sub {        ### debug output
             $Opt{debug} = $ENV{FIX_DEBUG} = TRUE;
         },
         'exec-path=s' => sub {        ### DIR add DIR to $PATH before building
@@ -951,8 +951,8 @@ sub getopts {
         'help|h|?'  => \$Opt{help},   ### display this help and exit
         'man|M'     => \$Opt{man},    ### display program manpage and exit
         'source'    => \$Opt{source}, ### declare source dependencies
-        'script-tree=s'               ### DIR script tree root for build project
-            => \$Opt{scripttree},
+        'script-tree=s' =>            ### DIR script tree root for build project
+            \$Opt{scripttree},
         'stats'     => sub {          ##  save stats in .fix dir (for testing)
             $Opt{stats} = $ENV{FIX_STATS} = TRUE;
         },
@@ -970,7 +970,8 @@ sub getopts {
         $Opt{pid} = $ENV{FIX_PID} = $$;
         $Opt{pwd} = $ENV{FIX_PWD} = abspath();
         $Opt{cmd} = $ENV{FIX_CMD} = abspath(__FILE__);
-        $Opt{scripttree} = abspath($Opt{scripttree}) if defined $Opt{scripttree};
+        $Opt{scripttree} = abspath($Opt{scripttree})
+            if defined $Opt{scripttree};
         if (defined $Opt{fixdir}) {            # fixdir set by user
             $Opt{fixdir}   = abspath($Opt{fixdir});
             $Opt{worktree} = abspath($Opt{worktree});
@@ -981,11 +982,11 @@ sub getopts {
                 $Opt{worktree} = "$dir";
             } else {
                 warn "Current dir not in a fix worktree\n",
-                    "(Use 'touch .fixrc' where you want the worktree root.)\n";
+                    "(Use 'touch .fixrc' where you want your worktree root.)\n";
             }
         }
         if ($Opt{fixdir} and store_version_on_disk() ne $STORE_VERSION) {
-            warn "State storage disk format has changed, full rebuild needed\n",
+            warn "State storage on disk has old format, full rebuild needed\n",
                 "(Erase '.fix' directory in worktree root and run again.)\n";
         }
         push(@execpath, abspath(delete $ENV{FIX_EXEC_PATH}, $Opt{pwd}))
@@ -999,7 +1000,7 @@ sub getopts {
                 if (defined(my $scripttree = delete $cfg{core}{scripttree})) {
                     $Opt{scripttree} //= abspath($scripttree, $Opt{worktree});
                 }
-                # Check for unknown config variables
+                # Check for invalid config values
                 foreach my $section (sort keys %cfg) {
                     foreach my $var (sort keys %{ $cfg{$section} }) {
                         warn "Unknown variable '$var' in section [$section]\n"
@@ -1186,15 +1187,21 @@ but not quite the same as git's B<--exec-path>.
 #
 # Option is similar to git-checkout --force which "is used to throw away local
 # changes."
+#
+# =item B<--fix-dir>=I<PATH>
+#
+# Set the path to the build metadata directory. This can also be controlled by
+# setting the $FIX_DIR environment variable. I<PATH> may be absolute or
+# relative to the current working directory.
 
-=item B<-h>, B<--help>
+=item B<-h>, B<-?>, B<--help>
 
 Output a brief description of options etc on standard output, then exit.
 
 =item B<-M>, B<--man>
 
 Display this manpage, then exit. This option extracts the Perl POD (Plain Old
-Documentation) documentation from the program and displays it using man(1).
+Documentation) documentation from the program and displays it using less(1).
 
 =item B<--script-tree>=I<DIR> (Default: $FIX_WORK_TREE)
 
@@ -1204,9 +1211,9 @@ files). I<DIR> may be absolute or relative to the current working directory.
 environment variable $FIX_SCRIPT_TREE.)
 
 B<NOTA BENE>: The build metadata currently does not track changes in scripttree
-very well. As long as you the same value for all invocations (and delete the
-F<.fix> directory, and do a full rebuild whenever you change it) you should be
-fine.
+very well. As long as you use the same value for all invocations (and delete
+the F<.fix> directory, and do a full rebuild whenever you change it) you should
+be fine.
 
 =item B<--source>
 
@@ -1214,6 +1221,15 @@ Can only be used inside buildscripts to register B<source dependencies>. With
 this option, the arguments given on the command line refer to source files to
 register as dependencies, instead of targets to be built. (See also
 C<Dependencies> below.)
+
+=cut
+
+# =item B<--source-dir>=I<PATH>
+#
+# Set path to the directory containing source files. I<PATH> may be absolute or
+# relative to the current working directory. (This value may also be set using
+# config file option B<core.sourcedir> or environment variable
+# $FIX_SOURCE_DIR.) By default this is set to the worktree root dir.
 
 =item B<--stats>
 
@@ -1227,6 +1243,15 @@ This option can also be enabled by setting the environment variable $FIX_STATS
 $FIX_STATS was used, this causes the $FIX_STATS to be set inside all run
 buildscripts (which is how this setting is passed down to all child instances
 of B<fix> run from within those buildscripts).
+
+=cut
+
+# =item B<--target-dir>=I<PATH>
+#
+# Set path to the directory where targets are to be built. I<PATH> may be
+# absolute or relative to the current working directory. (This value may also
+# be set using config file option B<core.targetdir> or environment variable
+# $FIX_TARGET_DIR.) By default this is set to the worktree root dir.
 
 =item B<-v>, B<--verbose>
 
@@ -1242,6 +1267,14 @@ child instances of B<fix> run from within those buildscripts).
 =item B<-V>, B<--version>
 
 Output program version information on standard output, then exit.
+
+=cut
+
+# =item B<--work-tree>=I<PATH>
+#
+# Set the path to the root of the working tree. I<PATH> may be absolute or
+# relative to the current working directory. This may also be set set by config
+# file option B<core.worktree> or environment variable $FIX_WORK_TREE.
 
 =back
 
@@ -1586,9 +1619,10 @@ inspected from inside buildscripts.
 
 =item B<$FIX_CMD>
 
-This environment variable contains the full path of the currently running
-B<fix> executable. Normally, you do not need to use $FIX_CMD, since B<fix>
-always makes sure that its binary can be found in the first dir in $PATH.
+This environment variable contains the full path to the currently running
+B<fix> instance. (Normally, you do not need to use $FIX_CMD, since B<fix>, when
+invoked, always makes sure that that it's binary is in the first element in
+$PATH.)
 
 You can use this as a command in your buildscripts, to recursively invoke
 B<fix>. A buildscript could, for example, look like this:
@@ -1682,7 +1716,7 @@ B<Subsections> exists in git (see git-config(1)) but are not used with fix.
 B<Variables> must belong to a section (meaning that a config file must always
 start with a section name). A variable is set by a line in the form C<name =
 value> (or just C<name>, without any equal sign, in which case the value is set
-to C<true>). A variable may be set more than once (= multi-valued variable).
+to C<true>). A variable may be set more than once (= multivalued variable).
 
 B<Unquoted variable values> will have leading and trailing whitespace trimmed,
 but whitespace within the value is kept as-is.

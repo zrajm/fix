@@ -5,8 +5,20 @@ This is an Emacs org-mode file.
 
 * Main program
 ** TODO Milestone: v1.0
+*** TODO v1.0: Add '--config' option
+    --config=FILE, $FIX_CONFIG
+
+    Set config file (Default: "$FIX_WORK_TREE/.fixrc")
 *** TODO v1.0: Add '--fix-dir' option                                    :#3:
+    --fix-dir=DIR, $FIX_DIR, core.fixDir
+
+    Set build metadata dir to DIR. (Default: "$FIX_WORK_TREE/.fix")
 *** TODO v1.0: Add '--work-tree' option                                  :#4:
+    --work-tree=DIR, $FIX_WORK_TREE, core.workTree
+
+    Will set the worktree of the build project. If worktree is not explicitly
+    given, it will be the first parent directory that contains a file named
+    '.fixrc'.
 *** TODO v1.0: Add '--source-tree' option                                :#5:
 *** TODO v1.0: Add '--target-tree' option                                :#6:
     The value of this option is implicitly prepended to all build arguments. So

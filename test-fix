@@ -841,7 +841,7 @@ run_fix_test(
     name   => "No '.fixrc'",
     exit   => 254,
     errmsg => nl("fix: Current dir not in a fix worktree",
-                 "(Use 'touch .fixrc' where you want the worktree root.)"),
+                 "(Use 'touch .fixrc' where you want your worktree root.)"),
     args   => [qw( 1 )],
 );
 
@@ -850,7 +850,7 @@ write_file('.fixrc' => '');
 run_fix_test(
     name   => "Incorrect '.fix/store_version'",
     exit   => 254,
-    errmsg => nl("fix: State storage disk format has changed, full rebuild needed",
+    errmsg => nl("fix: State storage on disk has old format, full rebuild needed",
                  "(Erase '.fix' directory in worktree root and run again.)"),
     args   => [qw( 1 )],
     before => sub {   mkdir(".$name"); write_file('.fix/store_version', '') },

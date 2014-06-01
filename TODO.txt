@@ -90,25 +90,119 @@ This is an Emacs org-mode file.
    using standard (modern) CPAN methods.
 
    http://search.cpan.org/~leont/Module-Build-0.4205/lib/Module/Build.pm
-** TODO Make output prettier when buildscript failed to run
-   Right now the output is:
+** [0%] Cleaner rebuilds
+*** TODO Rebuilding deleted target
+    Should not display the '(previously built)' message (since we'll have to
+    rebuild it anyway). It currently looks like this:
 
-       fix lolo (previously built)
-       fix lolo
-       fix Cannot run buildscript 'lolo.fix': Permission denied
+        > fix lolo
+        fix lolo (previously built)
+        fix lolo
+*** TODO Rebuilding after deleted fixdir
+    Currently a rebuild cannot be made if the fixdir has been deleted, but a
+    previously built target still exists. It currently looks like this:
 
-   (And similarly when the shebang is invalid.) The two first lines should
-   (probably) not be present in the output.
-** TODO Improve error message for when buildscript caught signal
-   Use buildscript with 'kill -SIGNAL $$' in to test this.
-** TODO Local::Store should remove empty dirs
-   delete() should, after having removed a file, delete the directory it
-   resided in if that dir became empty (all the way up to the storage dir).
-** TODO Config variable 'core.execPath' should be allowed to occur several times
-   Currently only one value of 'core.execPath' can be specified in the config
-   file (though this isn't all that damaging, since one may give several paths
-   separated by ':').
-** TODO Break out file functions
+        > ./fix lolo
+        fix lolo
+        > rm ./fix
+        > ./fix lolo
+        fix lolo
+        fix lolo: Target externally modified, aborting
+
+    Target should here be rebuilt, and if the newly generated target looks the
+    same as the previous one the build should be registered as successful (with
+    the old file kept, and the tempfile deleted). Here's some pseudo code:
+
+        build tempfile
+        if tempfile != old_target
+            if not --force
+                error 'target externally modified'
+                return FAILURE
+            endif
+            rename tempfile -> old_target
+        else
+            delete tempfile
+        endif
+        register successful build
+        return SUCCESS
+*** TODO Don't overwrite externally modified tempfiles
+    A tempfile should not be overwritten, if it already exists, and wasn't
+    produced by fix itself.
+** [0%] Abort handling
+*** TODO Abort status should be kept between builds
+    If a file has unchanged dependencies (and dependencies of dependencies) then
+    there is no need to try to build it again, since we *know* build will fail
+    this time around too...
+*** TODO Abort more gracefully
+    Abort should not exit brutally (e.g. causing stats to be broken except for
+    the file causing the abort), but recurse gracefully back again.
+    build_target() and update_targets() should maybe have three return values?
+
+        1 = I did my stuff, and there were changes
+        0 = I did my stuff, nothing was changed
+       -1 = Something went wrong, KILL THIS BUILD NOW!
+
+    Means we could ditch the runstate as well (since its currently only used
+    for this).
+*** TODO Don't store state for a failing build, just abort
+** [0%] Info/progress messages
+*** TODO Prettier output each target name just once
+*** TODO Display progress using relative paths
+    Relative to the user's PWD, not work_tree, or anything else.
+** [0%] Error messages
+*** TODO Make output prettier when buildscript failed to run
+    Right now the output is:
+
+        fix lolo (previously built)
+        fix lolo
+        fix Cannot run buildscript 'lolo.fix': Permission denied
+
+    (And similarly when the shebang is invalid.) The two first lines should
+    (probably) not be present in the output.
+*** TODO Improve error message for when buildscript caught signal
+    Use buildscript with 'kill -SIGNAL $$' in to test this.
+*** TODO Error messages should display filename relative to PWD
+    Not relative to worktree (as it is now).
+
+    debug(), info(), msg(), quit() and friends should allow sprintf-like
+    substitution, where first argument is a string with optional %s in, and the
+    following are filenames. These filenames should be automatically rewritten
+    to be relative to $Opt{pwd} before output. Example:
+
+        debug("Building target: %s", $target);
+*** TODO Clearer error message when buildscript fails
+    A 'default.fix' buildscript executing the non-existing command "foo" will
+    give the following somewhat obscure message.
+
+        /home/zrajm/fix/script/default.fix: 1: \
+            /home/zrajm/fix/script/default.fix: foo: not found
+
+    It's not exactly clear what's going on here, and the error message should at
+    least provide a clear context, to assist the user in remedying the error.
+** [0%] State storage
+*** TODO Should .fix/store_version contain targetTree/scriptTree(?)
+*** TODO Build metadata update should reflect scripttree changes
+    If scripttree changes between builds, the build metadata does not update
+    properly. (There's a NOTA BENE in the docs about this.)
+*** TODO Local::Store should remove empty dirs
+    delete() should, after having removed a file, delete the directory it
+    resided in if that dir became empty (all the way up to the storage dir).
+*** TODO Write-protect statefiles
+    As in git, all statefiles should be chmodded '-w' to prevent accidental
+    deletion.
+** [0%] Config file format
+*** TODO Config file: Handle multiple occurrences of variable
+    (More like git's config format.) -- This is needed for 'core.execPath',
+    which should be allowed to occur multiple times.
+
+    Currently only one value of 'core.execPath' can be specified in the config
+    file (though this isn't all that damaging, since one may give several paths
+    separated by ':').
+*** TODO Config file: Lines ending in \ should be continued on the next line
+    (More like git's config  format.)
+*** TODO Config file: Allow partially quoted strings
+    (More like git's config  format.)
+** TODO DRY: Break out file functions
    File functions should not exist in multiple incarnations. The following
    should be combined:
 
@@ -126,12 +220,10 @@ This is an Emacs org-mode file.
    Test "Rebuild from 'a.txt'" (of the checksum dependency tests) require two
    invocations of 'fix' -- this seems wasteful, since only one target needs to
    be rebuilt.
-** TODO Abort status should be kept between builds
-   If a file has unchanged dependencies (and dependencies of dependencies) then
-   there is no need to try to build it again, since we *know* build will fail
-   this time around too...
 ** TODO Is something corresponding to 'redo-ifcreate' necessary?
-** TODO Use PID lockfile avoid double invocations
+** TODO Use PID lockfile to avoid double invocations
+** TODO Parallel builds
+   Fork and run parallel 'fix' for each argument given.
 ** TODO Implement aliases
    I want to be able to write 'fix all' anywhere in the worktree hierarchy, and
    have it have the same effect. How about creating aliases with a section like
@@ -178,7 +270,6 @@ This is an Emacs org-mode file.
            ],
            'type' => 'target'
        }
-** TODO Prettier output output each target name just once
 ** TODO Add option '--always' to rebuild everything
    Described in POD (uncomment when implemented). Alternative option names
    '--all', '--rebuild' or '--everything'.
@@ -215,63 +306,6 @@ This is an Emacs org-mode file.
 ** TODO Add option '--watch'(?) to monitor and rebuild on changes
    Option name '--watch' or '--auto' maybe? Would use inotifywait to look for
    changes and rebuild, whenever something is written.
-** TODO Write protected statefiles
-   As in git, all statefiles should be chmodded '-w' to prevent accidental
-   deletion.
-** TODO Clean rebuilds when statedir was deleted.
-   If a rebuild is attempted when statedir have been deleted - build anyway.
-   Then, before renaming each temporary output file, compare it with any
-   previously built target, and produce an 'target externally modified' error
-   if the newly generated target looks different. (Don't produce error, just
-   overwrite if '--force' is being used.)
-
-   If the newly generated target looks the same, just update the state, and
-   keep the old target.
-** TODO Don't overwrite externally modified tempfiles
-   I.e. refuse to do it, if it already exists, and wasn't produced by fix
-   itself).
-** TODO Parallel builds
-   Fork and run parallel 'fix' for each argument given.
-** TODO Abort more gracefully
-   Abort should not exit brutally (e.g. causing stats to be broken except for
-   the file causing the abort), but recurse gracefully back again.
-   build_target() and update_targets() should maybe have three return values?
-
-       1 = I did my stuff, and there were changes
-       0 = I did my stuff, nothing was changed
-      -1 = Something went wrong, KILL THIS BUILD NOW!
-
-   Means we could ditch the runstate as well (since its currently only used for
-   this).
-** TODO Error messages should display filename relative to PWD
-   Not relative to worktree (as it is now).
-
-   debug(), info(), msg(), quit() and friends should allow sprintf-like
-   substitution, where first argument is a string with optional %s in, and the
-   following are filenames. These filenames should be automatically rewritten
-   to be relative to $Opt{pwd} before output. Example:
-
-       debug("Building target: %s", $target);
-** TODO Display progress using relative paths
-   Relative to the user's PWD, not work_tree, or anything else.
-** TODO Make config file format more like git's
-*** TODO Config file: Handle multiple occurrences of variable
-*** TODO Config file: Lines ending in \ should be continued on the next line
-*** TODO Config file: Allow partially quoted strings
-** TODO Don't store state for a failing build, just abort
-** TODO Clearer error message when buildscript fails
-   A 'default.fix' buildscript executing the non-existing command "foo" will
-   give the following somewhat obscure message.
-
-       /home/zrajm/fix/script/default.fix: 1: \
-           /home/zrajm/fix/script/default.fix: foo: not found
-
-   It's not exactly clear what's going on here, and the error message should at
-   least provide a clear context, to assist the user in remedying the error.
-** TODO Should .fix/store_version contain targetTree/scriptTree(?)
-** TODO Build metadata update should reflect scripttree changes
-   If scripttree changes between builds, the build metadata does not update
-   properly. (There's a NOTA BENE in the docs about this.)
 * Testing
 ** TODO Test relative dirs for 'execPath'
    Test that relative dirs are interpreted as relative to:

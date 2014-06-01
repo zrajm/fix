@@ -261,10 +261,25 @@ sub catch {
     return ($!, $@, @result);
 }
 
+# Return list of possible paths for given executable. (Like shell command
+# 'which -a <CMD>'.)
+sub which {
+    my ($executable) = @_;
+    return map {
+        my $path = "$_/$executable";
+        -x $path ? $path : ();
+    } split /:/, $ENV{PATH};
+}
+
+sub shebang {
+    my ($path) = which shift;
+    return "#!$path\n";
+}
+
 {
     sub TRUE  { 1 }
     sub FALSE { 0 }
-    my $shebang = which('dash');
+    my ($shebang) = which 'dash';
     my %target_rewritten = (
         NO_RUNSTATE ,=> FALSE,      # unmodified targets, no runstate generated
         UNCHANGED   ,=> FALSE,
@@ -285,17 +300,6 @@ sub catch {
             note "  Cmd: fix @args";
             note '-' x 60;
         }
-    }
-
-    # Return list of possible paths for given executable. (Like shell command
-    # 'which -a <CMD>'.)
-    sub which {
-        my ($executable) = @_;
-        my @path = map {
-            my $path = "$_/$executable";
-            -x $path ? $path : ();
-        } split /:/, $ENV{PATH};
-        return wantarray ? @path : $path[0];
     }
 
     sub run_fix_test {
@@ -997,7 +1001,7 @@ enter_dir("greybox-config-file");
     );
 
     write_file('.fixrc' => nl('[core]', 'execPath = wonkdir'));
-    write_exe_file('wonkdir/wonky' => nl('#!' . which('sh'), 'echo wonkwonk1'));
+    write_exe_file('wonkdir/wonky' => nl(shebang('sh'), 'echo wonkwonk1'));
     run_fix_test(
         name   => q|Run script in custom dir using 'execPath' | .
                   q|option in '.fixrc'|,
@@ -1018,7 +1022,7 @@ enter_dir("greybox-config-file");
 
     write_file('.fixrc' => '');
     rmtree([ ".$name", 'test.txt' ]);
-    write_exe_file('wonkdir/wonky' => nl('#!' . which('sh'), 'echo wonkwonk2'));
+    write_exe_file('wonkdir/wonky' => nl(shebang('sh'), 'echo wonkwonk2'));
     run_fix_test(
         name   => q|Run script in custom dir using '$FIX_EXEC_PATH' | .
                   q|in shell environment|,
@@ -1041,7 +1045,7 @@ enter_dir("greybox-config-file");
 
     write_file('.fixrc' => '');
     rmtree([ ".$name", 'test.txt' ]);
-    write_exe_file('wonkdir/wonky' => nl('#!' . which('sh'), 'echo wonkwonk3'));
+    write_exe_file('wonkdir/wonky' => nl(shebang('sh'), 'echo wonkwonk3'));
     run_fix_test(
         name   => q|Run script in custom dir using '--exec-path' option |,
         exit   => 0,
@@ -1061,9 +1065,9 @@ enter_dir("greybox-config-file");
 
     write_file('.fixrc' => nl('[core]', 'execPath = wonkdir-cfg'));
     rmtree([ ".$name", 'test.txt' ]);
-    write_exe_file('wonkdir-env/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-env'),
-                   'wonkdir-cmd/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-cmd'),
-                   'wonkdir-cfg/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-cfg'));
+    write_exe_file('wonkdir-env/wonky' => nl(shebang('sh'), 'echo wonkwonk-env'),
+                   'wonkdir-cmd/wonky' => nl(shebang('sh'), 'echo wonkwonk-cmd'),
+                   'wonkdir-cfg/wonky' => nl(shebang('sh'), 'echo wonkwonk-cfg'));
     run_fix_test(
         name   => q|Path specified with '--exec-path' should come | .
                   q|before paths specified on in config or environment|,
@@ -1086,9 +1090,9 @@ enter_dir("greybox-config-file");
 
     write_file('.fixrc' => nl('[core]', 'execPath = wonkdir-cfg'));
     rmtree([ ".$name", 'test.txt' ]);
-    write_exe_file('wonkdir-env/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-env'),
-                   'wonkdir-cmd/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-cmd'),
-                   'wonkdir-cfg/wonky' => nl('#!' . which('sh'), 'echo wonkwonk-cfg'));
+    write_exe_file('wonkdir-env/wonky' => nl(shebang('sh'), 'echo wonkwonk-env'),
+                   'wonkdir-cmd/wonky' => nl(shebang('sh'), 'echo wonkwonk-cmd'),
+                   'wonkdir-cfg/wonky' => nl(shebang('sh'), 'echo wonkwonk-cfg'));
     run_fix_test(
         name   => q|Path specified in config file should come before path | .
                   q|specified in environment|,
@@ -1111,9 +1115,9 @@ enter_dir("greybox-config-file");
 
     write_file('.fixrc' => nl('[core]', 'execPath = wonkdir-cfg'));
     rmtree([ ".$name", 'test.txt' ]);
-    write_exe_file('wonkdir-env/wonky1' => nl('#!' . which('sh'), 'echo wonkwonk2-env'),
-                   'wonkdir-cmd/wonky2' => nl('#!' . which('sh'), 'echo wonkwonk2-cmd'),
-                   'wonkdir-cfg/wonky3' => nl('#!' . which('sh'), 'echo wonkwonk2-cfg'));
+    write_exe_file('wonkdir-env/wonky1' => nl(shebang('sh'), 'echo wonkwonk2-env'),
+                   'wonkdir-cmd/wonky2' => nl(shebang('sh'), 'echo wonkwonk2-cmd'),
+                   'wonkdir-cfg/wonky3' => nl(shebang('sh'), 'echo wonkwonk2-cfg'));
     run_fix_test(
         name   => q|Path set with $FIX_EXEC_PATH, 'execPath' and | .
                   q|'--exec-path' should all work at the same time|,

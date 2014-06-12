@@ -23,7 +23,7 @@ import Local::Paths qw( abspath relpath rebase_path find_parent_path );
 ##                                                                           ##
 ###############################################################################
 
-our $VERSION       = "0.8.8";
+our $VERSION       = "0.8.9";
 our $STORE_VERSION = "0.1";
 our $YEAR          = "2012-2014";
 our $NAME          = (split_path(__FILE__))[1];# last non-slash part of path
@@ -109,15 +109,40 @@ EOF
     exit;
 }
 
-# Display manpage by converting POD into plain text and displaying it in
-# less(1).
+# Return random name for a tempfile.
+sub tempfile {
+    package Local::tempfile;
+    use File::Temp 'tmpnam';
+    return tmpnam();
+}
+
+# Display documentation, then exit.
 sub man {
-    my $pid = open(STDOUT, '|-', 'less');      # filter STDOUT through less(1)
-    die "Cannot run 'less': $!\n" unless defined $pid;
-    use Pod::Text;
+    # display using man(1) if available
+    if (-x '/usr/bin/man'
+            and eval { require Pod::Man; My::Module->import(); 1 }) {
+        my $parser = Pod::Man->new (
+            name    => 'OnePOP',
+            center  => "Esteemed Fabulous Colleague's Documentation",
+            release => $VERSION,
+            utf8    => 1,
+        );
+        my $tempfile = tempfile;
+        $parser->parse_from_file (__FILE__, $tempfile);
+        no warnings 'exec';
+        exec "man $tempfile";
+    }
+
+    # filter STDOUT through less(1) if available
+    if (-x '/usr/bin/less') {
+        no warnings 'exec';                    # be quiet if open() fails
+        open(STDOUT, '|-', 'less');
+    }
+    eval { require Pod::Text; My::Module->import(); 1 }
+        or die "Cannot show documentation, failed to load 'Pod::Text'";
     new Pod::Text->parse_from_file(__FILE__);
-    close STDOUT;                              # don't make man wait for more
-    wait();                                    # wait until user exits man
+    close STDOUT;                              # tell less(1) STDOUT is done
+    wait;                                      # wait until user exits less
     exit;
 }
 
@@ -1200,8 +1225,15 @@ Output a brief description of options etc on standard output, then exit.
 
 =item B<-M>, B<--man>
 
-Display this manpage, then exit. This option extracts the Perl POD (Plain Old
-Documentation) documentation from the program and displays it using less(1).
+Display this documentation, then exit. -- Tries several different methods in
+order of decreasing excellence.
+
+First, tries to use man(1), if you have that installed. Second, if that fails,
+will instead try to display a plain text version of the docs using less(1).
+
+If all else fails the plain text version of the docs is simply dumped on the
+terminal as-is. If this happens to you, you could either use your terminal's
+scrollback to view it, or pipe it to a file and read that.
 
 =item B<--script-tree>=I<DIR> (Default: $FIX_WORK_TREE)
 

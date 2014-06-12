@@ -79,6 +79,12 @@ This is an Emacs org-mode file.
         abc/default.fix
         default.txt.fix
         default.fix
+** TODO Simplify options parsing
+   1. get all command line options (one pass)
+   2. invoke special options: --help, --man, --config
+   3. set options to builtin defaults
+   4. override options with read config file options
+   5. override options with command line options
 ** TODO Use Module::Builder file structure
    This allows for splitting tests into different batches, which is nice when
    trying to figure out what has gone wrong somewhere.
@@ -307,6 +313,7 @@ This is an Emacs org-mode file.
    Option name '--watch' or '--auto' maybe? Would use inotifywait to look for
    changes and rebuild, whenever something is written.
 * Testing
+** TODO Make it possible to run tests in random order
 ** TODO Test relative dirs for 'execPath'
    Test that relative dirs are interpreted as relative to:
      * --exec-path    -- user current dir
@@ -315,6 +322,7 @@ This is an Emacs org-mode file.
 ** TODO When test fails, display name of subtest()s before bailing out
    Currently the name of the interrupted subtest is never outputted, which
    makes it hard to see where the error occurred.
+** TODO Test error message when config file contains invalid option
 ** TODO Test error message when buildscript have bad shebang
    "Bad '#!' interpreter in buildscript".
 ** TODO Test error message when buildscript has bad permissions

@@ -9,6 +9,58 @@ use lib do {
     "$1/lib/perl5/site_perl";
 };
 
+
+sub usage {
+    return <<'END_USAGE';
+Options available:
+  cover    run test with code coverage (needs all tests to pass)
+
+END_USAGE
+}
+
+# Returns full path of the first command (of a list of commands) that can be
+# found in path (similar to shell command 'which'). For commands which can be
+# founds in several directories found in $PATH only the fist occurring path is
+# reported. Returns empty list or undef if none of the commands could be found
+# in path.
+sub which {
+    my (@cmd) = @_;
+    my @path = split(":", $ENV{PATH});
+    foreach my $cmd (@cmd) {
+        foreach (@path) {
+            my $full = "$_/$cmd";
+            if (-f $full && -x _) { return $full }
+        }
+    }
+    return ();
+}
+
+{
+    my @cover_command;            # set below when using Devel::Cover
+    BEGIN {
+        if (@ARGV) {
+            if ($ARGV[0] eq 'cover') {
+                shift;
+                require Devel::Cover;
+                Devel::Cover->import(
+                    qw/-coverage all -silent 1 +ignore/, qr{/Test/Most|test-fix}
+                );
+                my ($version)  = $^V =~ /^v(\d+\.\d+)/;
+                @cover_command = which("cover", "cover-$version")
+                    or die "$0: Cannot find command 'cover' or 'cover-$version'\n"
+                        . "  (Are you sure Devel::Cover is installed?)\n"
+                        . "  (MacPort: 'p5-devel-cover', apt-package: "
+                        . "'libdevel-cover-perl')";
+            } else {
+                warn usage();
+                # Block around exit is to hide it from 'exit' detector thingy.
+                { exit 1 }
+            }
+        }
+    }
+    END { system @cover_command if @cover_command }
+}
+
 my $in_main = 1;
 END {
     if ($? and $in_main) {
@@ -261,25 +313,14 @@ sub catch {
     return ($!, $@, @result);
 }
 
-# Return list of possible paths for given executable. (Like shell command
-# 'which -a <CMD>'.)
-sub which {
-    my ($executable) = @_;
-    return map {
-        my $path = "$_/$executable";
-        -x $path ? $path : ();
-    } split /:/, $ENV{PATH};
-}
-
 sub shebang {
-    my ($path) = which shift;
+    my $path = which(shift);
     return "#!$path\n";
 }
 
 {
     sub TRUE  { 1 }
     sub FALSE { 0 }
-    my ($shebang) = which 'dash';
     my %target_rewritten = (
         NO_RUNSTATE ,=> FALSE,      # unmodified targets, no runstate generated
         UNCHANGED   ,=> FALSE,
@@ -323,7 +364,7 @@ sub shebang {
         foreach (key %source) {
             next unless defined $source{$_};
             my $is_buildscript = m#\.fix$#;
-            $source{$_} = "#!$shebang\n" . $source{$_} if $is_buildscript;
+            $source{$_} = shebang('dash') . $source{$_} if $is_buildscript;
             write_exe_file($_ => $source{$_});
         }
 

@@ -806,3 +806,5 @@ This is an Emacs org-mode file.
    `#!/usr/bin/perl` or `#!/opt/local/bin/perl`. Confusing as hell!
 ** DONE Rename environment variable $FIX_CMD -> $FIX
    CLOSED: [2014-05-30 Fri 16:15]
+** DONE Added Devel::Cover support to the test script
+   CLOSED: [2015-02-04 Wed 18:41]

@@ -10,4 +10,7 @@
 /.fix
 /.fixrc
 
+# Devel::Cover files
+/cover_db
+
 #[eof]
